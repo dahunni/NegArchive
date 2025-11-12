@@ -185,3 +185,15 @@ curl -X POST http://localhost:8010/api/filmstocks/1/image \
 ## License
 
 MIT
+
+## Screenshots
+
+The following screenshots show the working product UI:
+
+![Screenshot 01](screenshots/screenshot-01.png)
+![Screenshot 02](screenshots/screenshot-02.png)
+![Screenshot 03](screenshots/screenshot-03.png)
+![Screenshot 04](screenshots/screenshot-04.png)
+![Screenshot 05](screenshots/screenshot-05.png)
+![Screenshot 06](screenshots/screenshot-06.png)
+![Screenshot 07](screenshots/screenshot-07.png)
