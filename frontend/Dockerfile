@@ -18,6 +18,10 @@ ENV NODE_ENV=production
 ENV PORT=3000
 ARG NEXT_PUBLIC_API_BASE
 ENV NEXT_PUBLIC_API_BASE=${NEXT_PUBLIC_API_BASE}
+# Default internal API base for SSR inside Docker networks; override via env if needed
+ENV API_BASE=http://web:8000
+ARG API_BASE
+ENV API_BASE=${API_BASE}
 EXPOSE 3000
 
 # Copy only the necessary build artifacts
