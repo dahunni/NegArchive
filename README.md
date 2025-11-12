@@ -33,14 +33,15 @@ Note: Legacy Jinja templates have been removed. The frontend UI is served solely
 
 ## Quick Start (Docker Compose)
 
-This starts Postgres and the backend API on port `8000`.
+This starts Postgres, the backend API (port `8000`), and the frontend (port `3000`).
 
 ```
 docker compose up --build
 ```
 
+- Frontend URL: `http://localhost:3000`
 - API base: `http://localhost:8000/api`
-- Uploaded files are under `/app/static/` in the container. Mount a volume for persistence if needed.
+- Uploaded files are under `/app/static/` in the backend container. Mount a volume for persistence if needed.
 
 ## Local Development
 

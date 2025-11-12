@@ -1,4 +1,13 @@
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8010"
+// Distinguish between internal API base (used for server-side fetches in Docker)
+// and public API base (used for URLs rendered into markup for the browser).
+// Fallback to localhost:8010 for local dev when not provided.
+const INTERNAL_API_BASE =
+  typeof window === "undefined"
+    ? process.env.API_BASE || process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8010"
+    : process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8010"
+
+// Public base should always be host-accessible; never use Docker-internal hostnames here.
+const PUBLIC_API_BASE = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8010"
 
 export interface Film {
   id: number
@@ -58,19 +67,19 @@ export interface Filmstock {
 
 // Films API
 export async function getFilms(): Promise<Film[]> {
-  const res = await fetch(`${API_BASE}/api/films`, { cache: "no-store" })
+  const res = await fetch(`${INTERNAL_API_BASE}/api/films`, { cache: "no-store" })
   if (!res.ok) throw new Error("Failed to fetch films")
   return res.json()
 }
 
 export async function getFilm(id: number): Promise<{ film: Film; images: Image[]; contact_sheets?: Image[] }> {
-  const res = await fetch(`${API_BASE}/api/films/${id}`, { cache: "no-store" })
+  const res = await fetch(`${INTERNAL_API_BASE}/api/films/${id}`, { cache: "no-store" })
   if (!res.ok) throw new Error("Failed to fetch film")
   return res.json()
 }
 
 export async function createFilm(data: Partial<Film>): Promise<Film> {
-  const res = await fetch(`${API_BASE}/api/films`, {
+  const res = await fetch(`${INTERNAL_API_BASE}/api/films`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
@@ -80,7 +89,7 @@ export async function createFilm(data: Partial<Film>): Promise<Film> {
 }
 
 export async function updateFilm(id: number, data: Partial<Film>): Promise<Film> {
-  const res = await fetch(`${API_BASE}/api/films/${id}`, {
+  const res = await fetch(`${INTERNAL_API_BASE}/api/films/${id}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
@@ -90,28 +99,28 @@ export async function updateFilm(id: number, data: Partial<Film>): Promise<Film>
 }
 
 export async function deleteFilm(id: number): Promise<void> {
-  const res = await fetch(`${API_BASE}/api/films/${id}`, { method: "DELETE" })
+  const res = await fetch(`${INTERNAL_API_BASE}/api/films/${id}`, { method: "DELETE" })
   if (!res.ok) throw new Error("Failed to delete film")
 }
 
 // Images API
 export async function getImages(filmId?: number): Promise<Image[]> {
   const url = filmId
-    ? `${API_BASE}/api/images?film_id=${filmId}&type=scan`
-    : `${API_BASE}/api/images?type=scan`
+    ? `${INTERNAL_API_BASE}/api/images?film_id=${filmId}&type=scan`
+    : `${INTERNAL_API_BASE}/api/images?type=scan`
   const res = await fetch(url, { cache: "no-store" })
   if (!res.ok) throw new Error("Failed to fetch images")
   return res.json()
 }
 
 export async function getImage(id: number): Promise<Image> {
-  const res = await fetch(`${API_BASE}/api/images/${id}`, { cache: "no-store" })
+  const res = await fetch(`${INTERNAL_API_BASE}/api/images/${id}`, { cache: "no-store" })
   if (!res.ok) throw new Error("Failed to fetch image")
   return res.json()
 }
 
 export async function uploadImage(formData: FormData): Promise<Image> {
-  const res = await fetch(`${API_BASE}/api/images/upload`, {
+  const res = await fetch(`${INTERNAL_API_BASE}/api/images/upload`, {
     method: "POST",
     body: formData,
   })
@@ -162,7 +171,7 @@ export async function bulkUploadZip(
 }
 
 export async function updateImage(id: number, data: Partial<Image>): Promise<Image> {
-  const res = await fetch(`${API_BASE}/api/images/${id}`, {
+  const res = await fetch(`${INTERNAL_API_BASE}/api/images/${id}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
@@ -172,7 +181,7 @@ export async function updateImage(id: number, data: Partial<Image>): Promise<Ima
 }
 
 export async function deleteImage(id: number, deleteFile = false): Promise<void> {
-  const res = await fetch(`${API_BASE}/api/images/${id}?delete_file=${deleteFile}`, {
+  const res = await fetch(`${INTERNAL_API_BASE}/api/images/${id}?delete_file=${deleteFile}`, {
     method: "DELETE",
   })
   if (!res.ok) throw new Error("Failed to delete image")
@@ -180,19 +189,19 @@ export async function deleteImage(id: number, deleteFile = false): Promise<void>
 
 // Cameras API
 export async function getCameras(): Promise<Camera[]> {
-  const res = await fetch(`${API_BASE}/api/cameras`, { cache: "no-store" })
+  const res = await fetch(`${INTERNAL_API_BASE}/api/cameras`, { cache: "no-store" })
   if (!res.ok) throw new Error("Failed to fetch cameras")
   return res.json()
 }
 
 export async function getCamera(id: number): Promise<Camera> {
-  const res = await fetch(`${API_BASE}/api/cameras/${id}`, { cache: "no-store" })
+  const res = await fetch(`${INTERNAL_API_BASE}/api/cameras/${id}`, { cache: "no-store" })
   if (!res.ok) throw new Error("Failed to fetch camera")
   return res.json()
 }
 
 export async function createCamera(data: Partial<Camera>): Promise<Camera> {
-  const res = await fetch(`${API_BASE}/api/cameras`, {
+  const res = await fetch(`${INTERNAL_API_BASE}/api/cameras`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
@@ -202,7 +211,7 @@ export async function createCamera(data: Partial<Camera>): Promise<Camera> {
 }
 
 export async function updateCamera(id: number, data: Partial<Camera>): Promise<Camera> {
-  const res = await fetch(`${API_BASE}/api/cameras/${id}`, {
+  const res = await fetch(`${INTERNAL_API_BASE}/api/cameras/${id}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
@@ -212,14 +221,14 @@ export async function updateCamera(id: number, data: Partial<Camera>): Promise<C
 }
 
 export async function deleteCamera(id: number): Promise<void> {
-  const res = await fetch(`${API_BASE}/api/cameras/${id}`, { method: "DELETE" })
+  const res = await fetch(`${INTERNAL_API_BASE}/api/cameras/${id}`, { method: "DELETE" })
   if (!res.ok) throw new Error("Failed to delete camera")
 }
 
 export async function uploadCameraImage(id: number, file: File): Promise<Camera> {
   const formData = new FormData()
   formData.append("file", file)
-  const res = await fetch(`${API_BASE}/api/cameras/${id}/image`, {
+  const res = await fetch(`${INTERNAL_API_BASE}/api/cameras/${id}/image`, {
     method: "POST",
     body: formData,
   })
@@ -229,19 +238,19 @@ export async function uploadCameraImage(id: number, file: File): Promise<Camera>
 
 // Lenses API
 export async function getLenses(): Promise<Lens[]> {
-  const res = await fetch(`${API_BASE}/api/lenses`, { cache: "no-store" })
+  const res = await fetch(`${INTERNAL_API_BASE}/api/lenses`, { cache: "no-store" })
   if (!res.ok) throw new Error("Failed to fetch lenses")
   return res.json()
 }
 
 export async function getLens(id: number): Promise<Lens> {
-  const res = await fetch(`${API_BASE}/api/lenses/${id}`, { cache: "no-store" })
+  const res = await fetch(`${INTERNAL_API_BASE}/api/lenses/${id}`, { cache: "no-store" })
   if (!res.ok) throw new Error("Failed to fetch lens")
   return res.json()
 }
 
 export async function createLens(data: Partial<Lens>): Promise<Lens> {
-  const res = await fetch(`${API_BASE}/api/lenses`, {
+  const res = await fetch(`${INTERNAL_API_BASE}/api/lenses`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
@@ -251,7 +260,7 @@ export async function createLens(data: Partial<Lens>): Promise<Lens> {
 }
 
 export async function updateLens(id: number, data: Partial<Lens>): Promise<Lens> {
-  const res = await fetch(`${API_BASE}/api/lenses/${id}`, {
+  const res = await fetch(`${INTERNAL_API_BASE}/api/lenses/${id}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
@@ -261,14 +270,14 @@ export async function updateLens(id: number, data: Partial<Lens>): Promise<Lens>
 }
 
 export async function deleteLens(id: number): Promise<void> {
-  const res = await fetch(`${API_BASE}/api/lenses/${id}`, { method: "DELETE" })
+  const res = await fetch(`${INTERNAL_API_BASE}/api/lenses/${id}`, { method: "DELETE" })
   if (!res.ok) throw new Error("Failed to delete lens")
 }
 
 export async function uploadLensImage(id: number, file: File): Promise<Lens> {
   const formData = new FormData()
   formData.append("file", file)
-  const res = await fetch(`${API_BASE}/api/lenses/${id}/image`, {
+  const res = await fetch(`${INTERNAL_API_BASE}/api/lenses/${id}/image`, {
     method: "POST",
     body: formData,
   })
@@ -278,19 +287,19 @@ export async function uploadLensImage(id: number, file: File): Promise<Lens> {
 
 // Filmstocks API
 export async function getFilmstocks(): Promise<Filmstock[]> {
-  const res = await fetch(`${API_BASE}/api/filmstocks`, { cache: "no-store" })
+  const res = await fetch(`${INTERNAL_API_BASE}/api/filmstocks`, { cache: "no-store" })
   if (!res.ok) throw new Error("Failed to fetch filmstocks")
   return res.json()
 }
 
 export async function getFilmstock(id: number): Promise<Filmstock> {
-  const res = await fetch(`${API_BASE}/api/filmstocks/${id}`, { cache: "no-store" })
+  const res = await fetch(`${INTERNAL_API_BASE}/api/filmstocks/${id}`, { cache: "no-store" })
   if (!res.ok) throw new Error("Failed to fetch filmstock")
   return res.json()
 }
 
 export async function createFilmstock(data: Partial<Filmstock>): Promise<Filmstock> {
-  const res = await fetch(`${API_BASE}/api/filmstocks`, {
+  const res = await fetch(`${INTERNAL_API_BASE}/api/filmstocks`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
@@ -300,7 +309,7 @@ export async function createFilmstock(data: Partial<Filmstock>): Promise<Filmsto
 }
 
 export async function updateFilmstock(id: number, data: Partial<Filmstock>): Promise<Filmstock> {
-  const res = await fetch(`${API_BASE}/api/filmstocks/${id}`, {
+  const res = await fetch(`${INTERNAL_API_BASE}/api/filmstocks/${id}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
@@ -310,14 +319,14 @@ export async function updateFilmstock(id: number, data: Partial<Filmstock>): Pro
 }
 
 export async function deleteFilmstock(id: number): Promise<void> {
-  const res = await fetch(`${API_BASE}/api/filmstocks/${id}`, { method: "DELETE" })
+  const res = await fetch(`${INTERNAL_API_BASE}/api/filmstocks/${id}`, { method: "DELETE" })
   if (!res.ok) throw new Error("Failed to delete filmstock")
 }
 
 export async function uploadFilmstockImage(id: number, file: File): Promise<Filmstock> {
   const formData = new FormData()
   formData.append("file", file)
-  const res = await fetch(`${API_BASE}/api/filmstocks/${id}/image`, {
+  const res = await fetch(`${INTERNAL_API_BASE}/api/filmstocks/${id}/image`, {
     method: "POST",
     body: formData,
   })
@@ -327,10 +336,10 @@ export async function uploadFilmstockImage(id: number, file: File): Promise<Film
 
 export function getImageUrl(image: Image): string {
   // Always serve via preview to ensure browser-friendly format (handles TIFF/JPEG/PNG uniformly)
-  return `${API_BASE}/api/images/${image.id}/preview`
+  return `${PUBLIC_API_BASE}/api/images/${image.id}/preview`
 }
 
 export function getImageDownloadUrl(image: Image): string {
   // Download original asset via API to enforce Content-Disposition
-  return `${API_BASE}/api/images/${image.id}/download`
+  return `${PUBLIC_API_BASE}/api/images/${image.id}/download`
 }
