@@ -7,7 +7,7 @@ import { Card, CardContent } from "@/components/ui/card"
 import { Label } from "@/components/ui/label"
 import { Input } from "@/components/ui/input"
 import { useToast } from "@/hooks/use-toast"
-import { bulkUploadImages, bulkUploadZip, createContactSheet } from "@/lib/api"
+import { bulkUploadImages, bulkUploadZip, createContactSheet, uploadImage } from "@/lib/api"
 import { Loader2, Upload, FileArchive, Images } from "lucide-react"
 
 interface FilmDumpActionsProps {
@@ -18,6 +18,7 @@ export function FilmDumpActions({ filmId }: FilmDumpActionsProps) {
   const router = useRouter()
   const { toast } = useToast()
   const [loadingContact, setLoadingContact] = useState(false)
+  const [loadingContactUpload, setLoadingContactUpload] = useState(false)
   const [loadingBulk, setLoadingBulk] = useState(false)
   const [loadingZip, setLoadingZip] = useState(false)
 
@@ -30,6 +31,8 @@ export function FilmDumpActions({ filmId }: FilmDumpActionsProps) {
         return
       }
       toast({ title: "Contact sheet created" })
+      // Redirect to the film view page so the user sees the new contact sheet
+      router.push(`/films/${filmId}`)
       router.refresh()
     } catch (e) {
       toast({ title: "Contact sheet failed", description: String(e), variant: "destructive" })
@@ -80,6 +83,30 @@ export function FilmDumpActions({ filmId }: FilmDumpActionsProps) {
     }
   }
 
+  const handleContactSheetChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    try {
+      setLoadingContactUpload(true)
+      const formData = new FormData()
+      formData.append("file", file)
+      formData.append("type", "contact_sheet")
+      formData.append("film_roll_id", String(filmId))
+      const image = await uploadImage(formData)
+      if (!image || (image as any).error) {
+        throw new Error((image as any)?.error || "Upload failed")
+      }
+      toast({ title: "Contact sheet uploaded" })
+      router.push(`/films/${filmId}`)
+      router.refresh()
+    } catch (e) {
+      toast({ title: "Contact sheet upload failed", description: String(e), variant: "destructive" })
+    } finally {
+      setLoadingContactUpload(false)
+      e.target.value = ""
+    }
+  }
+
   return (
     <Card>
       <CardContent className="space-y-4 pt-6">
@@ -91,6 +118,16 @@ export function FilmDumpActions({ filmId }: FilmDumpActionsProps) {
         </div>
 
         <div className="grid gap-4 md:grid-cols-2">
+          <div className="space-y-2">
+            <Label htmlFor="contact-sheet-file">Upload contact sheet (single image)</Label>
+            <div className="flex items-center gap-3">
+              <Input id="contact-sheet-file" type="file" accept="image/*" onChange={handleContactSheetChange} disabled={loadingContactUpload} />
+              <Button type="button" disabled={loadingContactUpload} variant="outline">
+                {loadingContactUpload ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Upload className="mr-2 h-4 w-4" />}
+                Upload
+              </Button>
+            </div>
+          </div>
           <div className="space-y-2">
             <Label htmlFor="bulk-files">Dump scans (multiple files)</Label>
             <div className="flex items-center gap-3">

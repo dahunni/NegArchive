@@ -73,10 +73,23 @@ def get_film(film_id: int, db: Session = Depends(get_db)):
     f = db.get(FilmRoll, film_id)
     if not f:
         return {"error": "not_found"}
-    images = db.query(ImageAsset).filter(ImageAsset.film_roll_id == f.id).order_by(ImageAsset.id.asc()).all()
+    # Separate scans and contact sheets
+    scans = (
+        db.query(ImageAsset)
+        .filter(ImageAsset.film_roll_id == f.id, ImageAsset.type == ImageType.scan)
+        .order_by(ImageAsset.id.asc())
+        .all()
+    )
+    contact_sheets = (
+        db.query(ImageAsset)
+        .filter(ImageAsset.film_roll_id == f.id, ImageAsset.type == ImageType.contact_sheet)
+        .order_by(ImageAsset.id.asc())
+        .all()
+    )
     return {
         "film": film_to_dict(f),
-        "images": [image_to_dict(i) for i in images],
+        "images": [image_to_dict(i) for i in scans],
+        "contact_sheets": [image_to_dict(i) for i in contact_sheets],
     }
 
 
@@ -130,10 +143,21 @@ def delete_film(film_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/images")
-def list_images(film_id: Optional[int] = None, db: Session = Depends(get_db)):
+def list_images(
+    film_id: Optional[int] = None,
+    type: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
     q = db.query(ImageAsset)
     if film_id:
         q = q.filter(ImageAsset.film_roll_id == film_id)
+    if type:
+        t = type.lower().strip()
+        if t == "scan":
+            q = q.filter(ImageAsset.type == ImageType.scan)
+        elif t in {"contact", "contact_sheet", "contact-sheet"}:
+            q = q.filter(ImageAsset.type == ImageType.contact_sheet)
+        # else: ignore invalid type filter, return all
     items = q.order_by(ImageAsset.id.asc()).all()
     return [image_to_dict(i) for i in items]
 
