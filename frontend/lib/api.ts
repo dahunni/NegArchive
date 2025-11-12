@@ -6,8 +6,9 @@ const INTERNAL_API_BASE =
     ? process.env.API_BASE || process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8010"
     : process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8010"
 
-// Public base should always be host-accessible; never use Docker-internal hostnames here.
-const PUBLIC_API_BASE = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8010"
+// Public base should be same-origin when possible; rely on Next.js rewrites.
+// Default to empty string so generated URLs are relative like "/api/...".
+const PUBLIC_API_BASE = process.env.NEXT_PUBLIC_API_BASE || ""
 
 export interface Film {
   id: number
