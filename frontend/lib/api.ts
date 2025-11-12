@@ -86,7 +86,8 @@ export async function createFilm(data: Partial<Film>): Promise<Film> {
     body: JSON.stringify(data),
   })
   if (!res.ok) throw new Error("Failed to create film")
-  return res.json()
+  const json = await res.json()
+  return (json?.film ?? json) as Film
 }
 
 export async function updateFilm(id: number, data: Partial<Film>): Promise<Film> {
@@ -96,7 +97,8 @@ export async function updateFilm(id: number, data: Partial<Film>): Promise<Film>
     body: JSON.stringify(data),
   })
   if (!res.ok) throw new Error("Failed to update film")
-  return res.json()
+  const json = await res.json()
+  return (json?.film ?? json) as Film
 }
 
 export async function deleteFilm(id: number): Promise<void> {
