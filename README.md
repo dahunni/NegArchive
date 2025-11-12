@@ -184,4 +184,4 @@ curl -X POST http://localhost:8010/api/filmstocks/1/image \
 
 ## License
 
-Apache-2.0 or MIT — choose what you prefer for open-source distribution.
+MIT
