@@ -136,7 +136,7 @@ export async function createContactSheet(
   const params = new URLSearchParams()
   if (options?.columns) params.set("columns", String(options.columns))
   if (options?.thumb_size) params.set("thumb_size", String(options.thumb_size))
-  const res = await fetch(`${API_BASE}/api/films/${filmId}/contact_sheet?${params.toString()}`, {
+  const res = await fetch(`${INTERNAL_API_BASE}/api/films/${filmId}/contact_sheet?${params.toString()}`, {
     method: "POST",
   })
   return res.json()
@@ -150,7 +150,7 @@ export async function bulkUploadImages(
   for (const f of files) {
     formData.append("files", f)
   }
-  const res = await fetch(`${API_BASE}/api/films/${filmId}/images/bulk`, {
+  const res = await fetch(`${INTERNAL_API_BASE}/api/films/${filmId}/images/bulk`, {
     method: "POST",
     body: formData,
   })
@@ -163,7 +163,7 @@ export async function bulkUploadZip(
 ): Promise<{ ok: boolean; images: Image[] } | { error: string }> {
   const formData = new FormData()
   formData.append("file", zipFile)
-  const res = await fetch(`${API_BASE}/api/films/${filmId}/images/bulk_zip`, {
+  const res = await fetch(`${INTERNAL_API_BASE}/api/films/${filmId}/images/bulk_zip`, {
     method: "POST",
     body: formData,
   })
