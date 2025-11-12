@@ -1,5 +1,8 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  // Allow large client request bodies to pass through middleware/rewrites (proxy)
+  // Default is 10MB; set to 1GB for bulk image uploads.
+  middlewareClientMaxBodySize: 1024 * 1024 * 1024,
   typescript: {
     ignoreBuildErrors: true,
   },
