@@ -20,8 +20,6 @@ services:
       DATABASE_URL: postgresql+psycopg2://negarchive:negarchive@db:5432/negarchive
       DEEPFACE_ENABLED: "true"
       FACE_MATCH_THRESHOLD: "0.7"
-    ports:
-      - "8000:8000"
     volumes:
       - .:/app
     command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
@@ -29,18 +27,16 @@ services:
   frontend:
     build:
       context: ./frontend
-      args:
-        NEXT_PUBLIC_API_BASE: http://localhost:8000
     depends_on:
       - web
     environment:
-      # Browser-visible API base; maps to host port 8000
-      NEXT_PUBLIC_API_BASE: http://localhost:8000
+      # Browser-visible API base; use same-origin and proxy via Next.js rewrites
+      NEXT_PUBLIC_API_BASE: ""
       # Server-side (SSR) internal API base inside the Docker network
       API_BASE: http://web:8000
       PORT: 3000
     ports:
-      - "3000:3000"
+      - "8021:3000"
     # No volumes in production; container uses built assets
     # For live dev, prefer running `npm run dev` locally
 

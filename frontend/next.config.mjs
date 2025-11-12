@@ -12,6 +12,17 @@ const nextConfig = {
       { protocol: 'http', hostname: '127.0.0.1', port: '8000', pathname: '/**' },
     ],
   },
+  async rewrites() {
+    // Proxy API requests through the frontend server to the backend service.
+    // This allows running API and frontend on the same public port.
+    const target = process.env.API_BASE || 'http://localhost:8010'
+    return [
+      {
+        source: '/api/:path*',
+        destination: `${target}/api/:path*`,
+      },
+    ]
+  },
 }
 
 export default nextConfig
