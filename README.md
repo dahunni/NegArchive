@@ -4,7 +4,7 @@ FastAPI + Next.js app for archiving film negatives and scans. Includes full CRUD
 
 ## Stack
 
-- Backend: FastAPI, SQLAlchemy, SQLite (local) or Postgres (Docker)
+- Backend: FastAPI (JSON API only), SQLAlchemy, SQLite (local) or Postgres (Docker)
 - Frontend: Next.js, TypeScript, Tailwind/Shadcn UI
 - Image storage: Local `static/uploads` (scans/contact sheets) and `static/catalog/*`
 - Optional AI: DeepFace for face detection and embedding (CPU)
@@ -16,29 +16,29 @@ app/                # FastAPI backend
   main.py           # App, CORS, static, routers
   db.py             # DB session and engine setup
   models.py         # SQLAlchemy models
-  routers/          # HTML and JSON API routers
-    api.py          # JSON API (films, images, cameras, lenses, filmstocks)
-    films.py        # HTML views
-    images.py       # HTML views
-    search.py       # HTML views
+  routers/          # JSON API routers
+    api.py          # Core JSON API (films, images, cameras, lenses, filmstocks)
+    films.py        # Legacy HTML routes (deprecated; Next.js handles UI)
+    images.py       # Legacy HTML routes (deprecated)
+    search.py       # Legacy HTML routes (deprecated)
 frontend/           # Next.js app (client UI)
   app/              # App router pages
   components/       # UI components
   lib/api.ts        # Frontend fetch helpers
 static/             # Public static assets and uploaded files
-templates/          # Jinja templates (server-rendered HTML)
 docker-compose.yml  # Postgres + uvicorn service
 ```
 
+Note: Legacy Jinja templates have been removed. The frontend UI is served solely by the Next.js application.
+
 ## Quick Start (Docker Compose)
 
-This starts Postgres and the backend on port `8000`.
+This starts Postgres and the backend API on port `8000`.
 
 ```
 docker compose up --build
 ```
 
-- Open backend: `http://localhost:8000/`
 - API base: `http://localhost:8000/api`
 - Uploaded files are under `/app/static/` in the container. Mount a volume for persistence if needed.
 
@@ -74,6 +74,11 @@ npm run dev
 - Frontend dev URL: `http://localhost:3000`
 - The frontend reads the backend API base from `NEXT_PUBLIC_API_BASE`.
 - Remote images are allowed from `localhost:8010` via `next.config.mjs`.
+
+### Image Preview and Download
+
+- `GET /api/images/{id}/preview` streams a JPEG preview for TIFFs and other non-web formats. Uses Pillow first, then OpenCV fallback for 16-bit or grayscale TIFFs.
+- `GET /api/images/{id}/download` serves the original file with `Content-Disposition: attachment` for reliable browser downloads.
 
 ## API Reference (JSON)
 
@@ -175,6 +180,7 @@ curl -X POST http://localhost:8010/api/filmstocks/1/image \
 
 - The frontend currently installs with `--legacy-peer-deps` to accommodate packages that have not yet declared compatibility with React 19.
 - CORS is open in development. Tighten allowed origins for production.
+- User-generated uploads (`static/uploads/`) are ignored by git.
 
 ## License
 

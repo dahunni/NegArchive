@@ -1,0 +1,30 @@
+version: "3.9"
+
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: negarchive
+      POSTGRES_PASSWORD: negarchive
+      POSTGRES_DB: negarchive
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  web:
+    build: .
+    depends_on:
+      - db
+    environment:
+      DATABASE_URL: postgresql+psycopg2://negarchive:negarchive@db:5432/negarchive
+      DEEPFACE_ENABLED: "true"
+      FACE_MATCH_THRESHOLD: "0.7"
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/app
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+
+volumes:
+  pgdata:

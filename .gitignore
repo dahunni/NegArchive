@@ -1,0 +1,44 @@
+# OS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+.venv/
+venv/
+.mypy_cache/
+.pytype/
+.pytest_cache/
+.coverage
+dist/
+build/
+*.egg-info/
+.eggs/
+
+# Env files and local configs
+.env
+.env.*
+
+# Databases
+*.sqlite3
+*.db
+negarchive.db
+
+# Logs and caches
+*.log
+.cache/
+
+# FastAPI static uploads (user-generated)
+static/uploads/
+
+# Node / Next.js
+frontend/node_modules/
+frontend/.next/
+frontend/.turbo/
+frontend/.vercel/
+frontend/out/
+frontend/.env.local
+frontend/.env*
