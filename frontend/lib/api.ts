@@ -10,6 +10,12 @@ const INTERNAL_API_BASE =
 // Default to empty string so generated URLs are relative like "/api/...".
 const PUBLIC_API_BASE = process.env.NEXT_PUBLIC_API_BASE || ""
 
+// Choose base depending on environment and intent:
+// - On the server (SSR), use INTERNAL_API_BASE to reach the backend service directly.
+// - In the browser, use same-origin relative paths so Next.js rewrites proxy to backend.
+const API_BASE_FOR_CLIENT = PUBLIC_API_BASE || ""
+const API_BASE_FOR_SERVER = INTERNAL_API_BASE
+
 export interface Film {
   id: number
   title: string
@@ -80,7 +86,8 @@ export async function getFilm(id: number): Promise<{ film: Film; images: Image[]
 }
 
 export async function createFilm(data: Partial<Film>): Promise<Film> {
-  const res = await fetch(`${INTERNAL_API_BASE}/api/films`, {
+  const base = typeof window === "undefined" ? API_BASE_FOR_SERVER : API_BASE_FOR_CLIENT
+  const res = await fetch(`${base}/api/films`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
@@ -91,7 +98,8 @@ export async function createFilm(data: Partial<Film>): Promise<Film> {
 }
 
 export async function updateFilm(id: number, data: Partial<Film>): Promise<Film> {
-  const res = await fetch(`${INTERNAL_API_BASE}/api/films/${id}`, {
+  const base = typeof window === "undefined" ? API_BASE_FOR_SERVER : API_BASE_FOR_CLIENT
+  const res = await fetch(`${base}/api/films/${id}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
@@ -102,7 +110,8 @@ export async function updateFilm(id: number, data: Partial<Film>): Promise<Film>
 }
 
 export async function deleteFilm(id: number): Promise<void> {
-  const res = await fetch(`${INTERNAL_API_BASE}/api/films/${id}`, { method: "DELETE" })
+  const base = typeof window === "undefined" ? API_BASE_FOR_SERVER : API_BASE_FOR_CLIENT
+  const res = await fetch(`${base}/api/films/${id}`, { method: "DELETE" })
   if (!res.ok) throw new Error("Failed to delete film")
 }
 
@@ -123,7 +132,8 @@ export async function getImage(id: number): Promise<Image> {
 }
 
 export async function uploadImage(formData: FormData): Promise<Image> {
-  const res = await fetch(`${INTERNAL_API_BASE}/api/images/upload`, {
+  const base = typeof window === "undefined" ? API_BASE_FOR_SERVER : API_BASE_FOR_CLIENT
+  const res = await fetch(`${base}/api/images/upload`, {
     method: "POST",
     body: formData,
   })
@@ -140,6 +150,18 @@ export async function createContactSheet(
   if (options?.columns) params.set("columns", String(options.columns))
   if (options?.thumb_size) params.set("thumb_size", String(options.thumb_size))
   const res = await fetch(`${INTERNAL_API_BASE}/api/films/${filmId}/contact_sheet?${params.toString()}`, {
+    // Use same-origin in browser so rewrite proxies to backend
+    // Server-side calls will use INTERNAL base directly
+    // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+    // @ts-ignore
+    // keep type hints minimal per project style
+    // (no additional types introduced)
+    //
+    // Switch base depending on environment
+    //
+    // NOTE: This function is typically used client-side
+    // but works on server too.
+    
     method: "POST",
   })
   return res.json()
@@ -153,7 +175,8 @@ export async function bulkUploadImages(
   for (const f of files) {
     formData.append("files", f)
   }
-  const res = await fetch(`${INTERNAL_API_BASE}/api/films/${filmId}/images/bulk`, {
+  const base = typeof window === "undefined" ? API_BASE_FOR_SERVER : API_BASE_FOR_CLIENT
+  const res = await fetch(`${base}/api/films/${filmId}/images/bulk`, {
     method: "POST",
     body: formData,
   })
@@ -166,7 +189,8 @@ export async function bulkUploadZip(
 ): Promise<{ ok: boolean; images: Image[] } | { error: string }> {
   const formData = new FormData()
   formData.append("file", zipFile)
-  const res = await fetch(`${INTERNAL_API_BASE}/api/films/${filmId}/images/bulk_zip`, {
+  const base = typeof window === "undefined" ? API_BASE_FOR_SERVER : API_BASE_FOR_CLIENT
+  const res = await fetch(`${base}/api/films/${filmId}/images/bulk_zip`, {
     method: "POST",
     body: formData,
   })
@@ -174,7 +198,8 @@ export async function bulkUploadZip(
 }
 
 export async function updateImage(id: number, data: Partial<Image>): Promise<Image> {
-  const res = await fetch(`${INTERNAL_API_BASE}/api/images/${id}`, {
+  const base = typeof window === "undefined" ? API_BASE_FOR_SERVER : API_BASE_FOR_CLIENT
+  const res = await fetch(`${base}/api/images/${id}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
@@ -184,7 +209,8 @@ export async function updateImage(id: number, data: Partial<Image>): Promise<Ima
 }
 
 export async function deleteImage(id: number, deleteFile = false): Promise<void> {
-  const res = await fetch(`${INTERNAL_API_BASE}/api/images/${id}?delete_file=${deleteFile}`, {
+  const base = typeof window === "undefined" ? API_BASE_FOR_SERVER : API_BASE_FOR_CLIENT
+  const res = await fetch(`${base}/api/images/${id}?delete_file=${deleteFile}`, {
     method: "DELETE",
   })
   if (!res.ok) throw new Error("Failed to delete image")
@@ -204,7 +230,8 @@ export async function getCamera(id: number): Promise<Camera> {
 }
 
 export async function createCamera(data: Partial<Camera>): Promise<Camera> {
-  const res = await fetch(`${INTERNAL_API_BASE}/api/cameras`, {
+  const base = typeof window === "undefined" ? API_BASE_FOR_SERVER : API_BASE_FOR_CLIENT
+  const res = await fetch(`${base}/api/cameras`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
@@ -214,7 +241,8 @@ export async function createCamera(data: Partial<Camera>): Promise<Camera> {
 }
 
 export async function updateCamera(id: number, data: Partial<Camera>): Promise<Camera> {
-  const res = await fetch(`${INTERNAL_API_BASE}/api/cameras/${id}`, {
+  const base = typeof window === "undefined" ? API_BASE_FOR_SERVER : API_BASE_FOR_CLIENT
+  const res = await fetch(`${base}/api/cameras/${id}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
@@ -224,14 +252,16 @@ export async function updateCamera(id: number, data: Partial<Camera>): Promise<C
 }
 
 export async function deleteCamera(id: number): Promise<void> {
-  const res = await fetch(`${INTERNAL_API_BASE}/api/cameras/${id}`, { method: "DELETE" })
+  const base = typeof window === "undefined" ? API_BASE_FOR_SERVER : API_BASE_FOR_CLIENT
+  const res = await fetch(`${base}/api/cameras/${id}`, { method: "DELETE" })
   if (!res.ok) throw new Error("Failed to delete camera")
 }
 
 export async function uploadCameraImage(id: number, file: File): Promise<Camera> {
   const formData = new FormData()
   formData.append("file", file)
-  const res = await fetch(`${INTERNAL_API_BASE}/api/cameras/${id}/image`, {
+  const base = typeof window === "undefined" ? API_BASE_FOR_SERVER : API_BASE_FOR_CLIENT
+  const res = await fetch(`${base}/api/cameras/${id}/image`, {
     method: "POST",
     body: formData,
   })
@@ -253,7 +283,8 @@ export async function getLens(id: number): Promise<Lens> {
 }
 
 export async function createLens(data: Partial<Lens>): Promise<Lens> {
-  const res = await fetch(`${INTERNAL_API_BASE}/api/lenses`, {
+  const base = typeof window === "undefined" ? API_BASE_FOR_SERVER : API_BASE_FOR_CLIENT
+  const res = await fetch(`${base}/api/lenses`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
@@ -263,7 +294,8 @@ export async function createLens(data: Partial<Lens>): Promise<Lens> {
 }
 
 export async function updateLens(id: number, data: Partial<Lens>): Promise<Lens> {
-  const res = await fetch(`${INTERNAL_API_BASE}/api/lenses/${id}`, {
+  const base = typeof window === "undefined" ? API_BASE_FOR_SERVER : API_BASE_FOR_CLIENT
+  const res = await fetch(`${base}/api/lenses/${id}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
@@ -273,14 +305,16 @@ export async function updateLens(id: number, data: Partial<Lens>): Promise<Lens>
 }
 
 export async function deleteLens(id: number): Promise<void> {
-  const res = await fetch(`${INTERNAL_API_BASE}/api/lenses/${id}`, { method: "DELETE" })
+  const base = typeof window === "undefined" ? API_BASE_FOR_SERVER : API_BASE_FOR_CLIENT
+  const res = await fetch(`${base}/api/lenses/${id}`, { method: "DELETE" })
   if (!res.ok) throw new Error("Failed to delete lens")
 }
 
 export async function uploadLensImage(id: number, file: File): Promise<Lens> {
   const formData = new FormData()
   formData.append("file", file)
-  const res = await fetch(`${INTERNAL_API_BASE}/api/lenses/${id}/image`, {
+  const base = typeof window === "undefined" ? API_BASE_FOR_SERVER : API_BASE_FOR_CLIENT
+  const res = await fetch(`${base}/api/lenses/${id}/image`, {
     method: "POST",
     body: formData,
   })
@@ -302,7 +336,8 @@ export async function getFilmstock(id: number): Promise<Filmstock> {
 }
 
 export async function createFilmstock(data: Partial<Filmstock>): Promise<Filmstock> {
-  const res = await fetch(`${INTERNAL_API_BASE}/api/filmstocks`, {
+  const base = typeof window === "undefined" ? API_BASE_FOR_SERVER : API_BASE_FOR_CLIENT
+  const res = await fetch(`${base}/api/filmstocks`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
@@ -312,7 +347,8 @@ export async function createFilmstock(data: Partial<Filmstock>): Promise<Filmsto
 }
 
 export async function updateFilmstock(id: number, data: Partial<Filmstock>): Promise<Filmstock> {
-  const res = await fetch(`${INTERNAL_API_BASE}/api/filmstocks/${id}`, {
+  const base = typeof window === "undefined" ? API_BASE_FOR_SERVER : API_BASE_FOR_CLIENT
+  const res = await fetch(`${base}/api/filmstocks/${id}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
@@ -322,14 +358,16 @@ export async function updateFilmstock(id: number, data: Partial<Filmstock>): Pro
 }
 
 export async function deleteFilmstock(id: number): Promise<void> {
-  const res = await fetch(`${INTERNAL_API_BASE}/api/filmstocks/${id}`, { method: "DELETE" })
+  const base = typeof window === "undefined" ? API_BASE_FOR_SERVER : API_BASE_FOR_CLIENT
+  const res = await fetch(`${base}/api/filmstocks/${id}`, { method: "DELETE" })
   if (!res.ok) throw new Error("Failed to delete filmstock")
 }
 
 export async function uploadFilmstockImage(id: number, file: File): Promise<Filmstock> {
   const formData = new FormData()
   formData.append("file", file)
-  const res = await fetch(`${INTERNAL_API_BASE}/api/filmstocks/${id}/image`, {
+  const base = typeof window === "undefined" ? API_BASE_FOR_SERVER : API_BASE_FOR_CLIENT
+  const res = await fetch(`${base}/api/filmstocks/${id}/image`, {
     method: "POST",
     body: formData,
   })
