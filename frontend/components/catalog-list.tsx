@@ -81,7 +81,7 @@ export function CatalogList({ items, type }: CatalogListProps) {
               {item.notes && <p className="mt-2 line-clamp-2 text-sm text-muted-foreground">{item.notes}</p>}
               <div className="mt-4 flex gap-2">
                 <Button variant="outline" size="sm" asChild className="flex-1 bg-transparent">
-                  <Link href={`/${type}s/${item.id}/edit`}>
+                  <Link href={`/${type === "lens" ? "lenses" : "cameras"}/${item.id}/edit`}>
                     <Pencil className="mr-1 h-3 w-3" />
                     Edit
                   </Link>

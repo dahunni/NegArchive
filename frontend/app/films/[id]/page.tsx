@@ -15,6 +15,7 @@ export default async function FilmDetailPage({
   const { id } = await params
   let film: Awaited<ReturnType<typeof getFilm>>["film"]
   let images: Awaited<ReturnType<typeof getFilm>>["images"]
+  let contactSheets: Awaited<ReturnType<typeof getFilm>>["contact_sheets"]
   try {
     const data = await getFilm(Number(id))
     // Handle backend not_found shape gracefully
@@ -23,6 +24,7 @@ export default async function FilmDetailPage({
     }
     film = data.film
     images = data.images
+    contactSheets = (data as any).contact_sheets || []
   } catch (e) {
     return (
       <div className="min-h-screen bg-background">
@@ -145,6 +147,13 @@ export default async function FilmDetailPage({
           <h2 className="mb-4 text-2xl font-semibold">Actions</h2>
           <FilmDumpActions filmId={film.id} />
         </div>
+
+        {contactSheets && contactSheets.length > 0 && (
+          <div className="mb-10">
+            <h2 className="mb-4 text-2xl font-semibold">Contact Sheets ({contactSheets.length})</h2>
+            <ImageGrid images={contactSheets} filmStartDate={film.start_date} filmEndDate={film.end_date} />
+          </div>
+        )}
 
         <div>
           <h2 className="mb-4 text-2xl font-semibold">Images ({images.length})</h2>

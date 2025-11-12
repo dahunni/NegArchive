@@ -63,7 +63,7 @@ export async function getFilms(): Promise<Film[]> {
   return res.json()
 }
 
-export async function getFilm(id: number): Promise<{ film: Film; images: Image[] }> {
+export async function getFilm(id: number): Promise<{ film: Film; images: Image[]; contact_sheets?: Image[] }> {
   const res = await fetch(`${API_BASE}/api/films/${id}`, { cache: "no-store" })
   if (!res.ok) throw new Error("Failed to fetch film")
   return res.json()
@@ -96,7 +96,9 @@ export async function deleteFilm(id: number): Promise<void> {
 
 // Images API
 export async function getImages(filmId?: number): Promise<Image[]> {
-  const url = filmId ? `${API_BASE}/api/images?film_id=${filmId}` : `${API_BASE}/api/images`
+  const url = filmId
+    ? `${API_BASE}/api/images?film_id=${filmId}&type=scan`
+    : `${API_BASE}/api/images?type=scan`
   const res = await fetch(url, { cache: "no-store" })
   if (!res.ok) throw new Error("Failed to fetch images")
   return res.json()
