@@ -15,7 +15,12 @@ const nextConfig = {
   async rewrites() {
     // Proxy API requests through the frontend server to the backend service.
     // This allows running API and frontend on the same public port.
-    const target = process.env.API_BASE || 'http://localhost:8010'
+    // Prefer Docker service name if available; otherwise fall back to any
+    // provided public base (local dev), and finally to the Docker default.
+    const target =
+      process.env.API_BASE
+      || process.env.NEXT_PUBLIC_API_BASE
+      || 'http://web:8000'
     return [
       {
         source: '/api/:path*',
