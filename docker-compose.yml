@@ -21,7 +21,9 @@ services:
       DEEPFACE_ENABLED: "true"
       FACE_MATCH_THRESHOLD: "0.7"
     volumes:
-      - .:/app
+      # Persist only user-generated images, not the entire codebase
+      - ./static/uploads:/app/static/uploads
+      - ./static/catalog:/app/static/catalog
     command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
 
   frontend:
