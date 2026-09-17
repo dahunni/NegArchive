@@ -127,38 +127,69 @@ and "not found" was an HTTP 200. All of that is fixed here.
 - [x] The filmstock `kind` select lists the enum; film stocks gained `manufacturer` and
       `format`, rolls gained `format` (`35mm`, `120`, `4x5`, `8x10`, `other`). **R#21**
 
-## M3 — Offline-first and easy local use
+## M3 — Offline-first and easy local use *(done)*
 
 - [x] Remove `@vercel/analytics` and the Google font loaders; use a system font stack. **R#27, R#28**
       *(done in M1: they were in the way of the layout rework)*
-- [ ] Pin the remaining `"latest"` dependencies (4 of 5 went with the unused components in M1);
-      delete `pnpm-lock.yaml`; rename the package; turn `ignoreBuildErrors` off. **R#29, R#30**
-- [ ] One Compose stack for everyone: Postgres + backend + frontend, with a single bind-mounted
-      `data/` directory holding the Postgres data dir and `uploads/`, a Postgres healthcheck, and
-      `.env` for the password. Document `DATA_DIR`. One command: `docker compose up`.
-- [ ] `make dev` / `uv run` scripts so local dev is `uv sync && make dev` (Python 3.11 pinned via
-      `.python-version`). **R#31**
-- [x] Disk thumbnail cache for `/preview`, keyed by image id + width + source mtime under
-      `static/cache/`. *(pulled forward into M1: the frame grid needs it. It moves to `data/cache/`
-      with the single-`DATA_DIR` compose stack above; async file IO is still open.)* **R#19**
-- [ ] Pagination on `/api/images` and server-side search (`q`, `film_id`, `camera_id`, date range). **R#20**
-- [ ] **Import by reference ("link mode")**: register a folder tree (roll = subfolder) without
-      copying files; NegArchive stores the path and hash. Lets NegPy library roots, an Immich
-      external library and NegArchive share one copy of every scan. Store `original_filename`,
-      `source_path`, `content_hash` and `storage_mode` (`managed` | `linked`) per image.
-- [ ] **Watch folder**: poll a scanner output directory; new subfolder → new roll draft; new file
-      → new frame. (Same idea as NegPy's Hot Folder, but headless.)
-- [ ] **Backup / restore**: a `backup` script that runs `pg_dump` and zips it with `uploads/`;
-      `GET /api/export` → zip of a JSON dump of all tables plus files (format-independent, for
-      longevity); `POST /api/import`. Also a CSV dump of rolls for spreadsheets. Document the restore.
-- [ ] PWA manifest + service worker so the UI installs on phone/tablet and the shell loads with the
-      backend unreachable (read-only cached lists). Scope: the "at the shelf" lookup, not a photo
-      app; mobile photo backup and browsing are Immich's job.
-- [ ] LAN discoverability: print the LAN URL and a QR code at startup and in the UI footer.
-- [ ] Optional single shared password (env var) for when the LAN is not trusted. **R#26**
-- [ ] Tests: pytest against Postgres (testcontainers or a Compose service; the probe script in
-      the review is a starting point) and GitHub Actions with a Postgres service container.
-      *(The Playwright smoke test landed in M1: `frontend/e2e/smoke.mjs`, `npm run e2e`.)* **R#33**
+- [x] Pin the remaining `"latest"` dependencies (4 of 5 went with the unused components in M1);
+      delete `pnpm-lock.yaml`; rename the package to `negarchive-frontend`; turn
+      `ignoreBuildErrors` off. `middlewareClientMaxBodySize` turned out to be set at the top
+      level, where Next ignores it — bulk uploads were still capped at the 10 MB default. It is
+      now `experimental.proxyClientMaxBodySize`, which is the Next 16 spelling. **R#29, R#30**
+- [x] One Compose stack for everyone: Postgres + backend + frontend, a single bind-mounted
+      `./data/` holding `postgres/`, `uploads/`, `catalog/`, `cache/` and `backups/`, healthchecks
+      on `db` and `web`, the frontend waiting for `web` to be *healthy*, and `.env.example` with
+      every variable. No named volumes: a volume you cannot see is one you forget to back up.
+      One command: `docker compose up`.
+- [x] `make up` / `make dev` / `make test` / `make backup` (plus `lint`, `typecheck`, `build`,
+      `e2e`, `restore`); `make test` starts and removes its own throwaway Postgres. Python 3.11
+      pinned via `.python-version`. **R#31**
+- [x] Disk thumbnail cache for `/preview`, keyed by image id + width + source mtime. *(pulled
+      forward into M1; M3 moved it under `DATA_DIR` with everything else. Async file IO is still
+      open.)* **R#19**
+- [x] Pagination and server-side search on `/api/films` (`q`, `camera_id`, `film_stock_id`,
+      `from`, `to`, `limit`, `offset`) and `/api/images` (`film_id`, `type`, `q`, `unassigned`,
+      `storage_mode`, `limit`, `offset`). Without `limit` both still answer with a bare array, so
+      nothing written against M0/M1 breaks; with it they answer `{items, total, limit, offset,
+      has_more}`. The roll list and the frames page render their first page on the server from the
+      query string and "Load more" the rest. **R#20**
+- [x] **Import by reference ("link mode")**: `POST /api/library/roots` registers a folder
+      (validated against `LIBRARY_ROOTS_ALLOW`, empty by default so the feature is off), and a
+      scan turns each subfolder into a roll draft and each file into a frame with
+      `storage_mode='linked'`, `source_path`, `content_hash`, `original_filename` and a parsed
+      frame number. Rescans are idempotent by path, a moved file is re-homed by hash, previews and
+      downloads work, and nothing linked is ever written to or deleted.
+- [x] **Watch folder**: an asyncio poller over the roots marked `watch`, every
+      `WATCH_INTERVAL_SECONDS` (default 30, off when unset), with a toggle and a last-scan readout
+      in Settings. Polling rather than inotify, because the interesting case is an SMB share.
+- [x] **Backup / restore**: `scripts/backup.sh` (`pg_dump` + the managed files + a MANIFEST, into
+      `data/backups/`, pruned to `BACKUP_KEEP`) and `scripts/restore.sh`; `GET /api/export` streams
+      a ZIP of `export.json` (every table as plain JSON) plus the managed files; `POST /api/import`
+      merges one back with a dry-run flag, id remapping and skip-by-content-hash;
+      `GET /api/export/rolls.csv`. Restore is documented step by step in the README.
+- [x] PWA manifest, generated icons and a hand-written service worker (no dependency): the shell,
+      the roll list and the rolls you have visited are cached and readable offline, with an
+      "offline" banner. Nothing that changes data is cached or replayed. Scope: the "at the shelf"
+      lookup, not a photo app; mobile photo backup and browsing are Immich's job.
+- [x] LAN discoverability: `GET /api/system/info` reports the LAN addresses and the UI URL, the
+      backend logs them at startup, and the footer shows the URL with a QR code rendered
+      server-side as SVG (`segno`). `NEGARCHIVE_PUBLIC_HOST` overrides the guess in Docker, where
+      the container only sees its bridge address.
+- [x] Optional single shared password, `NEGARCHIVE_PASSWORD`. Off by default; when set, everything
+      but `/api/health`, `/api/system/info` and the login endpoint needs a token — `/static`
+      included. The token is derived from the password, so a restart is not a logout. **R#26**
+- [x] Tests: `tests/test_m3_*.py` against Postgres (86 new, 128 in total), and
+      `.github/workflows/ci.yml` with a Postgres service container — ruff, an Alembic
+      up/down/up round trip, pytest, eslint, `tsc`, `next build` and the Playwright smoke test,
+      which now covers the PWA, the LAN footer, the settings page and pagination. **R#33**
+
+Left for later, deliberately:
+
+- Alembic autogenerate is **not** checked in CI (the roadmap asks for it under M2, which owns the
+  baseline); CI runs the migrations up, down and up again instead.
+- The service worker has no background sync queue, and should not have one: an edit that silently
+  lands hours later is a good way to lose the link between paper and record.
+- `GET /api/images/{id}/preview` still does blocking file IO on the event loop (**R#19**).
 
 ## M4 — Paper ↔ virtual (physical archive features)
 
