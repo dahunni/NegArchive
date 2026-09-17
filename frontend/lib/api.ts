@@ -24,6 +24,12 @@ export function backendUrl(path: string): string {
   return `${PUBLIC_API_BASE}${normalized}`
 }
 
+/**
+ * What an upload may be, matching the backend's allowlist (M2, R#18). Anything else
+ * is refused with a 415, so the file picker does not offer it in the first place.
+ */
+export const ACCEPTED_IMAGE_TYPES = ".jpg,.jpeg,.png,.tif,.tiff,.webp,.dng"
+
 /** Catalog image URL for a camera, lens or filmstock; null when it has no image. */
 export function getCatalogImageUrl(item: {
   url?: string | null
@@ -36,9 +42,16 @@ export function getCatalogImageUrl(item: {
 export interface Film {
   id: number
   title: string
+  /** M2: gear is referenced by id (R#14); the names below mirror the catalog entry. */
+  camera_id: number | null
+  lens_id: number | null
+  film_stock_id: number | null
+  /** The catalog entry's current name. Write `camera_id`; this follows it. */
   camera: string | null
   lens: string | null
   film_type: string | null
+  /** One of `35mm`, `120`, `4x5`, `8x10`, `other`. */
+  format: string | null
   notes: string | null
   building: string | null
   folder: string | null
@@ -60,6 +73,10 @@ export interface Image {
   type: "scan" | "contact_sheet"
   path: string
   url: string
+  /** The name the scanner gave the file, kept by every upload path (M2, R#7). */
+  original_filename: string | null
+  /** `managed`: NegArchive owns the file and deletes it with the record. */
+  storage_mode: "managed" | "linked"
   frame_number: number | null
   notes: string | null
   capture_date: string | null
@@ -87,6 +104,9 @@ export interface Lens {
 export interface Filmstock {
   id: number
   name: string
+  manufacturer: string | null
+  /** One of `35mm`, `120`, `4x5`, `8x10`, `other`. */
+  format: string | null
   iso: number
   kind: string
   expired: boolean
@@ -97,22 +117,30 @@ export interface Filmstock {
 
 /**
  * A 4xx from the API with its structured body:
- * `{"error": {"code": "duplicate_name", "message": "…"}}`.
- * Forms show `message` next to the field instead of "Failed to save".
+ * `{"error": {"code": "duplicate_name", "message": "…", "field": "name"}}`.
+ * Forms show `message` next to the field the API named instead of "Failed to save".
  */
 export class ApiError extends Error {
   readonly code: string
   readonly status: number
+  /** The input this failure belongs to, as the API reported it (M2). */
+  readonly field: string | null
 
-  constructor(code: string, message: string, status: number) {
+  constructor(code: string, message: string, status: number, field: string | null = null) {
     super(message)
     this.name = "ApiError"
     this.code = code
     this.status = status
+    this.field = field
   }
 }
 
-/** Which form field a given error code belongs to, when it belongs to one. */
+/**
+ * Which form field an error code belongs to.
+ *
+ * M2 sends `field` in the body, which is what `fieldFor` prefers; this map stays as
+ * the fallback for codes an older backend sends without one.
+ */
 export const ERROR_FIELDS: Record<string, string> = {
   invalid_title: "title",
   invalid_name: "name",
@@ -122,7 +150,17 @@ export const ERROR_FIELDS: Record<string, string> = {
   invalid_kind: "kind",
   invalid_number: "iso",
   invalid_type: "type",
+  invalid_choice: "format",
   unknown_roll: "film_roll_id",
+  unknown_camera: "camera_id",
+  unknown_lens: "lens_id",
+  unknown_film_stock: "film_stock_id",
+}
+
+/** The form field to attach an error to, or null when it belongs to no single input. */
+export function fieldFor(error: unknown): string | null {
+  if (!(error instanceof ApiError)) return null
+  return error.field ?? ERROR_FIELDS[error.code] ?? null
 }
 
 /** The message to show the user for any thrown error. */
@@ -137,26 +175,33 @@ async function assertOk(res: Response, fallback: string): Promise<void> {
   if (res.ok) return
   let code = "request_failed"
   let message = fallback
+  let field: string | null = null
   try {
     const body = await res.json()
     if (body?.error && typeof body.error === "object") {
       code = body.error.code ?? code
       message = body.error.message ?? message
+      field = body.error.field ?? null
     } else if (typeof body?.error === "string") {
       code = body.error
     }
   } catch {
     // no JSON body; keep the fallback message
   }
-  throw new ApiError(code, message, res.status)
+  throw new ApiError(code, message, res.status, field)
 }
 
-/** Unwrap `{ok, <key>}` and surface a legacy `{"error": "not_found"}` as an ApiError. */
+/** Unwrap `{ok, <key>}`. M2 answers a failure with a 4xx, so `assertOk` sees it first. */
 function unwrap<T>(json: any, key: string, fallback: string): T {
   if (json && typeof json.error === "string") {
     throw new ApiError(json.error, fallback, 404)
   }
   return (json?.[key] ?? json) as T
+}
+
+/** `?keep_files=true` when the user asked to leave the files on disk (M2, R#9). */
+function keepFilesQuery(keepFiles: boolean): string {
+  return keepFiles ? "?keep_files=true" : ""
 }
 
 // Films API
@@ -168,11 +213,9 @@ export async function getFilms(): Promise<Film[]> {
 
 export async function getFilm(id: number): Promise<{ film: Film; images: Image[]; contact_sheets: Image[] }> {
   const res = await fetch(`${apiBase()}/api/films/${id}`, { cache: "no-store" })
+  // M2: a missing roll is a real 404 with a structured body (R#17).
   await assertOk(res, "Could not load the roll.")
   const json = await res.json()
-  // The API still answers "not found" with HTTP 200 (R#17 is scheduled for M2), so
-  // the shape is what decides here.
-  if (!json?.film) throw new ApiError("not_found", "This roll does not exist.", 404)
   return { film: json.film, images: json.images ?? [], contact_sheets: json.contact_sheets ?? [] }
 }
 
@@ -198,8 +241,14 @@ export async function updateFilm(id: number, data: Partial<Film>): Promise<Film>
   return unwrap<Film>(json, "film", "Roll not found.")
 }
 
-export async function deleteFilm(id: number): Promise<void> {
-  const res = await fetch(`${apiBase()}/api/films/${id}`, { method: "DELETE" })
+/**
+ * Delete a roll and its frame records. The scan files go with them unless
+ * `keepFiles` is set — the "keep files on disk" checkbox in the delete dialog (R#9).
+ */
+export async function deleteFilm(id: number, keepFiles = false): Promise<void> {
+  const res = await fetch(`${apiBase()}/api/films/${id}${keepFilesQuery(keepFiles)}`, {
+    method: "DELETE",
+  })
   await assertOk(res, "Could not delete the roll.")
 }
 
@@ -216,9 +265,7 @@ export async function getImages(filmId?: number): Promise<Image[]> {
 export async function getImage(id: number): Promise<Image> {
   const res = await fetch(`${apiBase()}/api/images/${id}`, { cache: "no-store" })
   await assertOk(res, "Could not load the frame.")
-  const json = await res.json()
-  if (json?.error || !json?.id) throw new ApiError("not_found", "This frame does not exist.", 404)
-  return json as Image
+  return (await res.json()) as Image
 }
 
 export async function uploadImage(formData: FormData): Promise<Image> {
@@ -258,8 +305,9 @@ export async function updateImage(id: number, data: Partial<Image>): Promise<Ima
   return unwrap<Image>(json, "image", "Frame not found.")
 }
 
-export async function deleteImage(id: number, deleteFile = false): Promise<void> {
-  const res = await fetch(`${apiBase()}/api/images/${id}?delete_file=${deleteFile}`, {
+/** Delete a frame; its file goes too unless `keepFiles` is set (M2, R#9). */
+export async function deleteImage(id: number, keepFiles = false): Promise<void> {
+  const res = await fetch(`${apiBase()}/api/images/${id}${keepFilesQuery(keepFiles)}`, {
     method: "DELETE",
   })
   await assertOk(res, "Could not delete the frame.")
@@ -300,8 +348,14 @@ export async function updateCamera(id: number, data: Partial<Camera>): Promise<C
   return unwrap<Camera>(json, "camera", "Camera not found.")
 }
 
-export async function deleteCamera(id: number): Promise<void> {
-  const res = await fetch(`${apiBase()}/api/cameras/${id}`, { method: "DELETE" })
+/**
+ * Delete a camera. The API answers 409 `gear_in_use` while rolls still refer to it
+ * (R#14); pass `force` to delete it anyway — those rolls keep the name as text.
+ */
+export async function deleteCamera(id: number, force = false): Promise<void> {
+  const res = await fetch(`${apiBase()}/api/cameras/${id}${force ? "?force=true" : ""}`, {
+    method: "DELETE",
+  })
   await assertOk(res, "Could not delete the camera.")
 }
 
@@ -352,8 +406,11 @@ export async function updateLens(id: number, data: Partial<Lens>): Promise<Lens>
   return unwrap<Lens>(json, "lens", "Lens not found.")
 }
 
-export async function deleteLens(id: number): Promise<void> {
-  const res = await fetch(`${apiBase()}/api/lenses/${id}`, { method: "DELETE" })
+/** Delete a lens; 409 `gear_in_use` unless `force` (see {@link deleteCamera}). */
+export async function deleteLens(id: number, force = false): Promise<void> {
+  const res = await fetch(`${apiBase()}/api/lenses/${id}${force ? "?force=true" : ""}`, {
+    method: "DELETE",
+  })
   await assertOk(res, "Could not delete the lens.")
 }
 
@@ -404,8 +461,11 @@ export async function updateFilmstock(id: number, data: Partial<Filmstock>): Pro
   return unwrap<Filmstock>(json, "filmstock", "Filmstock not found.")
 }
 
-export async function deleteFilmstock(id: number): Promise<void> {
-  const res = await fetch(`${apiBase()}/api/filmstocks/${id}`, { method: "DELETE" })
+/** Delete a film stock; 409 `gear_in_use` unless `force` (see {@link deleteCamera}). */
+export async function deleteFilmstock(id: number, force = false): Promise<void> {
+  const res = await fetch(`${apiBase()}/api/filmstocks/${id}${force ? "?force=true" : ""}`, {
+    method: "DELETE",
+  })
   await assertOk(res, "Could not delete the film stock.")
 }
 
@@ -439,11 +499,11 @@ export async function bulkUpdateImages(ids: number[], patch: BulkImagePatch): Pr
   return (json?.images ?? []) as Image[]
 }
 
-export async function bulkDeleteImages(ids: number[], deleteFile = false): Promise<number> {
+export async function bulkDeleteImages(ids: number[], keepFiles = false): Promise<number> {
   const res = await fetch(`${apiBase()}/api/images/bulk_delete`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ ids, delete_file: deleteFile }),
+    body: JSON.stringify({ ids, keep_files: keepFiles }),
   })
   await assertOk(res, "Could not delete the selected frames.")
   const json = await res.json()

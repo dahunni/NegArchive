@@ -3,7 +3,7 @@
 import { useCallback, useRef, useState } from "react"
 import { CheckCircle2, FileArchive, ImageIcon, Upload, XCircle } from "lucide-react"
 
-import { type Image as Frame, errorMessage } from "@/lib/api"
+import { ACCEPTED_IMAGE_TYPES, type Image as Frame, errorMessage } from "@/lib/api"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { Progress } from "@/components/ui/progress"
@@ -27,7 +27,8 @@ export function UploadZone({
   upload,
   onUploaded,
   hint = "Drop scans or a ZIP here",
-  accept = "image/*,.zip,.tif,.tiff",
+  // The backend's allowlist plus ZIP (M2, R#18): offering more only earns a 415.
+  accept = `${ACCEPTED_IMAGE_TYPES},.zip`,
   className,
 }: {
   upload: (file: File, onProgress: (fraction: number) => void) => Promise<{ images: Frame[] }>

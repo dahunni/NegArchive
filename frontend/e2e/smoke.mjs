@@ -210,20 +210,47 @@ async function main() {
     `${await page.getByTestId("frame-cell").count()} cells`,
   )
 
-  // gear was remembered for next time
-  const remembered = await page.evaluate(() => window.localStorage.getItem("negarchive.lastGear"))
-  check("the wizard remembers the last gear", (remembered || "").includes("Nikon F5"), remembered ?? "null")
+  // M2 numbers the frames from their filenames (E2E_001.jpg -> 1), so the grid
+  // arrives already in frame order instead of showing "unnumbered".
+  check(
+    "the frame numbers came from the filenames",
+    (await page.getByTestId("frame-number-input").evaluateAll((inputs) =>
+      inputs.map((input) => input.value).join(","),
+    )) === "1,2",
+  )
+  check(
+    "the original filename is in the viewer's panel",
+    await page
+      .getByTestId("frame-cell")
+      .first()
+      .click()
+      .then(() => page.getByTestId("viewer-original-filename").textContent())
+      .then((text) => (text || "").startsWith("E2E_00")),
+  )
+  await page.keyboard.press("Escape")
+
+  // gear was remembered for next time — as catalog ids since M2 (R#14)
+  const remembered = await page.evaluate(() =>
+    window.localStorage.getItem("negarchive.lastGear.v2"),
+  )
+  check(
+    "the wizard remembers the last gear",
+    /"camera_id":"\d+"/.test(remembered || ""),
+    remembered ?? "null",
+  )
 
   // ---------------------------------------------------------------- inline edit
+  // The grid is sorted by frame number, so an edited frame moves; look it up by
+  // value rather than by position.
+  const numbers = () =>
+    page.getByTestId("frame-number-input").evaluateAll((inputs) => inputs.map((i) => i.value))
   const firstNumber = page.getByTestId("frame-number-input").first()
   await firstNumber.fill("17")
   await firstNumber.press("Enter")
   await page.waitForTimeout(700)
   await page.reload({ waitUntil: "load" })
-  check(
-    "an inline frame number survives a reload",
-    (await page.getByTestId("frame-number-input").first().inputValue()) === "17",
-  )
+  check("an inline frame number survives a reload", (await numbers()).includes("17"))
+  check("the grid re-sorted after the change", (await numbers()).join(",") === "2,17")
 
   const firstNote = page.getByTestId("frame-notes-input").first()
   await firstNote.fill("e2e note")
@@ -232,7 +259,11 @@ async function main() {
   await page.reload({ waitUntil: "load" })
   check(
     "an inline note survives a reload",
-    (await page.getByTestId("frame-notes-input").first().inputValue()) === "e2e note",
+    (
+      await page.getByTestId("frame-notes-input").evaluateAll((inputs) =>
+        inputs.map((input) => input.value),
+      )
+    ).includes("e2e note"),
   )
 
   // ---------------------------------------------------------------- bulk bar
@@ -352,6 +383,9 @@ async function main() {
     "deleting a roll asks first",
     await clickUntil(page.getByLabel(`Delete ${title}`), page.getByRole("alertdialog")),
   )
+  // M2: the dialog offers to leave the files on disk (R#9); left unticked, the
+  // scans are deleted with the records, which is what this run wants.
+  check("the delete dialog offers to keep the files", await visible(page.getByTestId("keep-files")))
   await page.getByRole("button", { name: "Delete", exact: true }).click()
   await page.waitForTimeout(1200)
   check("the roll is gone after confirming", (await page.getByTestId("roll-row").count()) === 0)

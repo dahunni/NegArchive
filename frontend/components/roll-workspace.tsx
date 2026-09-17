@@ -6,6 +6,7 @@ import { useState } from "react"
 import { ArrowLeft, Grid2x2, Loader2, Pencil, Trash2 } from "lucide-react"
 
 import {
+  ACCEPTED_IMAGE_TYPES,
   type Camera,
   type Film,
   type Filmstock,
@@ -75,10 +76,13 @@ export function RollWorkspace({
     }
   }
 
-  const removeRoll = async () => {
+  const removeRoll = async ({ keepFiles }: { keepFiles: boolean }) => {
     try {
-      await deleteFilm(film.id)
-      toast({ title: "Roll deleted" })
+      await deleteFilm(film.id, keepFiles)
+      toast({
+        title: "Roll deleted",
+        description: keepFiles ? "The scan files are still on disk." : undefined,
+      })
       router.push("/")
       router.refresh()
     } catch (error) {
@@ -108,7 +112,8 @@ export function RollWorkspace({
             ) : null}
           </div>
           <p className="mt-1 type-body text-muted-foreground">
-            {[film.film_type, film.camera, film.lens].filter(Boolean).join(" · ") || "No gear recorded"}
+            {[film.film_type, film.format, film.camera, film.lens].filter(Boolean).join(" · ") ||
+              "No gear recorded"}
           </p>
           <p className="type-meta mt-1">
             {formatDateRange(film.start_date, film.end_date)} · {formatStorage(film)} ·{" "}
@@ -178,7 +183,7 @@ export function RollWorkspace({
             </p>
             <UploadZone
               className="mt-3"
-              accept="image/*,.tif,.tiff"
+              accept={ACCEPTED_IMAGE_TYPES}
               hint="Drop a scanned contact sheet"
               upload={(file, onProgress) => uploadContactSheetFile(film.id, file, onProgress)}
               onUploaded={() => router.refresh()}
@@ -238,11 +243,12 @@ export function RollWorkspace({
         open={confirmDelete}
         onOpenChange={setConfirmDelete}
         onConfirm={removeRoll}
+        offerKeepFiles
         title="Delete this roll?"
         description={`“${film.title}” and its ${pluralize(
           frames.length,
           "frame record",
-        )} are removed from the archive. The scan files stay on disk.`}
+        )} are removed from the archive, and the scan files are deleted with them.`}
       />
     </div>
   )

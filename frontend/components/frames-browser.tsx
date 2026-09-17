@@ -3,7 +3,7 @@
 import { useMemo, useState } from "react"
 import { useRouter } from "next/navigation"
 
-import { type Film, type Image as Frame, uploadLooseFile } from "@/lib/api"
+import { ACCEPTED_IMAGE_TYPES, type Film, type Image as Frame, uploadLooseFile } from "@/lib/api"
 import { pluralize } from "@/lib/format"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
@@ -71,7 +71,7 @@ export function FramesBrowser({ frames, rolls }: { frames: Frame[]; rolls: Film[
           router.refresh()
         }}
         hint="Drop scans that do not belong to a roll yet"
-        accept="image/*,.tif,.tiff"
+        accept={ACCEPTED_IMAGE_TYPES}
       />
 
       <FrameGrid

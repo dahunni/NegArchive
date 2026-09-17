@@ -5,8 +5,8 @@ import { useRouter } from "next/navigation"
 import { Loader2, Upload } from "lucide-react"
 
 import {
+  ACCEPTED_IMAGE_TYPES,
   ApiError,
-  ERROR_FIELDS,
   type Camera,
   type Filmstock,
   type Lens,
@@ -14,6 +14,7 @@ import {
   createFilmstock,
   createLens,
   errorMessage,
+  fieldFor,
   updateCamera,
   updateFilmstock,
   updateLens,
@@ -35,7 +36,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
-import { FieldError } from "@/components/roll-fields"
+import { FILM_FORMATS, FieldError, NONE } from "@/components/roll-fields"
 import { useToast } from "@/hooks/use-toast"
 
 export type GearKind = "camera" | "lens" | "filmstock"
@@ -55,6 +56,8 @@ interface Draft {
   name: string
   mount: string
   notes: string
+  manufacturer: string
+  format: string
   iso: string
   kind: string
   expired: boolean
@@ -65,6 +68,8 @@ const EMPTY: Draft = {
   name: "",
   mount: "",
   notes: "",
+  manufacturer: "",
+  format: "",
   iso: "",
   kind: "black_and_white",
   expired: false,
@@ -78,6 +83,8 @@ function toDraft(kind: GearKind, item: GearItem | null): Draft {
     return {
       ...EMPTY,
       name: stock.name ?? "",
+      manufacturer: stock.manufacturer ?? "",
+      format: stock.format ?? "",
       iso: stock.iso ? String(stock.iso) : "",
       kind: stock.kind ?? "black_and_white",
       expired: Boolean(stock.expired),
@@ -133,6 +140,8 @@ export function GearDialog({
       } else {
         const payload = {
           name: draft.name,
+          manufacturer: draft.manufacturer || null,
+          format: draft.format || null,
           iso: draft.iso === "" ? null : Number(draft.iso),
           kind: draft.kind,
           expired: draft.expired,
@@ -145,8 +154,9 @@ export function GearDialog({
       router.refresh()
       onOpenChange(false)
     } catch (error) {
-      if (error instanceof ApiError && ERROR_FIELDS[error.code]) {
-        setErrors({ [ERROR_FIELDS[error.code]]: error.message })
+      const field = error instanceof ApiError ? fieldFor(error) : null
+      if (field) {
+        setErrors({ [field]: (error as ApiError).message })
       } else {
         toast({ title: "Could not save", description: errorMessage(error), variant: "destructive" })
       }
@@ -193,6 +203,42 @@ export function GearDialog({
             </div>
           ) : (
             <>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div className="space-y-2">
+                  <Label htmlFor="gear-manufacturer">Manufacturer</Label>
+                  <Input
+                    id="gear-manufacturer"
+                    value={draft.manufacturer}
+                    onChange={(event) => setDraft({ ...draft, manufacturer: event.target.value })}
+                    placeholder="Kodak"
+                    aria-invalid={Boolean(errors.manufacturer)}
+                  />
+                  <FieldError message={errors.manufacturer} />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="gear-format">Format</Label>
+                  <Select
+                    value={draft.format || NONE}
+                    onValueChange={(value) =>
+                      setDraft({ ...draft, format: value === NONE ? "" : value })
+                    }
+                  >
+                    <SelectTrigger id="gear-format" className="w-full">
+                      <SelectValue placeholder="Not recorded" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value={NONE}>Not recorded</SelectItem>
+                      {FILM_FORMATS.map((option) => (
+                        <SelectItem key={option.value} value={option.value}>
+                          {option.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <FieldError message={errors.format} />
+                </div>
+              </div>
+
               <div className="grid gap-4 sm:grid-cols-2">
                 <div className="space-y-2">
                   <Label htmlFor="gear-iso">ISO</Label>
@@ -264,7 +310,8 @@ export function GearDialog({
             <Input
               id="gear-image"
               type="file"
-              accept="image/*"
+              // The API's allowlist, so the picker cannot offer a file it will reject (R#18).
+              accept={ACCEPTED_IMAGE_TYPES}
               className="cursor-pointer"
               onChange={(event) => setFile(event.target.files?.[0] ?? null)}
             />
