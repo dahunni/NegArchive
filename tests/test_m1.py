@@ -178,17 +178,27 @@ def test_bulk_update_needs_at_least_one_field(client):
 # --- bulk delete -------------------------------------------------------------
 
 
-def test_bulk_delete_removes_rows_but_keeps_files_by_default(client):
+def test_bulk_delete_keeps_the_files_when_asked_to(client):
+    """M2 changed the default: files go with the records unless you keep them (R#9).
+
+    M1 asserted the opposite here (``delete_file`` defaulted to false and the dialog
+    promised "the scan files stay on disk"). The M2 default is the one the delete
+    dialog now offers a checkbox for; `tests/test_m2_file_lifecycle.py` covers it.
+    Older clients that send ``delete_file`` explicitly still get the M1 behaviour.
+    """
     roll = make_roll(client)
     frame = upload_frame(client, roll["id"])
     path = client.get(f"/api/images/{frame['id']}").json()["path"]
     assert os.path.exists(path)
 
-    res = client.post("/api/images/bulk_delete", json={"ids": [frame["id"]]})
+    res = client.post("/api/images/bulk_delete", json={"ids": [frame["id"]], "keep_files": True})
     assert res.status_code == 200, res.text
     assert res.json()["deleted"] == 1
-    assert client.get(f"/api/images/{frame['id']}").json() == {"error": "not_found"}
-    assert os.path.exists(path), "delete_file defaults to false"
+    # R#17: "not found" is a real 404 with a structured body now, not a 200.
+    gone = client.get(f"/api/images/{frame['id']}")
+    assert gone.status_code == 404
+    assert gone.json()["error"]["code"] == "not_found"
+    assert os.path.exists(path), "keep_files must leave the file alone"
     os.remove(path)
 
 

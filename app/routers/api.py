@@ -1,33 +1,44 @@
 import glob
+import io
 import os
+import re
 import shutil
 import tempfile
 import zipfile
-from datetime import date
-from typing import Optional, List, Dict, Iterable, Tuple
-from uuid import uuid4
 from math import ceil
+from typing import Dict, Iterable, List, Optional, Tuple
+from uuid import uuid4
+
+from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
+from fastapi.responses import FileResponse, StreamingResponse
 from PIL import Image as PILImage
 from PIL import ImageFile as PILImageFile
-
-from fastapi import APIRouter, Depends, Request, UploadFile, File, Form
-from fastapi.responses import StreamingResponse, FileResponse
-import io
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from .. import schemas
 from ..db import get_db
 from ..errors import (
     ApiError,
     error_response,
     from_exc,
+    not_found,
+    parse_choice,
     parse_date,
     parse_int,
-    read_json,
-    require_text,
 )
-from ..models import FilmRoll, ImageAsset, Camera, FilmStock, Lens, ImageType, FilmKind
+from ..models import (
+    FILM_FORMATS,
+    Camera,
+    FilmKind,
+    FilmRoll,
+    FilmStock,
+    ImageAsset,
+    ImageType,
+    Lens,
+)
+from ..seed import seed_catalog
 
 router = APIRouter(prefix="/api", tags=["api"])
 
@@ -35,17 +46,96 @@ router = APIRouter(prefix="/api", tags=["api"])
 # roll list and frame grid request a preview per frame). Git-ignored.
 CACHE_DIR = os.path.join("static", "cache")
 
+#: Everything NegArchive itself stores lives under here. The sweep walks it and the
+#: delete path refuses to touch a file outside it.
+UPLOAD_ROOT = os.path.join("static", "uploads")
 
 COVER_STRIP = 4  # thumbnails shown per row in the roll list
 
+# --- upload allowlist (R#18) --------------------------------------------------
 
-def film_to_dict(f: FilmRoll, image_count: Optional[int] = None, cover_image_ids: Optional[List[int]] = None):
+ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".webp", ".dng"}
+
+#: Leading bytes we accept, checked *in addition* to the extension. DNG is a TIFF
+#: dialect, so it shares the TIFF magic.
+MAGIC_PREFIXES: Tuple[bytes, ...] = (
+    b"\xff\xd8\xff",  # JPEG
+    b"\x89PNG\r\n\x1a\n",  # PNG
+    b"II*\x00",  # TIFF little endian (also DNG)
+    b"MM\x00*",  # TIFF big endian
+    b"II+\x00",  # BigTIFF little endian
+    b"MM\x00+",  # BigTIFF big endian
+)
+
+
+def max_upload_bytes() -> int:
+    """``MAX_UPLOAD_MB`` (default 512) as bytes; read per call so tests can change it."""
+    try:
+        megabytes = int(os.getenv("MAX_UPLOAD_MB", "512"))
+    except ValueError:
+        megabytes = 512
+    return max(1, megabytes) * 1024 * 1024
+
+
+def _looks_like_image(head: bytes) -> bool:
+    if head.startswith(MAGIC_PREFIXES):
+        return True
+    # WEBP is "RIFF" + 4 size bytes + "WEBP"
+    return head[:4] == b"RIFF" and head[8:12] == b"WEBP"
+
+
+# --- frame numbers from filenames (R#7, R#24) ---------------------------------
+
+_EXPLICIT_FRAME = re.compile(r"frame[\s_-]?(\d{1,4})", re.IGNORECASE)
+_NUMERIC_TOKEN = re.compile(r"^\d{1,4}$")
+
+
+def frame_number_from_filename(filename: Optional[str]) -> Optional[int]:
+    """Best guess at the frame number in a scanner filename.
+
+    Handles the shapes this archive actually sees::
+
+        Roll12_007.tif          -> 7      (NegPy's {roll}_{frame})
+        NEG-2024-011_007.jpg    -> 7
+        scan_Frame007.tif       -> 7
+        007.jpg                 -> 7
+        img_0007.png            -> 7
+
+    The rule is: an explicit ``frame<n>`` wins, otherwise the **last** purely numeric
+    group of one to four digits wins. ``Roll12.tif`` deliberately yields nothing —
+    a number glued to a word is part of the word, not a frame number.
+    """
+    if not filename:
+        return None
+    stem = os.path.splitext(os.path.basename(filename))[0]
+    explicit = _EXPLICIT_FRAME.search(stem)
+    if explicit:
+        return int(explicit.group(1))
+    tokens = [token for token in re.split(r"[^0-9A-Za-z]+", stem) if token]
+    for token in reversed(tokens):
+        if _NUMERIC_TOKEN.match(token):
+            return int(token)
+    return None
+
+
+# --- serialisation -------------------------------------------------------------
+
+
+def film_to_dict(
+    f: FilmRoll, image_count: Optional[int] = None, cover_image_ids: Optional[List[int]] = None
+) -> dict:
     return {
         "id": f.id,
         "title": f.title,
-        "camera": f.camera,
-        "lens": f.lens,
-        "film_type": f.film_type,
+        # R#14: the ids are authoritative; the names answer with the catalog entry's
+        # current name so a rename in Gear shows up on every roll that points at it.
+        "camera_id": f.camera_id,
+        "lens_id": f.lens_id,
+        "film_stock_id": f.film_stock_id,
+        "camera": f.camera_name,
+        "lens": f.lens_name,
+        "film_type": f.film_type_name,
+        "format": f.format,
         "notes": f.notes,
         "building": f.building,
         "folder": f.folder,
@@ -61,12 +151,10 @@ def film_to_dict(f: FilmRoll, image_count: Optional[int] = None, cover_image_ids
     }
 
 
-def roll_summaries(db: Session, film_ids: Optional[Iterable[int]] = None) -> Dict[int, Tuple[int, List[int]]]:
-    """``{film_roll_id: (scan count, first few image ids)}`` in two cheap queries.
-
-    Two queries for the whole list, not two per roll: the roll list renders a frame
-    count and a thumbnail strip without fetching anybody's images.
-    """
+def roll_summaries(
+    db: Session, film_ids: Optional[Iterable[int]] = None
+) -> Dict[int, Tuple[int, List[int]]]:
+    """``{film_roll_id: (scan count, first few image ids)}`` in two cheap queries."""
     ids = list(film_ids) if film_ids is not None else None
     if ids is not None and not ids:
         return {}
@@ -96,32 +184,38 @@ def roll_summaries(db: Session, film_ids: Optional[Iterable[int]] = None) -> Dic
     return summary
 
 
-def image_to_dict(i: ImageAsset):
-    # Provide a simple public URL under /static for the frontend
-    filename = i.path.split("/")[-1]
-    base = "uploads/contact_sheets" if i.type == ImageType.contact_sheet else "uploads/scans"
-    public_url = f"/static/{base}/{filename}"
+def frames_in_order(query):
+    """The one frame order in the archive: frame number first, nulls last, then id."""
+    return query.order_by(ImageAsset.frame_number.asc().nulls_last(), ImageAsset.id.asc())
+
+
+def image_to_dict(i: ImageAsset) -> dict:
+    # R#13: the public URL follows the file, not the record's current type — changing
+    # a scan into a contact sheet does not move the file.
+    public_url = "/" + i.path.replace(os.sep, "/").lstrip("/")
     return {
         "id": i.id,
         "film_roll_id": i.film_roll_id,
         "type": i.type.value,
         "path": i.path,
         "url": public_url,
+        "original_filename": i.original_filename,
+        "storage_mode": i.storage_mode or "managed",
         "frame_number": i.frame_number,
         "notes": i.notes,
-        "capture_date": i.capture_date.isoformat() if getattr(i, "capture_date", None) else None,
+        "capture_date": i.capture_date.isoformat() if i.capture_date else None,
         "created_at": i.created_at.isoformat(),
     }
 
 
-def catalog_url(path: Optional[str]):
+def catalog_url(path: Optional[str]) -> Optional[str]:
     if not path:
         return None
     # Ensure leading slash for valid URL resolution in Next/Image
     return path if path.startswith("/") else f"/{path}"
 
 
-def camera_to_dict(c: Camera):
+def camera_to_dict(c: Camera) -> dict:
     return {
         "id": c.id,
         "name": c.name,
@@ -132,7 +226,7 @@ def camera_to_dict(c: Camera):
     }
 
 
-def lens_to_dict(l: Lens):
+def lens_to_dict(l: Lens) -> dict:
     return {
         "id": l.id,
         "name": l.name,
@@ -143,10 +237,12 @@ def lens_to_dict(l: Lens):
     }
 
 
-def filmstock_to_dict(s: FilmStock):
+def filmstock_to_dict(s: FilmStock) -> dict:
     return {
         "id": s.id,
         "name": s.name,
+        "manufacturer": s.manufacturer,
+        "format": s.format,
         "iso": s.iso,
         "kind": s.kind.value if isinstance(s.kind, FilmKind) else str(s.kind),
         # R#1/R#22: always a real boolean, never 0/1 or None
@@ -181,27 +277,238 @@ def clean_name(value) -> Optional[str]:
     return value
 
 
-@router.get("/films")
+def require_name(value, field: str = "name", label: Optional[str] = None) -> str:
+    label = label or field.replace("_", " ")
+    if value is None or not str(value).strip():
+        raise ApiError("invalid_" + field, f"{label.capitalize()} is required.", 400, field)
+    return str(value).strip()
+
+
+# --- gear references (R#14) ----------------------------------------------------
+
+GEAR = {
+    "camera": (Camera, "camera_id", "camera", "camera"),
+    "lens": (Lens, "lens_id", "lens", "lens"),
+    "film_stock": (FilmStock, "film_stock_id", "film_type", "film stock"),
+}
+
+
+def _resolve_gear(db: Session, body: schemas.FilmRollWrite, roll: FilmRoll, creating: bool) -> None:
+    """Apply the gear part of a roll body, by id or (for older clients) by name.
+
+    * ``camera_id`` given → the roll points at that catalog entry, and the legacy
+      ``camera`` string is written from it so a pre-M2 client still reads a name.
+    * only ``camera`` given → the name is looked up; a hit sets the id too, a miss
+      keeps the free text and clears the id.
+    * either one explicitly ``null`` clears both.
+    """
+    for prefix, (model, id_field, name_field, label) in GEAR.items():
+        given_id = creating or _given(body, id_field)
+        given_name = creating or _given(body, name_field)
+        raw_id = getattr(body, id_field)
+        raw_name = clean_name(getattr(body, name_field))
+
+        if given_id and raw_id is not None:
+            entry = db.get(model, raw_id)
+            if entry is None:
+                raise ApiError(
+                    f"unknown_{prefix}", f"That {label} does not exist.", 404, id_field
+                )
+            setattr(roll, id_field, entry.id)
+            setattr(roll, name_field, entry.name)
+            continue
+
+        if given_name and raw_name is not None:
+            match = db.query(model).filter(func.lower(model.name) == raw_name.lower()).first()
+            setattr(roll, id_field, match.id if match else None)
+            setattr(roll, name_field, match.name if match else raw_name)
+            continue
+
+        if (given_id and raw_id is None and (not given_name or raw_name is None)) or (
+            given_name and raw_name is None and (not given_id or raw_id is None)
+        ):
+            setattr(roll, id_field, None)
+            setattr(roll, name_field, None)
+
+
+def _given(body, field: str) -> bool:
+    return field in getattr(body, "model_fields_set", set())
+
+
+def _rolls_using(db: Session, prefix: str, entry) -> int:
+    """How many rolls still refer to a catalog entry, by id or by the legacy name."""
+    _, id_field, name_field, _ = GEAR[prefix]
+    return (
+        db.query(func.count(FilmRoll.id))
+        .filter(
+            or_(
+                getattr(FilmRoll, id_field) == entry.id,
+                func.lower(getattr(FilmRoll, name_field)) == entry.name.lower(),
+            )
+        )
+        .scalar()
+        or 0
+    )
+
+
+# --- files ---------------------------------------------------------------------
+
+
+def _abs(path: str) -> str:
+    return path if os.path.isabs(path) else os.path.join(os.getcwd(), path)
+
+
+def _inside_uploads(abs_path: str) -> bool:
+    root = os.path.abspath(_abs(UPLOAD_ROOT))
+    return os.path.commonpath([os.path.abspath(abs_path), root]) == root
+
+
+def delete_asset_file(image: ImageAsset) -> bool:
+    """Delete the file behind an image, unless somebody else owns it.
+
+    Two guards, both deliberate: a ``linked`` row points at a file that belongs to
+    the user's own library (M3's import-by-reference), and a managed file must live
+    under ``static/uploads``. Returns whether a file was actually removed.
+    """
+    if not image.path:
+        return False
+    if (image.storage_mode or "managed") != "managed":
+        return False
+    target = _abs(image.path)
+    if not _inside_uploads(target):
+        return False
+    try:
+        os.remove(target)
+        return True
+    except OSError:
+        return False
+
+
+def _wants_file_deletion(keep_files: bool, legacy_delete_file: Optional[bool]) -> bool:
+    """M2 deletes managed files with the record; ``keep_files=true`` opts out (R#9).
+
+    ``delete_file`` is the M1 spelling and still wins when it is sent explicitly, so
+    a client written against the old default keeps behaving the way it expects.
+    """
+    if legacy_delete_file is not None:
+        return bool(legacy_delete_file)
+    return not keep_files
+
+
+def store_upload(file: UploadFile, subdir: str) -> Tuple[str, str]:
+    """Validate and save one uploaded file. Returns ``(relative path, original name)``.
+
+    Raises :class:`ApiError` with 415 for a type that is not allowed and 413 for a
+    file over ``MAX_UPLOAD_MB`` (R#18). The stored name is still a UUID — the name
+    the scanner gave it is kept in ``image_assets.original_filename`` (R#7).
+    """
+    original = os.path.basename(file.filename or "").strip() or "upload"
+    ext = os.path.splitext(original)[1].lower()
+    if ext not in ALLOWED_EXTENSIONS:
+        raise ApiError(
+            "unsupported_file_type",
+            f"“{original}” is not an accepted image "
+            f"({', '.join(sorted(e.lstrip('.') for e in ALLOWED_EXTENSIONS))}).",
+            415,
+            "file",
+        )
+
+    file.file.seek(0)
+    head = file.file.read(16)
+    file.file.seek(0)
+    if not _looks_like_image(head):
+        raise ApiError(
+            "unsupported_file_type",
+            f"“{original}” does not look like an image file.",
+            415,
+            "file",
+        )
+
+    os.makedirs(os.path.join("static", subdir), exist_ok=True)
+    rel_path = os.path.join("static", subdir, f"{uuid4().hex}{ext}")
+    abs_path = _abs(rel_path)
+    limit = max_upload_bytes()
+    written = 0
+    try:
+        with open(abs_path, "wb") as out:
+            while True:
+                chunk = file.file.read(1024 * 1024)
+                if not chunk:
+                    break
+                written += len(chunk)
+                if written > limit:
+                    raise ApiError(
+                        "file_too_large",
+                        f"“{original}” is larger than the {limit // (1024 * 1024)} MB limit "
+                        "(MAX_UPLOAD_MB).",
+                        413,
+                        "file",
+                    )
+                out.write(chunk)
+    except ApiError:
+        _remove_quietly(abs_path)
+        raise
+    except OSError as exc:
+        _remove_quietly(abs_path)
+        raise ApiError("write_failed", f"“{original}” could not be stored: {exc}", 500, "file")
+    return rel_path, original
+
+
+def _remove_quietly(path: str) -> None:
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
+def _new_image(
+    *,
+    film_roll_id: Optional[int],
+    image_type: ImageType,
+    rel_path: str,
+    original_filename: Optional[str],
+    frame_number: Optional[int] = None,
+    notes: Optional[str] = None,
+    capture_date=None,
+) -> ImageAsset:
+    """One place builds an ImageAsset, so every path keeps the filename and the
+    frame number parsed from it (R#7, R#24)."""
+    if frame_number is None and image_type == ImageType.scan:
+        frame_number = frame_number_from_filename(original_filename)
+    return ImageAsset(
+        film_roll_id=film_roll_id,
+        type=image_type,
+        path=rel_path,
+        original_filename=original_filename,
+        storage_mode="managed",
+        frame_number=frame_number,
+        notes=notes,
+        capture_date=capture_date,
+    )
+
+
+# ---------------------------
+# Film rolls
+# ---------------------------
+
+
+@router.get("/films", response_model=List[schemas.FilmRollOut])
 def list_films(db: Session = Depends(get_db)):
     films = db.query(FilmRoll).order_by(FilmRoll.created_at.desc()).all()
     summaries = roll_summaries(db)
     return [film_to_dict(f, *summaries.get(f.id, (0, []))) for f in films]
 
 
-@router.get("/films/{film_id}")
+@router.get("/films/{film_id}", response_model=schemas.FilmDetailOut, responses={404: {"model": schemas.ErrorOut}})
 def get_film(film_id: int, db: Session = Depends(get_db)):
     f = db.get(FilmRoll, film_id)
     if not f:
-        # Unchanged on purpose: turning every "not found" into a real 404 is R#17 (M2).
-        return {"error": "not_found"}
-    # Separate scans and contact sheets
-    scans = (
-        db.query(ImageAsset)
-        .filter(ImageAsset.film_roll_id == f.id, ImageAsset.type == ImageType.scan)
-        # The frame grid shows them in this order, and it matches cover_image_id.
-        .order_by(ImageAsset.frame_number.asc().nulls_last(), ImageAsset.id.asc())
-        .all()
-    )
+        return not_found("Roll")
+    scans = frames_in_order(
+        db.query(ImageAsset).filter(
+            ImageAsset.film_roll_id == f.id, ImageAsset.type == ImageType.scan
+        )
+    ).all()
     contact_sheets = (
         db.query(ImageAsset)
         .filter(ImageAsset.film_roll_id == f.id, ImageAsset.type == ImageType.contact_sheet)
@@ -215,56 +522,59 @@ def get_film(film_id: int, db: Session = Depends(get_db)):
     }
 
 
-def _check_date_order(start: Optional[date], end: Optional[date]) -> None:
+def _check_date_order(start, end) -> None:
     if start and end and end < start:
-        raise ApiError("invalid_date_range", "The end date is before the start date.")
+        raise ApiError("invalid_date_range", "The end date is before the start date.", 400, "end_date")
 
 
-@router.post("/films")
-async def create_film(request: Request, db: Session = Depends(get_db)):
+@router.post("/films", response_model=schemas.FilmRollEnvelope, responses={400: {"model": schemas.ErrorOut}})
+def create_film(body: schemas.FilmRollCreate, db: Session = Depends(get_db)):
     try:
-        payload = await read_json(request)
-        title = require_text(payload.get("title"), "title")
-        start = parse_date(payload.get("start_date"), "start_date")
-        end = parse_date(payload.get("end_date"), "end_date")
+        title = require_name(body.title, "title")
+        start = parse_date(body.start_date, "start_date")
+        end = parse_date(body.end_date, "end_date")
         _check_date_order(start, end)
+        f = FilmRoll(
+            title=title,
+            notes=body.notes,
+            format=body.format,
+            building=body.building,
+            folder=body.folder,
+            archive_serial=body.archive_serial,
+            start_date=start,
+            end_date=end,
+        )
+        _resolve_gear(db, body, f, creating=True)
     except ApiError as exc:
+        db.rollback()
         return from_exc(exc)
-    f = FilmRoll(
-        title=title,
-        camera=clean_name(payload.get("camera")),
-        lens=clean_name(payload.get("lens")),
-        film_type=clean_name(payload.get("film_type")),
-        notes=payload.get("notes"),
-        building=payload.get("building"),
-        folder=payload.get("folder"),
-        archive_serial=payload.get("archive_serial"),
-        start_date=start,
-        end_date=end,
-    )
     db.add(f)
     db.commit()
     return {"ok": True, "film": film_to_dict(f)}
 
 
-@router.put("/films/{film_id}")
-async def update_film(film_id: int, request: Request, db: Session = Depends(get_db)):
+@router.put(
+    "/films/{film_id}",
+    response_model=schemas.FilmRollEnvelope,
+    responses={400: {"model": schemas.ErrorOut}, 404: {"model": schemas.ErrorOut}},
+)
+def update_film(film_id: int, body: schemas.FilmRollUpdate, db: Session = Depends(get_db)):
     f = db.get(FilmRoll, film_id)
     if not f:
-        return {"error": "not_found"}
+        return not_found("Roll")
     try:
-        payload = await read_json(request)
-        if "title" in payload:
-            f.title = require_text(payload.get("title"), "title")
-        start = parse_date(payload["start_date"], "start_date") if "start_date" in payload else f.start_date
-        end = parse_date(payload["end_date"], "end_date") if "end_date" in payload else f.end_date
+        if body.given("title"):
+            f.title = require_name(body.title, "title")
+        start = parse_date(body.start_date, "start_date") if body.given("start_date") else f.start_date
+        end = parse_date(body.end_date, "end_date") if body.given("end_date") else f.end_date
         _check_date_order(start, end)
+        _resolve_gear(db, body, f, creating=False)
     except ApiError as exc:
         db.rollback()
         return from_exc(exc)
-    for key in ["camera", "lens", "film_type", "notes", "building", "folder", "archive_serial"]:
-        if key in payload:
-            setattr(f, key, clean_name(payload[key]))
+    for key in ["notes", "format", "building", "folder", "archive_serial"]:
+        if body.given(key):
+            setattr(f, key, clean_name(getattr(body, key)))
     f.start_date = start
     f.end_date = end
     db.commit()
@@ -272,19 +582,38 @@ async def update_film(film_id: int, request: Request, db: Session = Depends(get_
     return {"ok": True, "film": film_to_dict(f, count, strip)}
 
 
-@router.delete("/films/{film_id}")
-def delete_film(film_id: int, db: Session = Depends(get_db)):
+@router.delete(
+    "/films/{film_id}",
+    response_model=schemas.DeleteResult,
+    responses={404: {"model": schemas.ErrorOut}},
+)
+def delete_film(
+    film_id: int,
+    keep_files: bool = Query(False, description="Leave the scan files on disk (R#9)."),
+    db: Session = Depends(get_db),
+):
+    """Delete a roll, its frame records and — unless ``keep_files`` — their files."""
     f = db.get(FilmRoll, film_id)
     if not f:
-        return {"error": "not_found"}
-    # Optionally also delete associated images records (not files)
-    db.query(ImageAsset).filter(ImageAsset.film_roll_id == f.id).delete()
+        return not_found("Roll")
+    images = db.query(ImageAsset).filter(ImageAsset.film_roll_id == f.id).all()
+    files_deleted = 0
+    for image in images:
+        if not keep_files:
+            files_deleted += int(delete_asset_file(image))
+        drop_cached_previews(image.id)
+        db.delete(image)
     db.delete(f)
     db.commit()
-    return {"ok": True}
+    return {"ok": True, "files_deleted": files_deleted}
 
 
-@router.get("/images")
+# ---------------------------
+# Images
+# ---------------------------
+
+
+@router.get("/images", response_model=List[schemas.ImageOut])
 def list_images(
     film_id: Optional[int] = None,
     type: Optional[str] = None,
@@ -300,24 +629,25 @@ def list_images(
         elif t in {"contact", "contact_sheet", "contact-sheet"}:
             q = q.filter(ImageAsset.type == ImageType.contact_sheet)
         # else: ignore invalid type filter, return all
-    items = q.order_by(ImageAsset.id.asc()).all()
+    # R#24: frame order everywhere, not insertion order.
+    items = frames_in_order(q).all()
     return [image_to_dict(i) for i in items]
 
 
-@router.get("/images/{image_id}")
+@router.get(
+    "/images/{image_id}",
+    response_model=schemas.ImageOut,
+    responses={404: {"model": schemas.ErrorOut}},
+)
 def get_image(image_id: int, db: Session = Depends(get_db)):
     i = db.get(ImageAsset, image_id)
     if not i:
-        return {"error": "not_found"}
+        return not_found("Frame")
     return image_to_dict(i)
 
 
 def _cache_file(image_id: int, width: int, mtime_ns: int) -> str:
-    """Cache file for one rendered preview, keyed by image id + width + source mtime.
-
-    A re-scan that replaces the file on disk changes the mtime and therefore the key,
-    so a stale thumbnail can never be served.
-    """
+    """Cache file for one rendered preview, keyed by image id + width + source mtime."""
     return os.path.join(CACHE_DIR, f"{image_id}_{width}_{mtime_ns}.jpg")
 
 
@@ -357,14 +687,13 @@ def _cached_response(cache_path: str) -> FileResponse:
     )
 
 
-@router.get("/images/{image_id}/preview")
+@router.get("/images/{image_id}/preview", responses={404: {"model": schemas.ErrorOut}})
 def get_image_preview(image_id: int, width: int = 1200, db: Session = Depends(get_db)):
     i = db.get(ImageAsset, image_id)
     if not i:
-        return {"error": "not_found"}
+        return not_found("Frame")
     # Resolve absolute path
-    path = i.path
-    abs_path = path if os.path.isabs(path) else os.path.join(os.getcwd(), path)
+    abs_path = _abs(i.path)
     ext = os.path.splitext(abs_path)[1].lower()
 
     # Clamp the width so the cache cannot be filled with arbitrary sizes.
@@ -384,17 +713,8 @@ def get_image_preview(image_id: int, width: int = 1200, db: Session = Depends(ge
     try:
         img = PILImage.open(abs_path)
         # Convert unusual modes to RGB safely
-        if img.mode not in ("RGB", "RGBA"):
-            try:
-                img = img.convert("RGB")
-            except Exception:
-                pass
-        # If still not RGB/RGBA, try a generic conversion
         if img.mode != "RGB":
-            try:
-                img = img.convert("RGB")
-            except Exception:
-                raise
+            img = img.convert("RGB")
         if width and img.width > width:
             new_h = max(1, int(img.height * (width / img.width)))
             img = img.resize((width, new_h), PILImage.LANCZOS)
@@ -413,17 +733,16 @@ def get_image_preview(image_id: int, width: int = 1200, db: Session = Depends(ge
         try:
             import cv2
             import numpy as np
+
             if not os.path.exists(abs_path):
                 raise FileNotFoundError
             cv_img = cv2.imread(abs_path, cv2.IMREAD_UNCHANGED)
             if cv_img is None:
                 raise ValueError("cv2 unreadable")
-            # Handle bit depth and channels
             # Convert 16-bit to 8-bit for JPEG encoding
             if cv_img.dtype == np.uint16:
-                cv_img = cv2.convertScaleAbs(cv_img, alpha=(255.0/65535.0))
-            elif cv_img.dtype == np.float32 or cv_img.dtype == np.float64:
-                # Normalize float images to 0-255
+                cv_img = cv2.convertScaleAbs(cv_img, alpha=(255.0 / 65535.0))
+            elif cv_img.dtype in (np.float32, np.float64):
                 min_val, max_val = float(cv_img.min()), float(cv_img.max())
                 if max_val > min_val:
                     cv_img = ((cv_img - min_val) * (255.0 / (max_val - min_val))).astype(np.uint8)
@@ -434,19 +753,14 @@ def get_image_preview(image_id: int, width: int = 1200, db: Session = Depends(ge
                 cv_img = cv2.cvtColor(cv_img, cv2.COLOR_GRAY2BGR)
             elif cv_img.shape[2] == 4:  # BGRA -> BGR
                 cv_img = cv2.cvtColor(cv_img, cv2.COLOR_BGRA2BGR)
-            elif cv_img.shape[2] == 3:
-                pass  # already BGR
-            else:
-                # Unusual channel count: reduce to 3 via first three channels
+            elif cv_img.shape[2] != 3:
                 cv_img = cv_img[:, :, :3]
 
-            # Resize preserving aspect
             if width and cv_img.shape[1] > width:
                 scale = width / float(cv_img.shape[1])
                 new_h = int(cv_img.shape[0] * scale)
                 cv_img = cv2.resize(cv_img, (width, new_h), interpolation=cv2.INTER_AREA)
 
-            # Encode JPEG
             ok, enc = cv2.imencode(".jpg", cv_img, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
             if not ok:
                 raise ValueError("encode failed")
@@ -456,73 +770,98 @@ def get_image_preview(image_id: int, width: int = 1200, db: Session = Depends(ge
             return StreamingResponse(
                 io.BytesIO(data),
                 media_type="image/jpeg",
-                headers={"Cache-Control": "public, max-age=31536000, immutable", "X-Preview-Cache": "miss"},
+                headers={
+                    "Cache-Control": "public, max-age=31536000, immutable",
+                    "X-Preview-Cache": "miss",
+                },
             )
         except Exception:
             # Final fallback: serve original if browser-friendly
             if ext in {".jpg", ".jpeg", ".png"} and os.path.exists(abs_path):
                 media_type = "image/jpeg" if ext in {".jpg", ".jpeg"} else "image/png"
                 return FileResponse(abs_path, media_type=media_type)
-            return {"error": "unreadable_image"}
+            if not os.path.exists(abs_path):
+                return error_response(
+                    "file_missing",
+                    "The file behind this frame is missing from disk.",
+                    404,
+                )
+            return error_response("unreadable_image", "This file could not be decoded.", 415)
 
 
-@router.get("/images/{image_id}/download")
+@router.get("/images/{image_id}/download", responses={404: {"model": schemas.ErrorOut}})
 def download_image(image_id: int, db: Session = Depends(get_db)):
     i = db.get(ImageAsset, image_id)
     if not i:
-        return {"error": "not_found"}
-    path = i.path
-    abs_path = path if os.path.isabs(path) else os.path.join(os.getcwd(), path)
+        return not_found("Frame")
+    abs_path = _abs(i.path)
     if not os.path.exists(abs_path):
-        return {"error": "not_found"}
-    filename = os.path.basename(abs_path)
-    # Let FileResponse set headers; ensure attachment disposition for download
-    headers = {"Content-Disposition": f"attachment; filename=\"{filename}\""}
-    # Media type is not critical for download; use octet-stream for generic binary
+        return error_response("file_missing", "The file behind this frame is missing from disk.", 404)
+    # R#7: the download gets the name the scanner gave it, not the UUID on disk.
+    filename = i.original_filename or os.path.basename(abs_path)
+    headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
     return FileResponse(abs_path, media_type="application/octet-stream", headers=headers)
 
 
-@router.post("/images")
-async def create_image(request: Request, db: Session = Depends(get_db)):
-    payload = await request.json()
-    i = ImageAsset(
-        film_roll_id=payload.get("film_roll_id"),
-        type=ImageType(payload.get("type", "scan")),
-        path=payload.get("path"),
-        frame_number=payload.get("frame_number"),
-        notes=payload.get("notes"),
-        capture_date=date.fromisoformat(payload["capture_date"]) if payload.get("capture_date") else None,
-    )
+@router.post(
+    "/images",
+    response_model=schemas.ImageEnvelope,
+    responses={400: {"model": schemas.ErrorOut}, 404: {"model": schemas.ErrorOut}},
+)
+def create_image(body: schemas.ImageCreate, db: Session = Depends(get_db)):
+    """Register an image whose file is already somewhere NegArchive can read."""
+    try:
+        path = require_name(body.path, "path")
+        image_type = _parse_image_type(body.type or "scan")
+        film_roll_id = _require_roll(db, body.film_roll_id)
+        i = _new_image(
+            film_roll_id=film_roll_id,
+            image_type=image_type,
+            rel_path=path,
+            original_filename=body.original_filename or os.path.basename(path),
+            frame_number=parse_int(body.frame_number, "frame_number", minimum=0),
+            notes=body.notes,
+            capture_date=parse_date(body.capture_date, "capture_date"),
+        )
+        if body.storage_mode:
+            i.storage_mode = body.storage_mode
+    except ApiError as exc:
+        return from_exc(exc)
     db.add(i)
     db.commit()
     return {"ok": True, "image": image_to_dict(i)}
 
 
-@router.put("/images/{image_id}")
-async def update_image(image_id: int, request: Request, db: Session = Depends(get_db)):
+def _parse_image_type(value) -> ImageType:
+    try:
+        return ImageType(str(value))
+    except ValueError:
+        raise ApiError("invalid_type", "Type must be 'scan' or 'contact_sheet'.", 400, "type")
+
+
+@router.put(
+    "/images/{image_id}",
+    response_model=schemas.ImageEnvelope,
+    responses={400: {"model": schemas.ErrorOut}, 404: {"model": schemas.ErrorOut}},
+)
+def update_image(image_id: int, body: schemas.ImageUpdate, db: Session = Depends(get_db)):
     i = db.get(ImageAsset, image_id)
     if not i:
-        return {"error": "not_found"}
+        return not_found("Frame")
     try:
-        payload = await read_json(request)
-        if "film_roll_id" in payload:
+        if body.given("film_roll_id"):
             # R#12: an explicit null unassigns the image from its roll
-            raw = payload["film_roll_id"]
-            if raw in (None, "", "none"):
-                i.film_roll_id = None
-            else:
-                i.film_roll_id = _require_roll(db, parse_int(raw, "film_roll_id"))
-        if "type" in payload and payload["type"]:
-            try:
-                i.type = ImageType(payload["type"])
-            except ValueError:
-                raise ApiError("invalid_type", "Type must be 'scan' or 'contact_sheet'.")
-        if "frame_number" in payload:
-            i.frame_number = parse_int(payload["frame_number"], "frame_number", minimum=0)
-        if "notes" in payload:
-            i.notes = payload["notes"] or None
-        if "capture_date" in payload:
-            i.capture_date = parse_date(payload["capture_date"], "capture_date")
+            i.film_roll_id = _require_roll(db, body.film_roll_id)
+        if body.given("type") and body.type:
+            i.type = _parse_image_type(body.type)
+        if body.given("frame_number"):
+            i.frame_number = parse_int(body.frame_number, "frame_number", minimum=0)
+        if body.given("notes"):
+            i.notes = body.notes or None
+        if body.given("capture_date"):
+            i.capture_date = parse_date(body.capture_date, "capture_date")
+        if body.given("original_filename"):
+            i.original_filename = body.original_filename or None
     except ApiError as exc:
         db.rollback()
         return from_exc(exc)
@@ -530,75 +869,76 @@ async def update_image(image_id: int, request: Request, db: Session = Depends(ge
     return {"ok": True, "image": image_to_dict(i)}
 
 
-def _require_roll(db: Session, film_roll_id: Optional[int]) -> Optional[int]:
-    if film_roll_id is None:
+def _require_roll(db: Session, film_roll_id) -> Optional[int]:
+    if film_roll_id in (None, "", "none"):
         return None
-    if not db.get(FilmRoll, film_roll_id):
-        raise ApiError("unknown_roll", "That roll does not exist.", 404)
-    return film_roll_id
+    parsed = parse_int(film_roll_id, "film_roll_id")
+    if not db.get(FilmRoll, parsed):
+        raise ApiError("unknown_roll", "That roll does not exist.", 404, "film_roll_id")
+    return parsed
 
 
-def _delete_asset_file(image: ImageAsset) -> None:
-    if not image.path:
-        return
-    try:
-        target_path = image.path if os.path.isabs(image.path) else os.path.join(os.getcwd(), image.path)
-        if os.path.exists(target_path):
-            os.remove(target_path)
-    except OSError:
-        pass
-
-
-@router.delete("/images/{image_id}")
-def delete_image(image_id: int, delete_file: bool = False, db: Session = Depends(get_db)):
+@router.delete(
+    "/images/{image_id}",
+    response_model=schemas.DeleteResult,
+    responses={404: {"model": schemas.ErrorOut}},
+)
+def delete_image(
+    image_id: int,
+    keep_files: bool = Query(False, description="Leave the file on disk (R#9)."),
+    delete_file: Optional[bool] = Query(None, description="The M1 spelling; wins when sent."),
+    db: Session = Depends(get_db),
+):
     i = db.get(ImageAsset, image_id)
     if not i:
-        return {"error": "not_found"}
-    # Optionally delete file from disk
-    if delete_file:
-        _delete_asset_file(i)
+        return not_found("Frame")
+    files_deleted = 0
+    if _wants_file_deletion(keep_files, delete_file):
+        files_deleted += int(delete_asset_file(i))
     drop_cached_previews(i.id)
     db.delete(i)
     db.commit()
-    return {"ok": True}
+    return {"ok": True, "files_deleted": files_deleted}
 
 
 # ---------------------------
 # Bulk frame operations (M1: multi-select in the roll workspace)
 # ---------------------------
-def _require_ids(payload: dict) -> List[int]:
-    raw = payload.get("ids")
+def _require_ids(raw) -> List[int]:
     if not isinstance(raw, list) or not raw:
-        raise ApiError("invalid_ids", "Select at least one frame.")
+        raise ApiError("invalid_ids", "Select at least one frame.", 400, "ids")
     ids: List[int] = []
     for value in raw:
-        parsed = parse_int(value, "id", minimum=1)
+        try:
+            parsed = parse_int(value, "id", minimum=1)
+        except ApiError:
+            raise ApiError("invalid_ids", "Frame ids must be whole numbers.", 400, "ids")
         if parsed is None:
-            raise ApiError("invalid_ids", "Frame ids must be whole numbers.")
+            raise ApiError("invalid_ids", "Frame ids must be whole numbers.", 400, "ids")
         ids.append(parsed)
     return ids
 
 
-@router.post("/images/bulk_update")
-async def bulk_update_images(request: Request, db: Session = Depends(get_db)):
+@router.post(
+    "/images/bulk_update",
+    response_model=schemas.BulkUpdateResult,
+    responses={400: {"model": schemas.ErrorOut}, 404: {"model": schemas.ErrorOut}},
+)
+def bulk_update_images(body: schemas.BulkImageUpdate, db: Session = Depends(get_db)):
     """Apply a partial patch to many frames at once.
 
     Body: ``{"ids": [1, 2], "film_roll_id": 3|null, "capture_date": "2024-07-01"|null,
     "frame_number": 7|null}``. Only the keys present are written.
     """
     try:
-        payload = await read_json(request)
-        ids = _require_ids(payload)
+        ids = _require_ids(body.ids)
         fields = {}
-        if "film_roll_id" in payload:
-            raw = payload["film_roll_id"]
-            fields["film_roll_id"] = (
-                None if raw in (None, "", "none") else _require_roll(db, parse_int(raw, "film_roll_id"))
-            )
-        if "capture_date" in payload:
-            fields["capture_date"] = parse_date(payload["capture_date"], "capture_date")
-        if "frame_number" in payload:
-            fields["frame_number"] = parse_int(payload["frame_number"], "frame_number", minimum=0)
+        if body.given("film_roll_id"):
+            fields["film_roll_id"] = _require_roll(db, body.film_roll_id)
+        if body.given("capture_date"):
+            fields["capture_date"] = parse_date(body.capture_date, "capture_date")
+        if body.given("frame_number"):
+            fields["frame_number"] = parse_int(body.frame_number, "frame_number", minimum=0)
         if not fields:
             raise ApiError("nothing_to_update", "No fields to update were supplied.")
     except ApiError as exc:
@@ -606,7 +946,7 @@ async def bulk_update_images(request: Request, db: Session = Depends(get_db)):
 
     images = db.query(ImageAsset).filter(ImageAsset.id.in_(ids)).all()
     if not images:
-        return error_response("not_found", "None of those frames exist.", 404)
+        return error_response("not_found", "None of those frames exist.", 404, "ids")
     for image in images:
         for key, value in fields.items():
             setattr(image, key, value)
@@ -614,55 +954,70 @@ async def bulk_update_images(request: Request, db: Session = Depends(get_db)):
     return {"ok": True, "updated": len(images), "images": [image_to_dict(i) for i in images]}
 
 
-@router.post("/images/bulk_delete")
-async def bulk_delete_images(request: Request, db: Session = Depends(get_db)):
-    """Body: ``{"ids": [1, 2], "delete_file": false}``."""
+@router.post(
+    "/images/bulk_delete",
+    response_model=schemas.BulkDeleteResult,
+    responses={400: {"model": schemas.ErrorOut}},
+)
+def bulk_delete_images(body: schemas.BulkImageDelete, db: Session = Depends(get_db)):
+    """Body: ``{"ids": [1, 2], "keep_files": false}``.
+
+    Files go with the records unless ``keep_files`` is true (R#9); the M1 key
+    ``delete_file`` still works and wins when it is sent.
+    """
     try:
-        payload = await read_json(request)
-        ids = _require_ids(payload)
+        ids = _require_ids(body.ids)
     except ApiError as exc:
         return from_exc(exc)
-    delete_file = bool(payload.get("delete_file"))
+    remove_files = _wants_file_deletion(bool(body.keep_files), body.delete_file)
 
     images = db.query(ImageAsset).filter(ImageAsset.id.in_(ids)).all()
+    files_deleted = 0
     for image in images:
-        if delete_file:
-            _delete_asset_file(image)
+        if remove_files:
+            files_deleted += int(delete_asset_file(image))
         drop_cached_previews(image.id)
         db.delete(image)
     db.commit()
-    return {"ok": True, "deleted": len(images)}
+    return {"ok": True, "deleted": len(images), "files_deleted": files_deleted}
 
 
-@router.post("/images/upload")
-async def upload_image(
+@router.post(
+    "/images/upload",
+    response_model=schemas.ImageEnvelope,
+    responses={
+        400: {"model": schemas.ErrorOut},
+        404: {"model": schemas.ErrorOut},
+        413: {"model": schemas.ErrorOut},
+        415: {"model": schemas.ErrorOut},
+    },
+)
+def upload_image(
     file: UploadFile = File(...),
     type: str = Form(...),
-    film_roll_id: Optional[int] = Form(None),
-    frame_number: Optional[int] = Form(None),
+    film_roll_id: Optional[str] = Form(None),
+    frame_number: Optional[str] = Form(None),
     notes: Optional[str] = Form(None),
     capture_date: Optional[str] = Form(None),
     db: Session = Depends(get_db),
 ):
-    type = type.lower()
-    if type not in {"scan", "contact_sheet"}:
-        return {"error": "invalid_type"}
-    subdir = "uploads/scans" if type == "scan" else "uploads/contact_sheets"
-    os.makedirs(os.path.join("static", subdir), exist_ok=True)
-    # Preserve extension, generate unique name
-    ext = os.path.splitext(file.filename)[1]
-    unique_name = f"{uuid4().hex}{ext}"
-    rel_path = os.path.join("static", subdir, unique_name)
-    abs_path = os.path.join(os.getcwd(), rel_path)
-    with open(abs_path, "wb") as out:
-        shutil.copyfileobj(file.file, out)
-    img = ImageAsset(
-        film_roll_id=film_roll_id,
-        type=ImageType(type),
-        path=rel_path,
-        frame_number=int(frame_number) if frame_number is not None else None,
+    try:
+        image_type = _parse_image_type((type or "").lower())
+        roll_id = _require_roll(db, film_roll_id)
+        number = parse_int(frame_number, "frame_number", minimum=0)
+        captured = parse_date(capture_date, "capture_date")
+        subdir = "uploads/scans" if image_type == ImageType.scan else "uploads/contact_sheets"
+        rel_path, original = store_upload(file, subdir)
+    except ApiError as exc:
+        return from_exc(exc)
+    img = _new_image(
+        film_roll_id=roll_id,
+        image_type=image_type,
+        rel_path=rel_path,
+        original_filename=original,
+        frame_number=number,
         notes=notes or None,
-        capture_date=date.fromisoformat(capture_date) if capture_date else None,
+        capture_date=captured,
     )
     db.add(img)
     db.commit()
@@ -672,30 +1027,35 @@ async def upload_image(
 # ---------------------------
 # Contact sheet creation
 # ---------------------------
-@router.post("/films/{film_id}/contact_sheet")
-def create_contact_sheet(film_id: int, columns: int = 6, thumb_size: int = 300, db: Session = Depends(get_db)):
+@router.post(
+    "/films/{film_id}/contact_sheet",
+    response_model=schemas.ImageEnvelope,
+    responses={400: {"model": schemas.ErrorOut}, 404: {"model": schemas.ErrorOut}},
+)
+def create_contact_sheet(
+    film_id: int, columns: int = 6, thumb_size: int = 300, db: Session = Depends(get_db)
+):
     f = db.get(FilmRoll, film_id)
     if not f:
-        return {"error": "not_found"}
-    scans: List[ImageAsset] = (
-        db.query(ImageAsset)
-        .filter(ImageAsset.film_roll_id == film_id, ImageAsset.type == ImageType.scan)
-        .order_by(ImageAsset.frame_number.asc().nulls_last(), ImageAsset.id.asc())
-        .all()
-    )
+        return not_found("Roll")
+    columns = max(1, min(int(columns or 6), 20))
+    thumb_size = max(32, min(int(thumb_size or 300), 1000))
+    # R#24: the sheet is laid out in frame order, like everything else.
+    scans: List[ImageAsset] = frames_in_order(
+        db.query(ImageAsset).filter(
+            ImageAsset.film_roll_id == film_id, ImageAsset.type == ImageType.scan
+        )
+    ).all()
     if len(scans) < 2:
         return error_response(
-            "not_enough_images",
-            "A contact sheet needs at least two scans in this roll.",
+            "not_enough_images", "A contact sheet needs at least two scans in this roll."
         )
 
     # Prepare thumbnails
     thumbs: List[PILImage.Image] = []
     for i in scans:
-        path = i.path
-        abs_path = path if os.path.isabs(path) else os.path.join(os.getcwd(), path)
         try:
-            img = PILImage.open(abs_path).convert("RGB")
+            img = PILImage.open(_abs(i.path)).convert("RGB")
             img.thumbnail((thumb_size, thumb_size))
             # Center on square canvas
             canvas = PILImage.new("RGB", (thumb_size, thumb_size), color=(255, 255, 255))
@@ -709,34 +1069,24 @@ def create_contact_sheet(film_id: int, columns: int = 6, thumb_size: int = 300, 
 
     if len(thumbs) < 2:
         return error_response(
-            "not_enough_images",
-            "At least two scans in this roll must be readable images.",
+            "not_enough_images", "At least two scans in this roll must be readable images."
         )
 
     rows = ceil(len(thumbs) / columns)
-    sheet_w = columns * thumb_size
-    sheet_h = rows * thumb_size
-    sheet = PILImage.new("RGB", (sheet_w, sheet_h), color=(255, 255, 255))
-
+    sheet = PILImage.new("RGB", (columns * thumb_size, rows * thumb_size), color=(255, 255, 255))
     for idx, t in enumerate(thumbs):
-        r = idx // columns
-        c = idx % columns
-        sheet.paste(t, (c * thumb_size, r * thumb_size))
+        sheet.paste(t, ((idx % columns) * thumb_size, (idx // columns) * thumb_size))
 
-    # Save to contact sheets dir
     os.makedirs(os.path.join("static", "uploads", "contact_sheets"), exist_ok=True)
-    filename = f"{uuid4().hex}.jpg"
-    rel_path = os.path.join("static", "uploads", "contact_sheets", filename)
-    abs_path = os.path.join(os.getcwd(), rel_path)
-    sheet.save(abs_path, format="JPEG", quality=90)
+    rel_path = os.path.join("static", "uploads", "contact_sheets", f"{uuid4().hex}.jpg")
+    sheet.save(_abs(rel_path), format="JPEG", quality=90)
 
-    cs = ImageAsset(
+    cs = _new_image(
         film_roll_id=film_id,
-        type=ImageType.contact_sheet,
-        path=rel_path,
-        frame_number=None,
+        image_type=ImageType.contact_sheet,
+        rel_path=rel_path,
+        original_filename=f"contact-sheet-{film_id}.jpg",
         notes="Generated contact sheet",
-        capture_date=None,
     )
     db.add(cs)
     db.commit()
@@ -746,44 +1096,55 @@ def create_contact_sheet(film_id: int, columns: int = 6, thumb_size: int = 300, 
 # ---------------------------
 # Bulk upload (multiple files or ZIP)
 # ---------------------------
-@router.post("/films/{film_id}/images/bulk")
-async def bulk_upload_images(film_id: int, files: List[UploadFile] = File(...), db: Session = Depends(get_db)):
+@router.post(
+    "/films/{film_id}/images/bulk",
+    response_model=schemas.ImageListEnvelope,
+    responses={
+        404: {"model": schemas.ErrorOut},
+        413: {"model": schemas.ErrorOut},
+        415: {"model": schemas.ErrorOut},
+    },
+)
+def bulk_upload_images(
+    film_id: int, files: List[UploadFile] = File(...), db: Session = Depends(get_db)
+):
+    """Many scans into one roll. Each file keeps its name and, when the name says so,
+    gets its frame number from it (R#7, R#24)."""
     f = db.get(FilmRoll, film_id)
     if not f:
-        return {"error": "not_found"}
-    os.makedirs(os.path.join("static", "uploads", "scans"), exist_ok=True)
+        return not_found("Roll")
     created: List[ImageAsset] = []
-
-    for file in files:
-        try:
-            ext = os.path.splitext(file.filename)[1] or ".jpg"
-            unique_name = f"{uuid4().hex}{ext}"
-            rel_path = os.path.join("static", "uploads", "scans", unique_name)
-            abs_path = os.path.join(os.getcwd(), rel_path)
-            with open(abs_path, "wb") as out:
-                shutil.copyfileobj(file.file, out)
-            img = ImageAsset(
+    try:
+        for file in files:
+            rel_path, original = store_upload(file, "uploads/scans")
+            img = _new_image(
                 film_roll_id=film_id,
-                type=ImageType.scan,
-                path=rel_path,
-                frame_number=None,
-                notes=None,
-                capture_date=None,
+                image_type=ImageType.scan,
+                rel_path=rel_path,
+                original_filename=original,
             )
             db.add(img)
             created.append(img)
-        except Exception:
-            continue
+    except ApiError as exc:
+        # Everything or nothing: a rejected file must not leave half a roll behind.
+        db.rollback()
+        for image in created:
+            _remove_quietly(_abs(image.path))
+        return from_exc(exc)
 
     db.commit()
     return {"ok": True, "images": [image_to_dict(i) for i in created]}
 
 
-@router.post("/films/{film_id}/images/bulk_zip")
-async def bulk_upload_zip(film_id: int, file: UploadFile = File(...), db: Session = Depends(get_db)):
+@router.post(
+    "/films/{film_id}/images/bulk_zip",
+    response_model=schemas.ImageListEnvelope,
+    responses={400: {"model": schemas.ErrorOut}, 404: {"model": schemas.ErrorOut}},
+)
+def bulk_upload_zip(film_id: int, file: UploadFile = File(...), db: Session = Depends(get_db)):
     f = db.get(FilmRoll, film_id)
     if not f:
-        return {"error": "not_found"}
+        return not_found("Roll")
 
     # Write uploaded zip to temp then extract
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -794,55 +1155,69 @@ async def bulk_upload_zip(film_id: int, file: UploadFile = File(...), db: Sessio
             with zipfile.ZipFile(zip_path) as zf:
                 zf.extractall(tmpdir)
         except Exception:
-            return {"error": "invalid_zip"}
+            return error_response("invalid_zip", "That file is not a readable ZIP archive.", 400, "file")
 
         os.makedirs(os.path.join("static", "uploads", "scans"), exist_ok=True)
         created: List[ImageAsset] = []
+        skipped: List[str] = []
 
-        # Walk extracted files and import images
-        for root, _, files in os.walk(tmpdir):
-            for name in files:
+        # Walk extracted files in name order, so a roll keeps its scanner order even
+        # when the filenames carry no frame number.
+        for root, _, names in os.walk(tmpdir):
+            for name in sorted(names):
                 src = os.path.join(root, name)
-                # Skip the zip file itself
-                if src == zip_path:
+                if src == zip_path or name.startswith("."):
                     continue
-                # Basic image filter by extension
                 ext = os.path.splitext(name)[1].lower()
-                if ext not in {".jpg", ".jpeg", ".png", ".tif", ".tiff"}:
+                if ext not in ALLOWED_EXTENSIONS:
+                    skipped.append(name)
                     continue
                 try:
-                    unique_name = f"{uuid4().hex}{ext}"
-                    rel_path = os.path.join("static", "uploads", "scans", unique_name)
-                    abs_path = os.path.join(os.getcwd(), rel_path)
-                    shutil.copy(src, abs_path)
-                    img = ImageAsset(
+                    with open(src, "rb") as probe:
+                        if not _looks_like_image(probe.read(16)):
+                            skipped.append(name)
+                            continue
+                    if os.path.getsize(src) > max_upload_bytes():
+                        skipped.append(name)
+                        continue
+                    rel_path = os.path.join("static", "uploads", "scans", f"{uuid4().hex}{ext}")
+                    shutil.copy(src, _abs(rel_path))
+                    img = _new_image(
                         film_roll_id=film_id,
-                        type=ImageType.scan,
-                        path=rel_path,
-                        frame_number=None,
-                        notes=None,
-                        capture_date=None,
+                        image_type=ImageType.scan,
+                        rel_path=rel_path,
+                        original_filename=name,
                     )
                     db.add(img)
                     created.append(img)
-                except Exception:
+                except OSError:
+                    skipped.append(name)
                     continue
 
         db.commit()
         return {"ok": True, "images": [image_to_dict(i) for i in created]}
 
 
-@router.get("/cameras")
+# ---------------------------
+# Catalog: cameras
+# ---------------------------
+
+
+@router.get("/cameras", response_model=List[schemas.CameraOut])
 def list_cameras(db: Session = Depends(get_db)):
     items = db.query(Camera).order_by(Camera.name.asc()).all()
     return [camera_to_dict(c) for c in items]
 
 
-@router.get("/cameras/{camera_id}")
+@router.get(
+    "/cameras/{camera_id}",
+    response_model=schemas.CameraOut,
+    responses={404: {"model": schemas.ErrorOut}},
+)
 def get_camera(camera_id: int, db: Session = Depends(get_db)):
     c = db.get(Camera, camera_id)
     if not c:
-        return {"error": "not_found"}
+        return not_found("Camera")
     return camera_to_dict(c)
 
 
@@ -852,15 +1227,33 @@ def commit_unique(db: Session, what: str, name: Optional[str]):
         db.commit()
     except IntegrityError:
         db.rollback()
-        raise ApiError("duplicate_name", f"A {what} named “{name}” already exists.", 409)
+        raise ApiError("duplicate_name", f"A {what} named “{name}” already exists.", 409, "name")
 
 
-@router.post("/cameras")
-async def create_camera(request: Request, db: Session = Depends(get_db)):
+def _delete_catalog_entry(db: Session, prefix: str, entry, force: bool, label: str):
+    """Delete a camera/lens/film stock, refusing while rolls still use it (R#14)."""
+    in_use = _rolls_using(db, prefix, entry)
+    if in_use and not force:
+        return error_response(
+            "gear_in_use",
+            f"{in_use} roll{'' if in_use == 1 else 's'} still use “{entry.name}”. "
+            f"Delete it anyway with ?force=true; those rolls keep the name as plain text.",
+            409,
+        )
+    db.delete(entry)
+    db.commit()
+    return {"ok": True, "rolls_affected": in_use}
+
+
+@router.post(
+    "/cameras",
+    response_model=schemas.CameraEnvelope,
+    responses={400: {"model": schemas.ErrorOut}, 409: {"model": schemas.ErrorOut}},
+)
+def create_camera(body: schemas.CameraCreate, db: Session = Depends(get_db)):
     try:
-        payload = await read_json(request)
-        name = require_text(payload.get("name"), "name")
-        c = Camera(name=name, mount=payload.get("mount"), image_path=payload.get("image_path"), notes=payload.get("notes"))
+        name = require_name(body.name)
+        c = Camera(name=name, mount=body.mount, image_path=body.image_path, notes=body.notes)
         db.add(c)
         commit_unique(db, "camera", name)
     except ApiError as exc:
@@ -868,18 +1261,25 @@ async def create_camera(request: Request, db: Session = Depends(get_db)):
     return {"ok": True, "camera": camera_to_dict(c)}
 
 
-@router.put("/cameras/{camera_id}")
-async def update_camera(camera_id: int, request: Request, db: Session = Depends(get_db)):
+@router.put(
+    "/cameras/{camera_id}",
+    response_model=schemas.CameraEnvelope,
+    responses={
+        400: {"model": schemas.ErrorOut},
+        404: {"model": schemas.ErrorOut},
+        409: {"model": schemas.ErrorOut},
+    },
+)
+def update_camera(camera_id: int, body: schemas.CameraUpdate, db: Session = Depends(get_db)):
     c = db.get(Camera, camera_id)
     if not c:
-        return {"error": "not_found"}
+        return not_found("Camera")
     try:
-        payload = await read_json(request)
-        if "name" in payload:
-            c.name = require_text(payload.get("name"), "name")
+        if body.given("name"):
+            c.name = require_name(body.name)
         for key in ["mount", "image_path", "notes"]:
-            if key in payload:
-                setattr(c, key, payload[key] or None)
+            if body.given(key):
+                setattr(c, key, getattr(body, key) or None)
         commit_unique(db, "camera", c.name)
     except ApiError as exc:
         db.rollback()
@@ -887,44 +1287,52 @@ async def update_camera(camera_id: int, request: Request, db: Session = Depends(
     return {"ok": True, "camera": camera_to_dict(c)}
 
 
-@router.delete("/cameras/{camera_id}")
-def delete_camera(camera_id: int, db: Session = Depends(get_db)):
+@router.delete("/cameras/{camera_id}", responses={404: {"model": schemas.ErrorOut}, 409: {"model": schemas.ErrorOut}})
+def delete_camera(camera_id: int, force: bool = False, db: Session = Depends(get_db)):
     c = db.get(Camera, camera_id)
     if not c:
-        return {"error": "not_found"}
-    db.delete(c)
-    db.commit()
-    return {"ok": True}
+        return not_found("Camera")
+    return _delete_catalog_entry(db, "camera", c, force, "camera")
 
 
-@router.post("/cameras/{camera_id}/image")
-async def upload_camera_image(camera_id: int, file: UploadFile = File(...), db: Session = Depends(get_db)):
+@router.post(
+    "/cameras/{camera_id}/image",
+    response_model=schemas.CameraEnvelope,
+    responses={404: {"model": schemas.ErrorOut}, 415: {"model": schemas.ErrorOut}},
+)
+def upload_camera_image(camera_id: int, file: UploadFile = File(...), db: Session = Depends(get_db)):
     c = db.get(Camera, camera_id)
     if not c:
-        return {"error": "not_found"}
-    os.makedirs(os.path.join("static", "catalog", "cameras"), exist_ok=True)
-    ext = os.path.splitext(file.filename)[1]
-    unique_name = f"{uuid4().hex}{ext}"
-    rel_path = os.path.join("static", "catalog", "cameras", unique_name)
-    abs_path = os.path.join(os.getcwd(), rel_path)
-    with open(abs_path, "wb") as out:
-        shutil.copyfileobj(file.file, out)
+        return not_found("Camera")
+    try:
+        rel_path, _ = store_upload(file, "catalog/cameras")
+    except ApiError as exc:
+        return from_exc(exc)
     c.image_path = rel_path
     db.commit()
     return {"ok": True, "camera": camera_to_dict(c)}
 
 
-@router.get("/filmstocks")
+# ---------------------------
+# Catalog: film stocks
+# ---------------------------
+
+
+@router.get("/filmstocks", response_model=List[schemas.FilmStockOut])
 def list_filmstocks(db: Session = Depends(get_db)):
     items = db.query(FilmStock).order_by(FilmStock.name.asc()).all()
     return [filmstock_to_dict(s) for s in items]
 
 
-@router.get("/filmstocks/{stock_id}")
+@router.get(
+    "/filmstocks/{stock_id}",
+    response_model=schemas.FilmStockOut,
+    responses={404: {"model": schemas.ErrorOut}},
+)
 def get_filmstock(stock_id: int, db: Session = Depends(get_db)):
     s = db.get(FilmStock, stock_id)
     if not s:
-        return {"error": "not_found"}
+        return not_found("Film stock")
     return filmstock_to_dict(s)
 
 
@@ -933,48 +1341,65 @@ def parse_kind(value) -> FilmKind:
         return FilmKind(value)
     except (ValueError, KeyError):
         valid = ", ".join(k.value for k in FilmKind)
-        raise ApiError("invalid_kind", f"Kind must be one of: {valid}.")
+        raise ApiError("invalid_kind", f"Kind must be one of: {valid}.", 400, "kind")
 
 
-@router.post("/filmstocks")
-async def create_filmstock(request: Request, db: Session = Depends(get_db)):
+@router.post(
+    "/filmstocks",
+    response_model=schemas.FilmStockEnvelope,
+    responses={400: {"model": schemas.ErrorOut}, 409: {"model": schemas.ErrorOut}},
+)
+def create_filmstock(body: schemas.FilmStockCreate, db: Session = Depends(get_db)):
     try:
-        payload = await read_json(request)
-        name = require_text(payload.get("name"), "name")
+        name = require_name(body.name)
         s = FilmStock(
             name=name,
-            iso=parse_int(payload.get("iso"), "iso", minimum=1),
-            kind=parse_kind(payload.get("kind")),
-            expired=to_bool(payload.get("expired")),
-            expiration_date=parse_date(payload.get("expiration_date"), "expiration_date"),
-            image_path=payload.get("image_path"),
+            manufacturer=clean_name(body.manufacturer),
+            format=parse_choice(body.format, "format", FILM_FORMATS),
+            iso=parse_int(body.iso, "iso", minimum=1),
+            kind=parse_kind(body.kind),
+            expired=to_bool(body.expired),
+            expiration_date=parse_date(body.expiration_date, "expiration_date"),
+            image_path=body.image_path,
         )
         db.add(s)
         commit_unique(db, "film stock", name)
     except ApiError as exc:
+        db.rollback()
         return from_exc(exc)
     return {"ok": True, "filmstock": filmstock_to_dict(s)}
 
 
-@router.put("/filmstocks/{stock_id}")
-async def update_filmstock(stock_id: int, request: Request, db: Session = Depends(get_db)):
+@router.put(
+    "/filmstocks/{stock_id}",
+    response_model=schemas.FilmStockEnvelope,
+    responses={
+        400: {"model": schemas.ErrorOut},
+        404: {"model": schemas.ErrorOut},
+        409: {"model": schemas.ErrorOut},
+    },
+)
+def update_filmstock(stock_id: int, body: schemas.FilmStockUpdate, db: Session = Depends(get_db)):
     s = db.get(FilmStock, stock_id)
     if not s:
-        return {"error": "not_found"}
+        return not_found("Film stock")
     try:
-        payload = await read_json(request)
-        if "kind" in payload and payload["kind"]:
-            s.kind = parse_kind(payload["kind"])
-        if "name" in payload:
-            s.name = require_text(payload.get("name"), "name")
-        if "iso" in payload:
-            s.iso = parse_int(payload["iso"], "iso", minimum=1)
-        if "image_path" in payload:
-            s.image_path = payload["image_path"]
-        if "expired" in payload:
-            s.expired = to_bool(payload["expired"])
-        if "expiration_date" in payload:
-            s.expiration_date = parse_date(payload["expiration_date"], "expiration_date")
+        if body.given("kind") and body.kind:
+            s.kind = parse_kind(body.kind)
+        if body.given("name"):
+            s.name = require_name(body.name)
+        if body.given("manufacturer"):
+            s.manufacturer = clean_name(body.manufacturer)
+        if body.given("format"):
+            s.format = parse_choice(body.format, "format", FILM_FORMATS)
+        if body.given("iso"):
+            s.iso = parse_int(body.iso, "iso", minimum=1)
+        if body.given("image_path"):
+            s.image_path = body.image_path
+        if body.given("expired"):
+            s.expired = to_bool(body.expired)
+        if body.given("expiration_date"):
+            s.expiration_date = parse_date(body.expiration_date, "expiration_date")
         commit_unique(db, "film stock", s.name)
     except ApiError as exc:
         db.rollback()
@@ -983,53 +1408,65 @@ async def update_filmstock(stock_id: int, request: Request, db: Session = Depend
     return {"ok": True, "filmstock": filmstock_to_dict(s)}
 
 
-@router.delete("/filmstocks/{stock_id}")
-def delete_filmstock(stock_id: int, db: Session = Depends(get_db)):
+@router.delete(
+    "/filmstocks/{stock_id}",
+    responses={404: {"model": schemas.ErrorOut}, 409: {"model": schemas.ErrorOut}},
+)
+def delete_filmstock(stock_id: int, force: bool = False, db: Session = Depends(get_db)):
     s = db.get(FilmStock, stock_id)
     if not s:
-        return {"error": "not_found"}
-    db.delete(s)
-    db.commit()
-    return {"ok": True}
+        return not_found("Film stock")
+    return _delete_catalog_entry(db, "film_stock", s, force, "film stock")
 
 
-@router.post("/filmstocks/{stock_id}/image")
-async def upload_filmstock_image(stock_id: int, file: UploadFile = File(...), db: Session = Depends(get_db)):
+@router.post(
+    "/filmstocks/{stock_id}/image",
+    response_model=schemas.FilmStockEnvelope,
+    responses={404: {"model": schemas.ErrorOut}, 415: {"model": schemas.ErrorOut}},
+)
+def upload_filmstock_image(stock_id: int, file: UploadFile = File(...), db: Session = Depends(get_db)):
     s = db.get(FilmStock, stock_id)
     if not s:
-        return {"error": "not_found"}
-    os.makedirs(os.path.join("static", "catalog", "films"), exist_ok=True)
-    ext = os.path.splitext(file.filename)[1]
-    unique_name = f"{uuid4().hex}{ext}"
-    rel_path = os.path.join("static", "catalog", "films", unique_name)
-    abs_path = os.path.join(os.getcwd(), rel_path)
-    with open(abs_path, "wb") as out:
-        shutil.copyfileobj(file.file, out)
+        return not_found("Film stock")
+    try:
+        rel_path, _ = store_upload(file, "catalog/films")
+    except ApiError as exc:
+        return from_exc(exc)
     s.image_path = rel_path
     db.commit()
     return {"ok": True, "filmstock": filmstock_to_dict(s)}
 
 
-@router.get("/lenses")
+# ---------------------------
+# Catalog: lenses
+# ---------------------------
+
+
+@router.get("/lenses", response_model=List[schemas.LensOut])
 def list_lenses(db: Session = Depends(get_db)):
     items = db.query(Lens).order_by(Lens.name.asc()).all()
     return [lens_to_dict(l) for l in items]
 
 
-@router.get("/lenses/{lens_id}")
+@router.get(
+    "/lenses/{lens_id}", response_model=schemas.LensOut, responses={404: {"model": schemas.ErrorOut}}
+)
 def get_lens(lens_id: int, db: Session = Depends(get_db)):
     l = db.get(Lens, lens_id)
     if not l:
-        return {"error": "not_found"}
+        return not_found("Lens")
     return lens_to_dict(l)
 
 
-@router.post("/lenses")
-async def create_lens(request: Request, db: Session = Depends(get_db)):
+@router.post(
+    "/lenses",
+    response_model=schemas.LensEnvelope,
+    responses={400: {"model": schemas.ErrorOut}, 409: {"model": schemas.ErrorOut}},
+)
+def create_lens(body: schemas.LensCreate, db: Session = Depends(get_db)):
     try:
-        payload = await read_json(request)
-        name = require_text(payload.get("name"), "name")
-        l = Lens(name=name, mount=payload.get("mount"), image_path=payload.get("image_path"), notes=payload.get("notes"))
+        name = require_name(body.name)
+        l = Lens(name=name, mount=body.mount, image_path=body.image_path, notes=body.notes)
         db.add(l)
         commit_unique(db, "lens", name)
     except ApiError as exc:
@@ -1037,18 +1474,25 @@ async def create_lens(request: Request, db: Session = Depends(get_db)):
     return {"ok": True, "lens": lens_to_dict(l)}
 
 
-@router.put("/lenses/{lens_id}")
-async def update_lens(lens_id: int, request: Request, db: Session = Depends(get_db)):
+@router.put(
+    "/lenses/{lens_id}",
+    response_model=schemas.LensEnvelope,
+    responses={
+        400: {"model": schemas.ErrorOut},
+        404: {"model": schemas.ErrorOut},
+        409: {"model": schemas.ErrorOut},
+    },
+)
+def update_lens(lens_id: int, body: schemas.LensUpdate, db: Session = Depends(get_db)):
     l = db.get(Lens, lens_id)
     if not l:
-        return {"error": "not_found"}
+        return not_found("Lens")
     try:
-        payload = await read_json(request)
-        if "name" in payload:
-            l.name = require_text(payload.get("name"), "name")
+        if body.given("name"):
+            l.name = require_name(body.name)
         for key in ["mount", "image_path", "notes"]:
-            if key in payload:
-                setattr(l, key, payload[key] or None)
+            if body.given(key):
+                setattr(l, key, getattr(body, key) or None)
         commit_unique(db, "lens", l.name)
     except ApiError as exc:
         db.rollback()
@@ -1057,28 +1501,103 @@ async def update_lens(lens_id: int, request: Request, db: Session = Depends(get_
     return {"ok": True, "lens": lens_to_dict(l)}
 
 
-@router.delete("/lenses/{lens_id}")
-def delete_lens(lens_id: int, db: Session = Depends(get_db)):
+@router.delete(
+    "/lenses/{lens_id}", responses={404: {"model": schemas.ErrorOut}, 409: {"model": schemas.ErrorOut}}
+)
+def delete_lens(lens_id: int, force: bool = False, db: Session = Depends(get_db)):
     l = db.get(Lens, lens_id)
     if not l:
-        return {"error": "not_found"}
-    db.delete(l)
-    db.commit()
-    return {"ok": True}
+        return not_found("Lens")
+    return _delete_catalog_entry(db, "lens", l, force, "lens")
 
 
-@router.post("/lenses/{lens_id}/image")
-async def upload_lens_image(lens_id: int, file: UploadFile = File(...), db: Session = Depends(get_db)):
+@router.post(
+    "/lenses/{lens_id}/image",
+    response_model=schemas.LensEnvelope,
+    responses={404: {"model": schemas.ErrorOut}, 415: {"model": schemas.ErrorOut}},
+)
+def upload_lens_image(lens_id: int, file: UploadFile = File(...), db: Session = Depends(get_db)):
     l = db.get(Lens, lens_id)
     if not l:
-        return {"error": "not_found"}
-    os.makedirs(os.path.join("static", "catalog", "lenses"), exist_ok=True)
-    ext = os.path.splitext(file.filename)[1]
-    unique_name = f"{uuid4().hex}{ext}"
-    rel_path = os.path.join("static", "catalog", "lenses", unique_name)
-    abs_path = os.path.join(os.getcwd(), rel_path)
-    with open(abs_path, "wb") as out:
-        shutil.copyfileobj(file.file, out)
+        return not_found("Lens")
+    try:
+        rel_path, _ = store_upload(file, "catalog/lenses")
+    except ApiError as exc:
+        return from_exc(exc)
     l.image_path = rel_path
     db.commit()
     return {"ok": True, "lens": lens_to_dict(l)}
+
+
+# ---------------------------
+# Maintenance
+# ---------------------------
+
+
+@router.post("/seed", response_model=schemas.SeedResult)
+def seed(db: Session = Depends(get_db)):
+    """Put the starter cameras and film stocks back (R#11).
+
+    Startup only seeds while a catalog table is empty, so this endpoint is the way
+    to ask for them again. Rows that are already there are left alone.
+    """
+    return {"ok": True, "added": seed_catalog(db, force=True)}
+
+
+@router.post("/maintenance/sweep_orphans", response_model=schemas.SweepResult)
+def sweep_orphans(
+    apply: bool = Query(False, description="Actually delete the orphan files. Default: dry run."),
+    db: Session = Depends(get_db),
+):
+    """Find files with no record and records with no file (R#9).
+
+    A dry run by default: it reports what it would delete. ``?apply=true`` deletes the
+    orphan **files**; the records whose file is missing are only reported, because
+    deleting them would throw away the metadata that is the point of the archive.
+    """
+    known = set()
+    for (path,) in db.query(ImageAsset.path).all():
+        if path:
+            known.add(os.path.abspath(_abs(path)))
+
+    orphans: List[str] = []
+    root = _abs(UPLOAD_ROOT)
+    for folder, _, names in os.walk(root):
+        for name in names:
+            if name.startswith("."):
+                continue
+            absolute = os.path.abspath(os.path.join(folder, name))
+            if absolute not in known:
+                orphans.append(os.path.relpath(absolute, os.getcwd()))
+
+    missing = [
+        {
+            "image_id": image.id,
+            "path": image.path,
+            "film_roll_id": image.film_roll_id,
+            "original_filename": image.original_filename,
+        }
+        for image in db.query(ImageAsset).all()
+        if (image.storage_mode or "managed") == "managed" and not os.path.exists(_abs(image.path))
+    ]
+
+    deleted = 0
+    reclaimed = 0
+    if apply:
+        for relative in orphans:
+            absolute = _abs(relative)
+            try:
+                reclaimed += os.path.getsize(absolute)
+                os.remove(absolute)
+                deleted += 1
+            except OSError:
+                reclaimed = max(0, reclaimed - 0)
+
+    return {
+        "ok": True,
+        "applied": bool(apply),
+        "orphan_files": sorted(orphans),
+        "missing_files": missing,
+        "deleted_files": deleted,
+        "bytes_reclaimed": reclaimed,
+    }
