@@ -92,6 +92,57 @@ chunk. Pillow exposes it via `Image.info["xmp"]` / `getxmp()`; parse the `negpy`
 Recommended NegPy export preset for round-tripping: `filename_pattern =
 "{{ roll }}_{{ frame|pad(3) }}_{{ film }}"`, JPEG + TIFF, output to a folder NegArchive watches.
 
+## What M5 actually ships
+
+All of it is in `app/services/negpy/` and `app/routers/negpy.py`; the tests are
+`tests/test_m5_negpy.py`. Nothing imports, copies or vendors NegPy.
+
+| Direction | What | Where |
+|---|---|---|
+| NegPy → NegArchive | EXIF + `negpy:` XMP read on **every** upload path and on every file link mode touches; blanks filled, nothing overwritten | `negpy/xmp.py`, `negpy/metadata.py` |
+| NegPy → NegArchive | `.negpy` sidecars: accepted beside a scan in a bulk upload or a ZIP, found next to a linked file, re-read when their mtime moves, shown as "Edited in NegPy" plus a one-line summary | `negpy/sidecar.py` |
+| NegPy → NegArchive | the export filename preset, parsed **before** the looser scanner rule | `negpy/naming.py` |
+| NegArchive → NegPy | `gear/cameras.json`, `lenses.json`, `film_stocks.json`, merge-safe on the `na-` id prefix, written atomically | `negpy/gear.py` |
+| NegArchive → NegPy | a roll folder of hard links named with the preset, plus `presets/metadata/<serial>.json` | `negpy/handoff.py` |
+| both | the sampled content hash, so `edits.db` and a frame here can be matched (`GET /api/negpy/lookup?hash=…`) | `app/services/hashing.py` |
+
+Four decisions worth keeping in mind when this is extended:
+
+1. **Ingest fills blanks, never overwrites.** That single rule is what makes it safe to run
+   automatically on every upload, and it is why a re-ingest is a no-op. The archive is the system
+   of record for the physical roll; a file may inform it and may not correct it.
+2. **Gear is matched, not invented** (unless `negpy_create_gear` is on). EXIF spellings —
+   "NIKON CORPORATION NIKON F5" — would otherwise fill the Gear page with near-duplicates of
+   entries somebody curated.
+3. **The recipe is reported, not interpreted.** NegArchive stores the parsed sidecar whole and
+   summarises only keys whose meaning is obvious from their name. Rendering somebody else's edit
+   badly is worse than not rendering it at all, and NegPy's settings will keep changing.
+4. **XMP is parsed defensively.** Pillow's `getxmp()` needs `defusedxml`, and `xml.etree` is
+   documented as vulnerable to entity expansion. A packet declaring a DTD or an entity, or one
+   over 4 MiB, is refused before the parser sees it. Files come off a scanner's SMB share; they are
+   data, not instructions.
+
+### The filename preset, and why it is parsed strictly
+
+Publish `filename_pattern = "{{ roll }}_{{ frame|pad(3) }}_{{ film }}"` in NegPy and a file
+survives a converter that strips EXIF and XMP. But the film name usually ends in the ISO, so
+M2's "last number in the name wins" rule reads `NEG-2024-0002_013_Kodak Gold 200.jpg` as frame
+**200** — and files every frame of the roll as 200. `frame_number_from_filename` therefore tries
+the whole-name preset shape before that rule. A name that does not match the preset is left to the
+loose rule exactly as before.
+
+### Where NegArchive writes
+
+| | Default | Override |
+|---|---|---|
+| NegPy user directory (`gear/`, `presets/`) | `DATA_DIR/negpy/user` | `NEGPY_USER_DIR`, or the `negpy_user_dir` setting |
+| Prepared roll folders | `DATA_DIR/negpy/handoff` | `NEGPY_EXPORT_DIR`, or the `negpy_handoff_dir` setting |
+
+A path chosen in the UI must resolve inside `DATA_DIR/negpy`, `NEGPY_USER_DIR`, `NEGPY_EXPORT_DIR`,
+`NEGPY_DIRS_ALLOW` or `LIBRARY_ROOTS_ALLOW`; anything else is a 403. Same rule as M3's library
+roots, same reason: the API has no password by default, and "POST me a path and I will write files
+into it" is not something to offer a LAN.
+
 ## Optional upstream proposals (GPL contributions to NegPy)
 
 Only if the owner wants to contribute; NegArchive must not depend on them.
@@ -100,3 +151,10 @@ Only if the owner wants to contribute; NegArchive must not depend on them.
    flowing into `negpy:` XMP and the filename context. Framed as capture provenance, not an index.
 2. A headless export entry point (`python -m negpy export --preset X folder/`) built from the
    Qt-free pieces (`LoaderFactory` → `ImageProcessor` → `encoders` → `embed_metadata`).
+
+Neither has been proposed upstream yet, and **NegArchive must keep working if neither ever lands**
+— which is the whole point of M5 being files. If the first one does land, the mapping is already
+decided: `container`/`sleeve`/`archive_serial` are what M4's location tree calls a node's path, the
+sleeve node and `film_rolls.archive_serial`, and NegArchive would read them back out of
+`negpy:` XMP in `negpy/metadata.py` next to `CaptureRoll`. Until then the serial travels in
+`negpy:CaptureRoll`, which NegPy already has, and in the filename.

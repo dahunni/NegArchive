@@ -66,6 +66,12 @@ services:
       # The container only sees its bridge address; tell it the host's LAN name
       # or IP so the footer and the QR code point somewhere a phone can reach.
       NEGARCHIVE_PUBLIC_HOST: ${NEGARCHIVE_PUBLIC_HOST:-}
+      # M5, NegPy. All optional: unset means "inside /data/negpy", which needs no
+      # mount and is part of a backup. Set NEGPY_USER_DIR to a path you mount below
+      # to write gear/*.json and presets/ straight into NegPy's user directory.
+      NEGPY_USER_DIR: ${NEGPY_USER_DIR:-}
+      NEGPY_EXPORT_DIR: ${NEGPY_EXPORT_DIR:-}
+      NEGPY_DIRS_ALLOW: ${NEGPY_DIRS_ALLOW:-}
       UI_PORT: ${UI_PORT:-8021}
     volumes:
       - ${DATA_DIR:-./data}:/data

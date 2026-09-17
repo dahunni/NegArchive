@@ -9,7 +9,9 @@ default (see [A shared password](#a-shared-password)). A full review with confir
 [docs/REVIEW.md](docs/REVIEW.md); the task list is in [docs/ROADMAP.md](docs/ROADMAP.md).
 Milestones M0 (the bugs that broke shipped workflows in Docker), M1 (the UI rework), M2 (archive
 integrity: Postgres only, Alembic, original filenames, gear foreign keys, validation, file
-lifecycle) and M3 (offline-first: one Compose stack, import by reference, backup, PWA) are done;
+lifecycle), M3 (offline-first: one Compose stack, import by reference, backup, PWA), M4 (the
+physical archive: serials, locations, lifecycle, codes, printouts, scanner console) and M5 (the
+NegPy integration: metadata ingest, gear sync, roll handoff, sidecars) are done;
 read the [Known issues](#known-issues) section before deploying.
 
 ## Where this is going
@@ -20,7 +22,7 @@ Three goals drive the roadmap (details and reasoning in [docs/ROADMAP.md](docs/R
    storage locations and the gear catalog live here. [NegPy](https://github.com/marcinz606/NegPy)
    stays the negative-conversion tool; the two exchange files (gear JSON, XMP metadata, `.negpy`
    sidecars, filenames), never code. See [docs/NEGPY_INTEGRATION.md](docs/NEGPY_INTEGRATION.md)
-   for why, and for the field mappings.
+   for why, and for the field mappings. *(M5, done — see [Working with NegPy](#working-with-negpy-m5).)*
 2. **Offline-first, on Postgres.** No runtime network calls, one Compose stack that includes
    Postgres, one command to run, everything exportable as plain files, import-by-reference so
    scans are not duplicated, a watch folder for scanner output, and an installable PWA for the
@@ -93,11 +95,24 @@ app/                    FastAPI backend
   routers/library.py    library roots — import by reference and the watch folder
   routers/backup.py     export, import and the roll CSV
   routers/system.py     health, LAN info, the QR code, login, settings
-  services/hashing.py   the sampled SHA-256 that identifies a scan
+  routers/locations.py  the storage tree, binder pages, moves (M4)
+  routers/scan.py       the scanner console's grammar and command cards (M4)
+  routers/negpy.py      status, gear sync, roll handoff, ingest, hash lookup (M5)
+  services/hashing.py   the sampled SHA-256 that identifies a scan — and ties it to NegPy
   services/importer.py  scanning a library root into rolls and linked frames
   services/watcher.py   the background poller
   services/backup.py    the export/import format
   services/network.py   which address the phone should type
+  services/serials.py   NEG-YYYY-NNNN: allocated, unique, frozen once printed (M4)
+  services/locations.py the tree, page order and next-free-page (M4)
+  services/strips.py    which strip and position a frame sits at (M4)
+  services/lifecycle.py loaded → shot → at the lab → back → scanned → sleeved (M4)
+  services/codes.py     QR and Code128 as SVG (M4)
+  services/negpy/       everything about NegPy, and nothing of NegPy (M5):
+                        xmp.py + metadata.py read a scan's EXIF and `negpy:` XMP,
+                        naming.py the export filename preset, sidecar.py the `.negpy`
+                        files, gear.py writes NegPy's gear/*.json, handoff.py prepares
+                        a roll folder and preset, dirs.py where any of that may be written
 alembic/                the schema: versions/<YYYYMMDD_HHMM>_<slug>.py, env.py reads DATABASE_URL
 alembic.ini             `sqlalchemy.url` deliberately empty
 scripts/                backup.sh, restore.sh, seed_demo.py, make_icons.py,
@@ -109,6 +124,7 @@ frontend/               Next.js app (app router)
                         frame-grid, frame-viewer, upload-zone, gear-section, gear-dialog,
                         settings-workspace, lan-footer, login-gate, offline-banner,
                         empty/error states and skeletons; components/ui is shadcn
+  components/negpy-handoff-button.tsx  "Open in NegPy": prepare the folder, hand over the paths
   lib/api.ts            typed fetch helpers, API base handling, the session token, ApiError
   lib/format.ts         date range, storage and frame-label formatting
   public/sw.js          the service worker; public/manifest.webmanifest and public/icons
@@ -116,7 +132,9 @@ frontend/               Next.js app (app router)
   next.config.mjs       the /api and /static rewrites, and the M1 route redirects
 tests/                  pytest suite, Postgres only (skipped without DATABASE_URL); test_m2_*
                         cover the migrations, filenames, gear ids, validation and files;
-                        test_m3_* cover link mode, backup, pagination, LAN and the password
+                        test_m3_* cover link mode, backup, pagination, LAN and the password;
+                        test_m4_paper.py the physical archive; test_m5_negpy.py the NegPy
+                        formats — XMP, sidecars, gear merge, handoff, hash compatibility
 docs/                   REVIEW.md, ROADMAP.md, NEGPY_INTEGRATION.md
 static/catalog/         the bundled catalog art, copied into DATA_DIR/catalog on first start
 data/                   everything the archive owns (git-ignored; DATA_DIR)
@@ -454,11 +472,27 @@ records are reported, never deleted.
 `GET /export` (streamed ZIP), `GET /export.json`, `GET /export/rolls.csv`,
 `POST /import?dry_run=false` (multipart `file`), `GET /backups`.
 
+### NegPy (M5)
+
+`GET /negpy/status` → where the gear files and roll folders go, whether metadata ingest is on,
+when the gear library was last written, the recommended export filename pattern, and how many
+frames have been read or edited in NegPy.
+`POST /negpy/gear/sync?dry_run=false` → writes `cameras.json`, `lenses.json`, `film_stocks.json`;
+entries whose id does not start with `na-` are kept untouched.
+`POST /negpy/rolls/{id}/handoff` (`{"mode": "link" | "copy"}`) → a folder of the roll's scans named
+with the export preset, plus `presets/metadata/<serial>.json`. Originals are never moved.
+`POST /negpy/ingest` (`{film_id?, image_ids?, all?, limit?}`) → re-reads files already in the
+archive and fills blanks only; with no body it works through frames nothing has ever read.
+`GET /negpy/lookup?hash=…&path=…` → which frame (and roll, and serial) a NegPy content hash is.
+
 ### System
 
 `GET /health` (checks the database too), `GET /system/info`, `GET /system/qr.svg?url=`,
 `POST /system/login` (`{password}`), `POST /system/logout`,
-`GET|PUT /system/settings` (currently one key, `watch_enabled`).
+`GET|PUT /system/settings` — the allowlisted keys: `watch_enabled`, `serial_prefix`,
+`public_base_url`, `label_spine_mm`, `label_sticker_mm` (M4), `negpy_ingest`, `negpy_create_gear`,
+`negpy_user_dir`, `negpy_handoff_dir`, `negpy_handoff_mode` (M5). A folder setting outside the
+allowed bases is a 403 `path_not_allowed`.
 
 `/health`, `/system/info` and `/system/login` stay open when a password is set; everything else,
 `/static` included, needs `Authorization: Bearer <token>` or the session cookie.
@@ -478,6 +512,16 @@ curl -X POST http://localhost:8010/api/films -H 'Content-Type: application/json'
 curl -X POST http://localhost:8010/api/films/1/images/bulk -F 'files=@Roll12_007.tif'   # frame 7
 curl -X DELETE 'http://localhost:8010/api/images/12?keep_files=true'
 curl -X POST http://localhost:8010/api/maintenance/sweep_orphans
+```
+
+```bash
+# M5: a NegPy export and its sidecar, in one upload; the file says which frame it is
+curl -X POST http://localhost:8010/api/films/1/images/bulk \
+  -F 'files=@NEG-2024-0002_013_Kodak Gold 200.jpg' \
+  -F 'files=@NEG-2024-0002_013_Kodak Gold 200.jpg.negpy'
+curl -X POST http://localhost:8010/api/negpy/gear/sync
+curl -X POST http://localhost:8010/api/negpy/rolls/1/handoff -H 'Content-Type: application/json' \
+  -d '{"mode":"link"}'
 ```
 
 ## Import by reference and the watch folder
@@ -661,6 +705,66 @@ the whole workflow is scans only. The phone camera scans QR codes too (needs HTT
 cards (A6), binder spine labels, location labels, binder indexes and the whole tree. The **Print**
 page lists rolls that never had a label or moved since the last one.
 
+## Working with NegPy (M5)
+
+[NegPy](https://github.com/marcinz606/NegPy) converts negatives; NegArchive keeps track of them.
+The two never call each other — NegPy has no CLI, no URL scheme and no importable API, and it is
+GPL-3 where this is MIT — so everything below is **files**, in both directions. None of it needs
+NegPy to be running, or even installed on the machine the archive runs on.
+
+**A scan you export from NegPy already knows what it is.** On every upload (and on every file a
+library root links), NegArchive reads the file's EXIF and the `negpy:` XMP namespace and fills in
+what is still empty: the frame number, the capture date, the frame's notes, and the roll's camera,
+lens and film if the catalog has them. `negpy:CaptureRoll` files a frame that arrived without a
+roll into the roll whose serial — or, unambiguously, title — it names. **Ingest only ever fills a
+blank.** Anything you typed wins, so it is safe to leave on, and it is on by default. Turn it off,
+or let it add gear the catalog does not have yet, under **Settings → NegPy**.
+
+**The filename is the metadata of last resort.** Set NegPy's export pattern to
+
+```
+{{ roll }}_{{ frame|pad(3) }}_{{ film }}
+```
+
+and a file that goes through a converter which strips EXIF still says which roll and frame it is.
+NegArchive parses that shape strictly: `NEG-2024-0002_013_Kodak Gold 200.jpg` is frame 13, not
+frame 200.
+
+**Your gear, in NegPy's gear library.** *Settings → NegPy → Write gear for NegPy* writes
+`cameras.json`, `lenses.json` and `film_stocks.json` in NegPy's own camelCase schema. Every entry
+NegArchive owns has an id like `na-cam-3`, and **nothing else in those files is touched**: NegPy's
+bundled cameras and anything you added by hand are read, kept and written back in place.
+
+**"Open in NegPy"** on a roll prepares a folder named after the serial holding every scan (hard
+links by default, so a 40 GB roll costs nothing), any `.negpy` sidecars, a `README.txt` with the
+three steps, and a metadata preset at `presets/metadata/<serial>.json` carrying the roll's serial,
+date and gear as the `na-…` ids above. Add the folder as a NegPy library root or Hot Folder, apply
+the preset, and every frame comes out carrying the serial printed on the sleeve the negatives are
+in. Nothing original is moved, renamed or changed.
+
+**Sidecars.** A `.negpy` file next to a scan is kept: uploaded beside its image (single files or in
+a ZIP), found next to a linked file, carried into an export and into a handoff, and deleted with
+the frame. The viewer then shows an **Edited in NegPy** badge and a one-line summary of the recipe
+— NegArchive stores the whole recipe but deliberately does not interpret it.
+
+**Where the files go.** With nothing configured, inside the archive's own data directory
+(`data/negpy/user/gear`, `data/negpy/handoff`), so it works out of the box and is part of a backup.
+Set `NEGPY_USER_DIR` (the same variable NegPy reads) and/or `NEGPY_EXPORT_DIR` to write straight
+into NegPy's user directory instead. A path in Settings must sit inside one of those, inside
+`NEGPY_DIRS_ALLOW`, inside `LIBRARY_ROOTS_ALLOW` or inside `data/negpy` — anything else is refused
+with a 403, for the same reason library roots are: the API has no password by default.
+
+**The content hash** NegArchive stores on every frame is NegPy's: SHA-256 of the file size plus a
+1 MiB head, a 1 MiB tail and 16 × 256 KiB interior chunks, re-implemented from the written
+specification in `app/services/hashing.py` (never imported — that would make this a derivative of
+GPL code). So a row in NegPy's `edits.db` and a frame here can be matched:
+`GET /api/negpy/lookup?hash=…` answers with the roll, the serial and the frame number.
+
+**Endpoints:** `GET /api/negpy/status`, `POST /api/negpy/gear/sync[?dry_run=true]`,
+`POST /api/negpy/rolls/{id}/handoff` (`{"mode": "link" | "copy"}`), `POST /api/negpy/ingest`
+(re-read files already in the archive — the catch-up for everything imported before M5),
+`GET /api/negpy/lookup?hash=…&path=…`.
+
 ## Known issues
 
 The full list with evidence and file references is [docs/REVIEW.md](docs/REVIEW.md). M2 closed
@@ -695,10 +799,11 @@ Full checklist: [docs/ROADMAP.md](docs/ROADMAP.md).
 4. **M3** *(done)* offline-first: one Compose stack and one `data/` directory, pagination and
    server-side search, import by reference, watch folder, backup/restore and a format-independent
    export, an installable PWA, the LAN URL and QR code, an optional shared password, tests and CI.
-5. **M4** paper ↔ virtual: storage hierarchy, serial scheme, QR labels, printable contact and
-   index sheets, strip/position, paper-twin capture, prints and loans.
-6. **M5** NegPy: ingest its XMP on upload, write its gear JSON, roll handoff with a metadata
-   preset, sidecar awareness, compatible content hash.
+5. **M4** *(done)* paper ↔ virtual: storage hierarchy, serial scheme, QR labels, printable
+   contact and index sheets, strip/position, lifecycle, scanner console, print queue.
+6. **M5** *(done)* NegPy: ingest its XMP and EXIF on upload and in link mode, the export filename
+   preset, `.negpy` sidecars, gear sync into NegPy's `gear/*.json`, roll handoff with a metadata
+   preset, a content hash compatible with NegPy's. See [Working with NegPy](#working-with-negpy-m5).
 7. **M6** Immich connector, optional: shared files via an external library, XMP sidecars, one
    album per roll with tags, "Open in Immich", people from Immich. NegArchive stays standalone.
 
@@ -748,3 +853,9 @@ prints it.
 ![A roll with its lifecycle and location](screenshots/screenshot-15.png)
 ![The print queue](screenshots/screenshot-10.png)
 ![A sleeve cover sheet](screenshots/screenshot-14.png)
+
+NegPy (M5): a frame that came back from NegPy — its own metadata filled the panel, and the recipe
+is summarised, not interpreted — and the folder and preset "Open in NegPy" prepares.
+
+![A frame edited in NegPy](screenshots/screenshot-16.png)
+![Ready for NegPy](screenshots/screenshot-17.png)
