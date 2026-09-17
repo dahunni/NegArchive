@@ -13,6 +13,22 @@ import glob
 import os
 import uuid
 
+from app import paths
+
+
+def on_disk(stored_path: str) -> str:
+    """Absolute path of a stored `path` value.
+
+    M3 moved the files out of the source tree and under `DATA_DIR`, so a test can
+    no longer treat `image.path` as relative to the working directory.
+    """
+    return str(paths.resolve(stored_path))
+
+
+def cached(image_id, width="*") -> list:
+    """The preview cache entries for one image, wherever the cache lives."""
+    return glob.glob(os.path.join(str(paths.cache_dir()), f"{image_id}_{width}_*.jpg"))
+
 PNG_1x1 = bytes.fromhex(
     "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4"
     "890000000a49444154789c6360000002000100ffff03000006000557bfabd400"
@@ -188,7 +204,7 @@ def test_bulk_delete_keeps_the_files_when_asked_to(client):
     """
     roll = make_roll(client)
     frame = upload_frame(client, roll["id"])
-    path = client.get(f"/api/images/{frame['id']}").json()["path"]
+    path = on_disk(client.get(f"/api/images/{frame['id']}").json()["path"])
     assert os.path.exists(path)
 
     res = client.post("/api/images/bulk_delete", json={"ids": [frame["id"]], "keep_files": True})
@@ -205,7 +221,8 @@ def test_bulk_delete_keeps_the_files_when_asked_to(client):
 def test_bulk_delete_with_delete_file_removes_the_file(client):
     roll = make_roll(client)
     frame = upload_frame(client, roll["id"])
-    path = client.get(f"/api/images/{frame['id']}").json()["path"]
+    path = on_disk(client.get(f"/api/images/{frame['id']}").json()["path"])
+    assert os.path.exists(path)
 
     res = client.post("/api/images/bulk_delete", json={"ids": [frame["id"]], "delete_file": True})
     assert res.status_code == 200, res.text
@@ -229,8 +246,8 @@ def test_preview_is_cached_on_disk_and_reused(client):
     assert first.headers["x-preview-cache"] == "miss"
     assert first.headers["content-type"] == "image/jpeg"
 
-    cached = glob.glob(os.path.join("static", "cache", f"{frame['id']}_200_*.jpg"))
-    assert len(cached) == 1, cached
+    entries = cached(frame["id"], 200)
+    assert len(entries) == 1, entries
 
     second = client.get(f"/api/images/{frame['id']}/preview?width=200")
     assert second.status_code == 200
@@ -242,13 +259,13 @@ def test_preview_cache_is_keyed_by_width(client):
     frame = upload_frame(client)
     client.get(f"/api/images/{frame['id']}/preview?width=200")
     client.get(f"/api/images/{frame['id']}/preview?width=400")
-    assert len(glob.glob(os.path.join("static", "cache", f"{frame['id']}_*.jpg"))) == 2
+    assert len(cached(frame["id"])) == 2
 
 
 def test_preview_cache_follows_the_source_file_mtime(client):
     frame = upload_frame(client)
     client.get(f"/api/images/{frame['id']}/preview?width=200")
-    path = client.get(f"/api/images/{frame['id']}").json()["path"]
+    path = on_disk(client.get(f"/api/images/{frame['id']}").json()["path"])
 
     stat = os.stat(path)
     os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 10**9))
@@ -256,14 +273,14 @@ def test_preview_cache_follows_the_source_file_mtime(client):
 
     assert res.headers["x-preview-cache"] == "miss", "a changed file must not serve a stale thumbnail"
     # the superseded entry is swept, so the cache does not grow without bound
-    assert len(glob.glob(os.path.join("static", "cache", f"{frame['id']}_200_*.jpg"))) == 1
+    assert len(cached(frame["id"], 200)) == 1
 
 
 def test_deleting_an_image_drops_its_cached_previews(client):
     frame = upload_frame(client)
     client.get(f"/api/images/{frame['id']}/preview?width=200")
     client.post("/api/images/bulk_delete", json={"ids": [frame["id"]], "delete_file": True})
-    assert glob.glob(os.path.join("static", "cache", f"{frame['id']}_*.jpg")) == []
+    assert cached(frame["id"]) == []
 
 
 # --- structured validation errors for the dialogs ----------------------------

@@ -343,15 +343,24 @@ def import_archive(db: Session, archive_path: str, dry_run: bool = False) -> Imp
                 mapping[row["id"]] = obj.id
             gear_maps[table] = mapping
 
-        # --- rolls, matched by archive serial ---------------------------------
+        # --- rolls, matched by archive serial, then by title + creation time ---
         roll_map: Dict[int, int] = {}
         for row in tables.get("film_rolls", []):
             serial = (row.get("archive_serial") or "").strip()
-            existing = (
-                db.query(FilmRoll).filter(FilmRoll.archive_serial == serial).first()
-                if serial
-                else None
-            )
+            existing = None
+            if serial:
+                existing = db.query(FilmRoll).filter(FilmRoll.archive_serial == serial).first()
+            else:
+                # Not every roll has a serial yet (M4 introduces the scheme), and
+                # re-importing must still not duplicate them. Title plus the exact
+                # creation timestamp is as close to a natural key as we have.
+                created = _parse_datetime(row.get("created_at"))
+                if created is not None:
+                    existing = (
+                        db.query(FilmRoll)
+                        .filter(FilmRoll.title == row.get("title"), FilmRoll.created_at == created)
+                        .first()
+                    )
             if existing is not None:
                 roll_map[row["id"]] = existing.id
                 report.bump("film_rolls_skipped")
@@ -360,6 +369,7 @@ def import_archive(db: Session, archive_path: str, dry_run: bool = False) -> Imp
             if dry_run:
                 continue
             roll = FilmRoll(
+                created_at=_parse_datetime(row.get("created_at")) or datetime.utcnow(),
                 title=row.get("title") or "Untitled roll",
                 camera=row.get("camera"),
                 lens=row.get("lens"),
@@ -381,11 +391,16 @@ def import_archive(db: Session, archive_path: str, dry_run: bool = False) -> Imp
         # --- frames, matched by content hash ----------------------------------
         for row in tables.get("image_assets", []):
             digest = row.get("content_hash")
+            existing = None
             if digest:
                 existing = db.query(ImageAsset).filter(ImageAsset.content_hash == digest).first()
-                if existing is not None:
-                    report.bump("image_assets_skipped")
-                    continue
+            elif row.get("path"):
+                # A frame from before M3 has no hash; its stored path is the next
+                # best thing, and it is what this archive would have used anyway.
+                existing = db.query(ImageAsset).filter(ImageAsset.path == row["path"]).first()
+            if existing is not None:
+                report.bump("image_assets_skipped")
+                continue
             report.bump("image_assets_added")
             if dry_run:
                 continue
