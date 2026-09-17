@@ -192,8 +192,8 @@ async function main() {
   await page.locator("#wizard-camera").click()
   await page.getByRole("option", { name: "Nikon F5", exact: true }).click()
   await page.getByRole("button", { name: "Next" }).click()
-  await page.locator("#wizard-building").fill("Archive A")
-  await page.locator("#wizard-serial").fill("NEG-E2E-001")
+  // M4: storage is a location picker plus the serial; leave the serial empty so the
+  // API allocates one, and check it did further down.
   await page.getByRole("button", { name: "Create roll" }).click()
 
   // ---------------------------------------------------------------- upload
@@ -207,6 +207,10 @@ async function main() {
   await page.getByRole("button", { name: "Open roll" }).click()
   await page.waitForLoadState("load")
   check("the wizard lands on the new roll", await visible(page.getByText(title).first()))
+  const serialText = ((await page.getByTestId("roll-serial").textContent().catch(() => "")) || "").trim()
+  check("M4: the roll got a NEG-YYYY-NNNN serial", /^[A-Z0-9]+-\d{4}-\d{4,}$/.test(serialText), serialText || "none")
+  check("M4: the lifecycle stepper is on the roll page", await visible(page.getByTestId("status-stepper")))
+  check("M4: frames show their strip and position", await visible(page.getByTestId("frame-position")))
   // Wait for the first cell rather than counting straight after `load`: the grid
   // is rendered from a server round trip, and on a cold service worker the
   // navigation can paint before it comes back.
@@ -466,6 +470,111 @@ async function main() {
     await page.evaluate(() => !document.documentElement.classList.contains("dark")),
   )
 
+  // ---------------------------------------------------------------- M4: paper
+  // Work lists on the home page
+  await page.goto(BASE_URL, { waitUntil: "load" })
+  check("M4: the home page shows the work lists", await visible(page.getByTestId("work-lists")))
+
+  // Locations: create a binder with pages through the UI
+  await page.goto(`${BASE_URL}/locations`, { waitUntil: "load" })
+  check("M4: the locations page renders", await visible(page.getByTestId("new-location")))
+  const binderName = `E2E binder ${Date.now()}`
+  check(
+    "M4: the new location dialog opens",
+    await clickUntil(page.getByTestId("new-location"), page.getByTestId("location-dialog")),
+  )
+  await page.locator("#loc-kind").click()
+  await page.getByRole("option", { name: "Binder" }).click()
+  await page.locator("#loc-code").fill("E2E")
+  await page.getByTestId("location-name").fill(binderName)
+  await page.getByTestId("location-save").click()
+  await page.waitForTimeout(800)
+  check("M4: the binder appears in the tree", await visible(page.getByText(binderName).first()))
+  await page.getByText(binderName).first().click()
+  await page.waitForLoadState("load")
+  check("M4: the location page shows its path", await visible(page.getByTestId("location-path")))
+  await page.getByLabel("Pages to add").fill("3")
+  await page.getByTestId("add-pages").click()
+  await page.waitForTimeout(800)
+  check("M4: pages were added to the binder", (await page.getByTestId("binder-page").count()) === 3)
+  check("M4: the location has a QR code", await visible(page.getByTestId("location-qr")))
+  const binderId = Number(new URL(page.url()).pathname.split("/").pop())
+
+  // Scanner console: look up the roll by typing its serial, then move it by scanning serial + LOC code
+  await page.goto(`${BASE_URL}/scan`, { waitUntil: "load" })
+  check("M4: the scanner console renders", await visible(page.getByTestId("scan-input")))
+  await page.getByTestId("scan-input").fill(serialText)
+  await page.keyboard.press("Enter")
+  await page.waitForTimeout(1200)
+  check("M4: scanning a serial opens the roll", new URL(page.url()).pathname.startsWith("/films/"), page.url())
+
+  await page.goto(`${BASE_URL}/scan`, { waitUntil: "load" })
+  await page.getByTestId("mode-move").click()
+  await page.getByTestId("scan-input").fill(serialText)
+  await page.keyboard.press("Enter")
+  await page.waitForTimeout(800)
+  check("M4: the move sequence holds the roll", await visible(page.getByTestId("pending-rolls").getByText(serialText)))
+  await page.getByTestId("scan-input").fill(`LOC-${binderId}`)
+  await page.keyboard.press("Enter")
+  await page.waitForTimeout(1200)
+  const logText = (await page.getByTestId("scan-log").textContent()) || ""
+  check("M4: scanning the binder moved the roll onto a page", /→ .*E2E/.test(logText) && /1 roll/.test(logText), logText.slice(0, 200))
+
+  // The roll page now shows the location and the move history
+  await page.goto(`${BASE_URL}/s/${serialText}`, { waitUntil: "load" })
+  check("M4: /s/{serial} opens the roll", new URL(page.url()).pathname.startsWith("/films/"), page.url())
+  check("M4: the roll shows where it is", ((await page.getByTestId("roll-location").textContent()) || "").includes("E2E"))
+  check("M4: sleeved status after the move", (await page.getByTestId("status-sleeved").getAttribute("aria-current")) === "step")
+
+  // The wedge scanner: fast keystrokes anywhere open a roll
+  await page.goto(`${BASE_URL}/gear`, { waitUntil: "load" })
+  await page.keyboard.type(serialText, { delay: 5 })
+  await page.keyboard.press("Enter")
+  await page.waitForTimeout(1500)
+  check("M4: a wedge scan from any page opens the roll", new URL(page.url()).pathname.startsWith("/films/"), page.url())
+
+  // Printouts render at paper size
+  const rollId = Number(new URL(page.url()).pathname.split("/").pop())
+  await page.goto(`${BASE_URL}/print/roll/${rollId}`, { waitUntil: "load" })
+  check("M4: the cover sheet renders", await visible(page.getByTestId("cover-sheet")))
+  const sheetWidth = await page.getByTestId("cover-sheet").evaluate((el) => el.getBoundingClientRect().width)
+  check("M4: the cover sheet is A4 wide (210mm ≈ 794px)", Math.abs(sheetWidth - 794) < 6, `${sheetWidth}px`)
+  check("M4: the cover sheet carries the serial", ((await page.getByTestId("cover-sheet").textContent()) || "").includes(serialText))
+  await page.goto(`${BASE_URL}/print/stickers?ids=${rollId}`, { waitUntil: "load" })
+  check("M4: stickers render", (await page.getByTestId("sticker").count()) === 1)
+  const stickerBox = await page.getByTestId("sticker").first().evaluate((el) => {
+    const r = el.getBoundingClientRect()
+    return [r.width, r.height]
+  })
+  check("M4: a sticker is 50 × 25 mm", Math.abs(stickerBox[0] - 189) < 4 && Math.abs(stickerBox[1] - 94.5) < 4, stickerBox.join("x"))
+  await page.goto(`${BASE_URL}/print/location/${binderId}/spine`, { waitUntil: "load" })
+  check("M4: the spine label renders", await visible(page.getByTestId("spine-label")))
+  await page.goto(`${BASE_URL}/print/location/${binderId}/index`, { waitUntil: "load" })
+  check("M4: the binder index renders", await visible(page.getByTestId("index-sheet")))
+  await page.goto(`${BASE_URL}/print/commands`, { waitUntil: "load" })
+  check("M4: the command cards render", (await page.getByTestId("command-card").count()) >= 8)
+  await page.goto(`${BASE_URL}/print/queue`, { waitUntil: "load" })
+  check("M4: the print queue lists the new roll", ((await page.getByTestId("print-queue").textContent()) || "").includes(serialText))
+  await shot(page, 10, "print queue")
+
+  // Load film on a camera creates a roll in status loaded
+  await page.goto(`${BASE_URL}/gear`, { waitUntil: "load" })
+  check(
+    "M4: Load film opens its dialog",
+    await clickUntil(page.getByTestId("load-film").first(), page.getByTestId("load-film-dialog")),
+  )
+  await page.locator("#load-title").fill(`E2E loaded ${Date.now()}`)
+  await page.getByTestId("load-film-confirm").click()
+  await page.waitForTimeout(1500)
+  check("M4: Load film lands on the new roll", new URL(page.url()).pathname.startsWith("/films/"), page.url())
+  check("M4: the new roll is in the camera", (await page.getByTestId("status-loaded").getAttribute("aria-current")) === "step")
+  const loadedId = Number(new URL(page.url()).pathname.split("/").pop())
+  // clean up the loaded roll and the binder through the API
+  await page.evaluate(async ({ loadedId, binderId }) => {
+    await fetch(`/api/films/${loadedId}`, { method: "DELETE" })
+    await fetch(`/api/locations/${binderId}?force=true`, { method: "DELETE" })
+  }, { loadedId, binderId })
+
   // ------------------------------------------------- clean up what we created
   // Also the only test of the delete dialog, and it keeps the archive tidy so a
   // screenshot run does not show this script's leftovers.
@@ -511,7 +620,7 @@ async function main() {
   )
   await shot(small, 5, "roll workspace at 375px")
 
-  for (const route of ["/images", "/gear", "/films"]) {
+  for (const route of ["/images", "/gear", "/films", "/locations", "/scan", "/print/queue"]) {
     await small.goto(BASE_URL + route, { waitUntil: "load" })
     check(
       `${route} has no horizontal scrolling at 375px`,

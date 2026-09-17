@@ -1,6 +1,7 @@
 "use client"
 
-import type { Camera, Filmstock, Lens } from "@/lib/api"
+import { type Camera, type Film, type Filmstock, type Lens, type Location, ROLL_STATUSES } from "@/lib/api"
+import { LocationPicker } from "@/components/location-picker"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
@@ -25,6 +26,12 @@ export interface RollFormValues {
   folder: string
   archive_serial: string
   notes: string
+  /** M4: the sleeve/binder/box id as a string, "" for unfiled. */
+  location_id: string
+  /** M4: "6,6,6,6,6,6" or "" for the sleeve layout's default. */
+  strips: string
+  /** M4: one of the lifecycle steps. */
+  status: string
 }
 
 export const EMPTY_ROLL: RollFormValues = {
@@ -39,6 +46,9 @@ export const EMPTY_ROLL: RollFormValues = {
   folder: "",
   archive_serial: "",
   notes: "",
+  location_id: "",
+  strips: "",
+  status: "back",
 }
 
 /** The select's "nothing chosen" value; the API stores NULL for it (R#8). */
@@ -68,6 +78,15 @@ export function toRollPayload(values: RollFormValues) {
     folder: text(values.folder),
     archive_serial: text(values.archive_serial),
     notes: text(values.notes),
+    location_id: id(values.location_id),
+    strips: text(values.strips)
+      ? values.strips
+          .split(/[,;\s]+/)
+          .map((part) => part.trim())
+          .filter(Boolean)
+          .map((part) => Number(part))
+      : null,
+    status: (text(values.status) ?? "back") as Film["status"],
   }
 }
 
@@ -84,6 +103,9 @@ export function fromFilm(film: {
   folder: string | null
   archive_serial: string | null
   notes: string | null
+  location_id?: number | null
+  strips?: number[] | null
+  status?: string
 }): RollFormValues {
   const id = (value: number | null) => (value === null || value === undefined ? "" : String(value))
   return {
@@ -98,6 +120,9 @@ export function fromFilm(film: {
     folder: film.folder ?? "",
     archive_serial: film.archive_serial ?? "",
     notes: film.notes ?? "",
+    location_id: id(film.location_id ?? null),
+    strips: film.strips?.length ? film.strips.join(",") : "",
+    status: film.status ?? "back",
   }
 }
 
@@ -290,45 +315,80 @@ export function GearFields({
 
 export function StorageFields({
   values,
+  errors,
   onChange,
   idPrefix = "roll",
+  locations = [],
+  serialLocked = false,
 }: {
   values: RollFormValues
+  errors?: Record<string, string>
   onChange: (patch: Partial<RollFormValues>) => void
   idPrefix?: string
+  /** M4: the storage tree for the location picker. */
+  locations?: Location[]
+  /** M4: a printed serial cannot be edited here (the API refuses with 409). */
+  serialLocked?: boolean
 }) {
   return (
     <div className="space-y-4">
+      <div className="space-y-2">
+        <Label htmlFor={`${idPrefix}-location`}>Where the negatives are</Label>
+        <LocationPicker
+          id={`${idPrefix}-location`}
+          locations={locations}
+          value={values.location_id}
+          onChange={(value) => onChange({ location_id: value })}
+          placeholder="Not filed yet"
+        />
+        <p className="type-meta">A binder files the roll on its next free page. Manage the tree under Locations.</p>
+        <FieldError message={errors?.location_id} />
+      </div>
+
       <div className="grid gap-4 sm:grid-cols-3">
-        <div className="space-y-2">
-          <Label htmlFor={`${idPrefix}-building`}>Building</Label>
-          <Input
-            id={`${idPrefix}-building`}
-            name="building"
-            value={values.building}
-            onChange={(e) => onChange({ building: e.target.value })}
-            placeholder="Archive A"
-          />
-        </div>
-        <div className="space-y-2">
-          <Label htmlFor={`${idPrefix}-folder`}>Folder / binder</Label>
-          <Input
-            id={`${idPrefix}-folder`}
-            name="folder"
-            value={values.folder}
-            onChange={(e) => onChange({ folder: e.target.value })}
-            placeholder="2024-Q2"
-          />
-        </div>
         <div className="space-y-2">
           <Label htmlFor={`${idPrefix}-serial`}>Archive serial</Label>
           <Input
             id={`${idPrefix}-serial`}
             name="archive_serial"
             value={values.archive_serial}
-            onChange={(e) => onChange({ archive_serial: e.target.value })}
-            placeholder="NEG-2024-001"
+            onChange={(e) => onChange({ archive_serial: e.target.value.toUpperCase() })}
+            placeholder="Assigned automatically"
+            className="type-numeric"
+            disabled={serialLocked}
+            aria-invalid={Boolean(errors?.archive_serial)}
           />
+          <p className="type-meta">{serialLocked ? "Printed on a label; frozen." : "Leave empty for NEG-YYYY-NNNN."}</p>
+          <FieldError message={errors?.archive_serial} />
+        </div>
+        <div className="space-y-2">
+          <Label htmlFor={`${idPrefix}-strips`}>Strips</Label>
+          <Input
+            id={`${idPrefix}-strips`}
+            name="strips"
+            value={values.strips}
+            onChange={(e) => onChange({ strips: e.target.value })}
+            placeholder="Sleeve default"
+            className="type-numeric"
+            aria-invalid={Boolean(errors?.strips)}
+          />
+          <p className="type-meta">Frames per strip, e.g. 5,5,5,5,5,5,6 for a doubled-up page.</p>
+          <FieldError message={errors?.strips} />
+        </div>
+        <div className="space-y-2">
+          <Label htmlFor={`${idPrefix}-status`}>Status</Label>
+          <Select value={values.status || "back"} onValueChange={(value) => onChange({ status: value })}>
+            <SelectTrigger id={`${idPrefix}-status`}>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {ROLL_STATUSES.map((step) => (
+                <SelectItem key={step.value} value={step.value}>
+                  {step.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </div>
       </div>
 

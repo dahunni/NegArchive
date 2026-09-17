@@ -119,7 +119,29 @@ export interface Film {
   cover_image_id: number | null
   /** Up to four leading frames, for the thumbnail strip on a roll row. */
   cover_image_ids: number[]
+  // --- M4: where the negatives are, and where the roll is in its life ---
+  location_id: number | null
+  /** "Archive A / Shelf 2 / B03 · Binder 3 / P12 · Page 12", derived by the API. */
+  location_path: string | null
+  location_kind: string | null
+  /** The roll's own strip lengths, or null to use the sleeve layout. */
+  strips: number[] | null
+  /** The strips actually in effect (own, layout, or PrintFile 7 × 6). */
+  effective_strips: number[]
+  status: RollStatus
+  status_label: string | null
+  loaded_at: string | null
+  shot_at: string | null
+  lab_sent_at: string | null
+  lab_back_at: string | null
+  scanned_at: string | null
+  sleeved_at: string | null
+  loaded_camera_id: number | null
+  label_printed_at: string | null
+  needs_label: boolean
 }
+
+export type RollStatus = "loaded" | "shot" | "at_lab" | "back" | "scanned" | "sleeved"
 
 export interface Image {
   id: number
@@ -704,6 +726,10 @@ export interface FilmQuery {
   film_stock_id?: number
   from?: string
   to?: string
+  /** M4 */
+  status?: string
+  bucket?: string
+  location_id?: number
   limit?: number
   offset?: number
 }
@@ -776,6 +802,11 @@ export async function getSystemInfo(): Promise<SystemInfo> {
 
 export interface Settings {
   watch_enabled: boolean
+  /** M4: the serial prefix (NEG) and where printed QR codes point. */
+  serial_prefix?: string
+  public_base_url?: string
+  label_spine_mm?: string
+  label_sticker_mm?: string
 }
 
 export async function getSettings(): Promise<{ settings: Settings; watch: WatchState }> {
@@ -891,3 +922,374 @@ export async function importArchive(file: File, dryRun: boolean): Promise<Record
 /** Download links; the browser navigates to these, so they are plain URLs. */
 export const EXPORT_URL = "/api/export"
 export const EXPORT_CSV_URL = "/api/export/rolls.csv"
+
+// ---------------------------------------------------------------------------
+// M4: the physical archive — locations, serials, lifecycle, scanning, printing
+// ---------------------------------------------------------------------------
+
+export type LocationKind =
+  | "building"
+  | "room"
+  | "shelf"
+  | "row"
+  | "box"
+  | "binder"
+  | "envelope"
+  | "sleeve"
+  | "other"
+
+export const LOCATION_KINDS: { value: LocationKind; label: string }[] = [
+  { value: "building", label: "Building" },
+  { value: "room", label: "Room" },
+  { value: "shelf", label: "Shelf" },
+  { value: "row", label: "Row" },
+  { value: "binder", label: "Binder" },
+  { value: "sleeve", label: "Sleeve page" },
+  { value: "box", label: "Box" },
+  { value: "envelope", label: "Envelope" },
+  { value: "other", label: "Other" },
+]
+
+export interface SleeveLayout {
+  id: number
+  name: string
+  rows: number
+  frames_per_row: number
+  film_format: string | null
+  is_default: boolean
+  capacity: number
+}
+
+export interface Location {
+  id: number
+  parent_id: number | null
+  kind: LocationKind
+  name: string
+  code: string | null
+  /** "B03 · Binder 3" or just the name. */
+  label: string
+  /** The full path, root first. */
+  path: string | null
+  path_ids: number[]
+  sort_order: number
+  notes: string | null
+  capacity: number | null
+  sleeve_layout_id: number | null
+  sleeve_layout: { id: number; name: string; rows: number; frames_per_row: number } | null
+  /** Rolls filed directly here. */
+  roll_count: number
+  /** Rolls anywhere under this node. */
+  rolls_in_subtree: number
+  /** What a Code128 label for this node carries: `LOC-<id>`. */
+  scan_code: string
+  created_at: string | null
+}
+
+export interface RollBrief {
+  id: number
+  title: string
+  archive_serial: string | null
+  status: RollStatus
+  film_type: string | null
+  camera: string | null
+  start_date: string | null
+  end_date: string | null
+  location_id: number | null
+  image_count: number
+  label_printed_at: string | null
+}
+
+export interface LocationDetail {
+  location: Location
+  ancestors: Location[]
+  children: (Location & { rolls: RollBrief[] })[]
+  rolls: RollBrief[]
+  effective_layout: { id: number; name: string; rows: number; frames_per_row: number } | null
+  next_free_sleeve_id: number | null
+  discrepancies: { kind: string; message: string; location_id?: number; roll_id?: number }[]
+}
+
+export async function getLocations(): Promise<Location[]> {
+  const res = await apiFetch("/api/locations")
+  await assertOk(res, "Could not load the locations.")
+  return (await res.json()).locations as Location[]
+}
+
+export async function getLocation(id: number): Promise<LocationDetail> {
+  const res = await apiFetch(`/api/locations/${id}`)
+  await assertOk(res, "Could not load that location.")
+  return res.json()
+}
+
+export interface LocationPatch {
+  parent_id?: number | null
+  kind?: LocationKind
+  name?: string
+  code?: string | null
+  sort_order?: number
+  notes?: string | null
+  capacity?: number | null
+  sleeve_layout_id?: number | null
+}
+
+export async function createLocation(data: LocationPatch): Promise<Location> {
+  const res = await apiFetch("/api/locations", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  })
+  await assertOk(res, "Could not create the location.")
+  return unwrap<Location>(await res.json(), "location", "Location not found.")
+}
+
+export async function updateLocation(id: number, data: LocationPatch): Promise<Location> {
+  const res = await apiFetch(`/api/locations/${id}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  })
+  await assertOk(res, "Could not save the location.")
+  return unwrap<Location>(await res.json(), "location", "Location not found.")
+}
+
+/** 409 `location_in_use` unless `force`; forcing unfiles the rolls inside. */
+export async function deleteLocation(id: number, force = false): Promise<void> {
+  const res = await apiFetch(`/api/locations/${id}${force ? "?force=true" : ""}`, { method: "DELETE" })
+  await assertOk(res, "Could not delete the location.")
+}
+
+export async function addBinderPages(id: number, count: number, sleeveLayoutId?: number | null): Promise<Location[]> {
+  const res = await apiFetch(`/api/locations/${id}/pages`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ count, sleeve_layout_id: sleeveLayoutId ?? null }),
+  })
+  await assertOk(res, "Could not add pages.")
+  return (await res.json()).pages as Location[]
+}
+
+export async function getSleeveLayouts(): Promise<SleeveLayout[]> {
+  const res = await apiFetch("/api/sleeve_layouts")
+  await assertOk(res, "Could not load the sleeve layouts.")
+  return res.json()
+}
+
+export interface MoveResult {
+  roll: RollBrief
+  location: Location | null
+  path: string | null
+}
+
+/** File a roll. A binder target resolves to its next free page; `null` unfiles it. */
+export async function moveRoll(rollId: number, locationId: number | null, note?: string): Promise<MoveResult> {
+  const res = await apiFetch(`/api/films/${rollId}/move`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ location_id: locationId, note: note ?? null }),
+  })
+  await assertOk(res, "Could not move the roll.")
+  return res.json()
+}
+
+export async function bulkMoveRolls(ids: number[], locationId: number | null, note?: string): Promise<MoveResult[]> {
+  const res = await apiFetch("/api/films/bulk_move", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ids, location_id: locationId, note: note ?? null }),
+  })
+  await assertOk(res, "Could not move the rolls.")
+  return (await res.json()).moved as MoveResult[]
+}
+
+export interface RollMove {
+  id: number
+  moved_at: string
+  from: string | null
+  to: string | null
+  note: string | null
+}
+
+export async function getRollMoves(rollId: number): Promise<RollMove[]> {
+  const res = await apiFetch(`/api/films/${rollId}/moves`)
+  await assertOk(res, "Could not load the move history.")
+  return (await res.json()).moves as RollMove[]
+}
+
+export interface LayoutCell {
+  id: number
+  frame_number: number | null
+  notes: string | null
+  capture_date: string | null
+}
+
+export interface RollLayout {
+  strips: number[]
+  layout: { id: number; name: string } | null
+  capacity: number
+  rows: (LayoutCell | null)[][]
+  unplaced: LayoutCell[]
+}
+
+export async function getRollLayout(rollId: number): Promise<RollLayout> {
+  const res = await apiFetch(`/api/films/${rollId}/layout`)
+  await assertOk(res, "Could not load the sleeve layout.")
+  return res.json()
+}
+
+export const ROLL_STATUSES: { value: RollStatus; label: string; short: string }[] = [
+  { value: "loaded", label: "In camera", short: "Loaded" },
+  { value: "shot", label: "Shot", short: "Shot" },
+  { value: "at_lab", label: "At the lab", short: "At lab" },
+  { value: "back", label: "Back from the lab", short: "Back" },
+  { value: "scanned", label: "Scanned", short: "Scanned" },
+  { value: "sleeved", label: "Sleeved", short: "Sleeved" },
+]
+
+export async function setRollStatus(rollId: number, status: RollStatus, at?: string): Promise<Film> {
+  const res = await apiFetch(`/api/films/${rollId}/status`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ status, at: at ?? null }),
+  })
+  await assertOk(res, "Could not change the status.")
+  return unwrap<Film>(await res.json(), "film", "Roll not found.")
+}
+
+/** Create a roll in status "loaded" for a camera; 409 `camera_occupied` unless `force`. */
+export async function loadFilm(
+  cameraId: number,
+  data: { title?: string; film_stock_id?: number | null; lens_id?: number | null; notes?: string; force?: boolean },
+): Promise<Film> {
+  const res = await apiFetch(`/api/cameras/${cameraId}/load`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  })
+  await assertOk(res, "Could not load the film.")
+  return unwrap<Film>(await res.json(), "film", "Roll not found.")
+}
+
+export async function getLoadedRoll(cameraId: number): Promise<Film | null> {
+  const res = await apiFetch(`/api/cameras/${cameraId}/loaded`)
+  await assertOk(res, "Could not check the camera.")
+  return ((await res.json()).roll ?? null) as Film | null
+}
+
+export interface WorkLists {
+  in_cameras: { total: number; items: Film[] }
+  at_lab: { total: number; items: Film[] }
+  to_scan: { total: number; items: Film[] }
+  to_sleeve: { total: number; items: Film[] }
+  unfiled: number
+  needs_label: number
+}
+
+export async function getWork(): Promise<WorkLists> {
+  const res = await apiFetch("/api/work")
+  await assertOk(res, "Could not load the work lists.")
+  return res.json()
+}
+
+export type WorkBucket = "in_cameras" | "at_lab" | "to_scan" | "to_sleeve"
+
+export const WORK_BUCKETS: { value: WorkBucket; label: string }[] = [
+  { value: "in_cameras", label: "In cameras" },
+  { value: "at_lab", label: "At the lab" },
+  { value: "to_scan", label: "To scan" },
+  { value: "to_sleeve", label: "To sleeve" },
+]
+
+export type ScanResolution =
+  | { kind: "roll"; roll: Film; url: string; input: string }
+  | { kind: "location"; location: Location; url: string; input: string }
+  | { kind: "command"; command: string; known: boolean; description: string | null; input: string }
+
+/** The one grammar for QR contents, Code128 tokens and typed serials. */
+export async function resolveScan(code: string): Promise<ScanResolution> {
+  const res = await apiFetch("/api/scan/resolve", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ code }),
+  })
+  await assertOk(res, "That code is not something the archive knows.")
+  return res.json()
+}
+
+export async function getRollBySerial(serial: string): Promise<Film | null> {
+  const res = await apiFetch(`/api/rolls/by-serial/${encodeURIComponent(serial)}`)
+  if (res.status === 404) return null
+  await assertOk(res, "Could not look up that serial.")
+  return (await res.json()).roll as Film
+}
+
+export interface ScanCommand {
+  code: string
+  verb: string
+  description: string
+}
+
+export async function getScanCommands(): Promise<ScanCommand[]> {
+  const res = await apiFetch("/api/scan/commands")
+  await assertOk(res, "Could not load the command list.")
+  return (await res.json()).commands as ScanCommand[]
+}
+
+export interface CodeInfo {
+  qr_text: string
+  barcode_text: string
+  qr_svg_url: string
+  barcode_svg_url: string
+  public_base: string
+  serial?: string
+  code?: string
+}
+
+export async function getRollCodes(rollId: number): Promise<CodeInfo> {
+  const res = await apiFetch(`/api/codes/for_roll/${rollId}`)
+  await assertOk(res, "This roll has no serial yet.")
+  return res.json()
+}
+
+export async function getLocationCodes(locationId: number): Promise<CodeInfo> {
+  const res = await apiFetch(`/api/codes/for_location/${locationId}`)
+  await assertOk(res, "Could not build the codes.")
+  return res.json()
+}
+
+/** `<img src>` for a QR code of any text, rendered by the backend. */
+export function qrUrl(text: string, scale = 4): string {
+  return backendUrl(`/api/codes/qr.svg?text=${encodeURIComponent(text)}&scale=${scale}`)
+}
+
+/** `<img src>` for a Code128 barcode of any text (ASCII, up to 60 characters). */
+export function barcodeUrl(text: string, height = 12, label = true): string {
+  return backendUrl(`/api/codes/code128.svg?text=${encodeURIComponent(text)}&height=${height}&label=${label}`)
+}
+
+export interface PrintQueue {
+  items: (Film & { reason: "never_printed" | "moved_since_print" })[]
+  total: number
+}
+
+export async function getPrintQueue(): Promise<PrintQueue> {
+  const res = await apiFetch("/api/print/queue")
+  await assertOk(res, "Could not load the print queue.")
+  return res.json()
+}
+
+export async function markPrinted(rollIds: number[]): Promise<number> {
+  const res = await apiFetch("/api/print/mark", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ roll_ids: rollIds }),
+  })
+  await assertOk(res, "Could not mark the labels as printed.")
+  return Number((await res.json()).marked ?? 0)
+}
+
+/** Every roll, for pickers and printouts that need the whole archive. */
+export async function getAllFilms(): Promise<Film[]> {
+  const res = await apiFetch("/api/films")
+  await assertOk(res, "Could not load the rolls.")
+  return res.json()
+}

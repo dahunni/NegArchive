@@ -17,6 +17,11 @@ export type RollSearchParams = {
   from?: string
   to?: string
   new?: string
+  /** M4: a lifecycle step, or a home-page work bucket. */
+  status?: string
+  bucket?: string
+  /** M4: `/?focus=search` lands with the search box focused (the `/` shortcut). */
+  focus?: string
 }
 
 /** A numeric parameter is a catalog id; anything else is a legacy name (M2, R#14). */
@@ -38,5 +43,7 @@ export function queryFromSearchParams(params: RollSearchParams): FilmQuery {
     film_type: film.name,
     from: params.from || undefined,
     to: params.to || undefined,
+    status: params.status || undefined,
+    bucket: params.bucket || undefined,
   }
 }

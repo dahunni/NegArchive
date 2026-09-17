@@ -25,7 +25,9 @@ from PIL import Image, ImageDraw  # noqa: E402
 
 from app import paths  # noqa: E402
 from app.db import SessionLocal  # noqa: E402
-from app.models import FilmRoll, ImageAsset, ImageType  # noqa: E402
+from app.models import FilmRoll, ImageAsset, ImageType, Location, SleeveLayout  # noqa: E402
+from app.services import lifecycle  # noqa: E402
+from app.services import locations as loc_svc  # noqa: E402
 from app.services.hashing import safe_content_hash  # noqa: E402
 
 #: (serial, title, camera, film, building, folder, start, end, frames)
@@ -75,6 +77,66 @@ def frame_image(roll_index: int, frame_number: int) -> Image.Image:
     return image
 
 
+def seed_locations(db) -> dict:
+    """Archive A / Shelf 1 / Binder 1 + 2 (with pages) and Archive B / Box 3 (M4).
+
+    Returns ``{(building, folder): node}`` so the rolls above can be filed.
+    """
+    layout = db.query(SleeveLayout).filter(SleeveLayout.is_default.is_(True)).first()
+
+    def ensure(parent, kind, name, code=None, **extra):
+        query = db.query(Location).filter(Location.name == name, Location.kind == kind)
+        query = query.filter(Location.parent_id == (parent.id if parent else None))
+        node = query.first()
+        if node is None:
+            node = Location(parent_id=parent.id if parent else None, kind=kind, name=name, code=code, **extra)
+            db.add(node)
+            db.flush()
+        return node
+
+    archive_a = ensure(None, "building", "Archive A", "A")
+    shelf = ensure(archive_a, "shelf", "Shelf 1", "S1")
+    row = ensure(shelf, "row", "Row 1", "R1")
+    binder1 = ensure(row, "binder", "Binder 1", "B01", capacity=20, sleeve_layout_id=layout.id if layout else None)
+    binder2 = ensure(row, "binder", "Binder 2", "B02", capacity=20, sleeve_layout_id=layout.id if layout else None)
+    for binder in (binder1, binder2):
+        if not any(c.kind == "sleeve" for c in binder.children):
+            loc_svc.add_pages(db, binder, 10, layout)
+    archive_b = ensure(None, "building", "Archive B", "B")
+    box = ensure(archive_b, "box", "Box 3", "X3", capacity=40)
+    ensure(archive_b, "envelope", "DM envelope (unsorted)", "ENV")
+    db.flush()
+    return {
+        ("Archive A", "Binder 1"): binder1,
+        ("Archive A", "Binder 2"): binder2,
+        ("Archive B", "Box 3"): box,
+    }
+
+
+def seed_lifecycle_rolls(db) -> None:
+    """One roll in a camera and one at the lab, so the work lists have something in them."""
+    from app.models import Camera
+    from app.services import serials
+
+    if db.query(FilmRoll).filter(FilmRoll.status.in_(("loaded", "at_lab"))).first():
+        return
+    camera = db.query(Camera).order_by(Camera.id.asc()).first()
+    loaded = FilmRoll(title="Spring street walk", camera=camera.name if camera else None, camera_id=camera.id if camera else None, film_type="Fomapan 400", start_date=date.today())
+    serials.assign(db, loaded, None)
+    db.add(loaded)
+    db.flush()
+    if camera:
+        lifecycle.load_into_camera(db, camera, loaded)
+    else:
+        lifecycle.set_status(loaded, "loaded")
+    at_lab = FilmRoll(title="Birthday roll", film_type="Kodak Gold 200", start_date=date.today())
+    serials.assign(db, at_lab, None)
+    db.add(at_lab)
+    db.flush()
+    lifecycle.set_status(at_lab, "at_lab")
+    print(f"seeded {loaded.archive_serial} (in camera) and {at_lab.archive_serial} (at the lab)")
+
+
 def main() -> None:
     if not os.getenv("DATABASE_URL"):
         raise SystemExit("DATABASE_URL is not set.")
@@ -85,6 +147,7 @@ def main() -> None:
     db = SessionLocal()
     created = 0
     try:
+        tree = seed_locations(db)
         for index, (serial, title, camera, film, building, folder, start, end, count) in enumerate(ROLLS):
             if db.query(FilmRoll).filter(FilmRoll.archive_serial == serial).first():
                 print(f"skip {serial} ({title}) — already there")
@@ -121,7 +184,14 @@ def main() -> None:
                     )
                 )
             created += 1
-            print(f"seeded {serial} ({title}) with {count} frames")
+            # M4: file the roll where the old free-text columns say it is.
+            lifecycle.touch_scanned(roll)
+            target_node = tree.get((building, folder))
+            if target_node is not None:
+                loc_svc.move_roll(db, roll, target_node, note="Seeded")
+            print(f"seeded {serial} ({title}) with {count} frames → {loc_svc.path_string(roll.location_ref) if roll.location_ref else 'unfiled'}")
+
+        seed_lifecycle_rolls(db)
         db.commit()
     finally:
         db.close()

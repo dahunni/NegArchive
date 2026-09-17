@@ -1,6 +1,6 @@
 import { notFound } from "next/navigation"
 
-import { ApiError, getCameras, getFilm, getFilms, getFilmstocks, getLenses } from "@/lib/api"
+import { ApiError, getCameras, getFilm, getFilms, getFilmstocks, getLenses, getLocations, getRollMoves } from "@/lib/api"
 import { RollWorkspace } from "@/components/roll-workspace"
 
 export default async function RollPage({
@@ -23,11 +23,13 @@ export default async function RollPage({
     throw error
   }
 
-  const [rolls, cameras, lenses, filmstocks] = await Promise.all([
+  const [rolls, cameras, lenses, filmstocks, locations, moves] = await Promise.all([
     getFilms(),
     getCameras(),
     getLenses(),
     getFilmstocks(),
+    getLocations().catch(() => []),
+    getRollMoves(rollId).catch(() => []),
   ])
 
   return (
@@ -39,6 +41,8 @@ export default async function RollPage({
       cameras={cameras}
       lenses={lenses}
       filmstocks={filmstocks}
+      locations={locations}
+      moves={moves}
       editOnOpen={edit === "1"}
     />
   )

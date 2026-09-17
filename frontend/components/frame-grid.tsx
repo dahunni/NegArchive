@@ -13,7 +13,7 @@ import {
   getPreviewUrl,
   updateImage,
 } from "@/lib/api"
-import { formatDate } from "@/lib/format"
+import { formatDate, formatStripPosition } from "@/lib/format"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -39,11 +39,14 @@ export function FrameGrid({
   rolls,
   emptyTitle = "No frames yet",
   emptyDescription = "Drop scans into the upload zone above and they appear here.",
+  strips,
 }: {
   frames: Frame[]
   rolls: Film[]
   emptyTitle?: string
   emptyDescription?: string
+  /** M4: the roll's strip lengths, so each cell can say "Strip 3 · Pos 2". */
+  strips?: number[]
 }) {
   const router = useRouter()
   const { toast } = useToast()
@@ -237,6 +240,11 @@ export function FrameGrid({
                 />
                 <span className="ml-auto truncate type-meta">{formatDate(frame.capture_date) ?? "No date"}</span>
               </div>
+              {strips ? (
+                <p className="type-meta mt-0.5 truncate" data-testid="frame-position">
+                  {formatStripPosition(frame.frame_number, strips) ?? "Not on the sleeve"}
+                </p>
+              ) : null}
 
               <InlineText
                 value={frame.notes}

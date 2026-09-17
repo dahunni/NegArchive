@@ -2,7 +2,7 @@
 
 import { useRouter, useSearchParams } from "next/navigation"
 import { useState } from "react"
-import { Camera as CameraIcon, Package, Pencil, Plus, Trash2 } from "lucide-react"
+import { Camera as CameraIcon, Film as FilmIcon, Package, Pencil, Plus, Trash2 } from "lucide-react"
 
 import {
   ApiError,
@@ -22,6 +22,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog"
 import { EmptyState } from "@/components/empty-state"
 import { GearDialog, type GearItem, type GearKind } from "@/components/gear-dialog"
+import { LoadFilmDialog } from "@/components/load-film-dialog"
 import { useToast } from "@/hooks/use-toast"
 
 const TABS: { value: GearKind; label: string; plural: string }[] = [
@@ -58,6 +59,8 @@ export function GearSection({
   const [pendingDelete, setPendingDelete] = useState<{ kind: GearKind; item: GearItem } | null>(null)
   /** Set when the API refused because rolls still use this entry (409, R#14). */
   const [inUse, setInUse] = useState<string | null>(null)
+  /** M4: "Load film" creates a roll in status loaded for this camera. */
+  const [loading, setLoading] = useState<Camera | null>(null)
 
   const remove = async (force = false) => {
     if (!pendingDelete) return
@@ -139,6 +142,18 @@ export function GearSection({
                       </div>
                       <GearMeta kind={entry.value} item={item} />
                       <div className="flex gap-2 pt-1">
+                        {entry.value === "camera" ? (
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            className="min-h-10 flex-1"
+                            onClick={() => setLoading(item as Camera)}
+                            data-testid="load-film"
+                          >
+                            <FilmIcon className="mr-1 h-3 w-3" />
+                            Load film
+                          </Button>
+                        ) : null}
                         <Button
                           variant="outline"
                           size="sm"
@@ -175,6 +190,14 @@ export function GearSection({
           onOpenChange={(open) => !open && setDialog(null)}
         />
       ) : null}
+
+      <LoadFilmDialog
+        camera={loading}
+        open={loading !== null}
+        onOpenChange={(open) => !open && setLoading(null)}
+        filmstocks={filmstocks}
+        lenses={lenses}
+      />
 
       <DeleteConfirmationDialog
         open={pendingDelete !== null}
