@@ -1,0 +1,22 @@
+{
+  "name": "NegArchive",
+  "short_name": "NegArchive",
+  "description": "Find a roll, and find out which binder the negatives are in — at the shelf, with or without a network.",
+  "id": "/",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0a0a0b",
+  "theme_color": "#0a0a0b",
+  "categories": ["photo", "productivity", "utilities"],
+  "icons": [
+    { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "shortcuts": [
+    { "name": "Rolls", "url": "/", "description": "Every roll in the archive" },
+    { "name": "Frames", "url": "/images", "description": "Every scan, including the loose ones" }
+  ]
+}

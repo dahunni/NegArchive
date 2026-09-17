@@ -3,21 +3,27 @@
 import Link from "next/link"
 import { usePathname } from "next/navigation"
 import { useEffect, useState } from "react"
-import { Film, Images, Wrench, Menu } from "lucide-react"
+import { Film, Images, Menu, Settings, Wrench } from "lucide-react"
 
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet"
+import { LanFooter } from "@/components/lan-footer"
+import { LoginGate } from "@/components/login-gate"
+import { OfflineBanner } from "@/components/offline-banner"
 import { ThemeToggle } from "@/components/theme-toggle"
 
 /**
- * Three destinations, not six: rolls are the work, frames are everything loose, gear
- * is the catalog. Search used to be a page; it is now the filter bar on the roll list.
+ * Four destinations, not six: rolls are the work, frames are everything loose, gear
+ * is the catalog, settings is where the archive itself lives. Search used to be a
+ * page; it is now the filter bar on the roll list.
  */
 const NAV = [
   { href: "/", label: "Rolls", icon: Film, match: (p: string) => p === "/" || p.startsWith("/films") },
   { href: "/images", label: "Frames", icon: Images, match: (p: string) => p.startsWith("/images") },
   { href: "/gear", label: "Gear", icon: Wrench, match: (p: string) => p.startsWith("/gear") },
+  // M3: linked folders, the watch toggle, backup and export.
+  { href: "/settings", label: "Settings", icon: Settings, match: (p: string) => p.startsWith("/settings") },
 ]
 
 export function AppShell({ children }: { children: React.ReactNode }) {
@@ -31,6 +37,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="flex min-h-screen flex-col bg-background">
+      {/* M3: the PWA says plainly when it is showing a cached archive. */}
+      <OfflineBanner />
+
       <header className="sticky top-0 z-40 border-b border-border bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80">
         <div className="mx-auto flex h-14 max-w-7xl items-center gap-2 px-4 sm:h-16 sm:px-6 lg:px-8">
           <Sheet open={mobileOpen} onOpenChange={setMobileOpen}>
@@ -103,6 +112,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       </header>
 
       <main className="mx-auto w-full max-w-7xl flex-1 px-4 py-6 sm:px-6 sm:py-8 lg:px-8">{children}</main>
+
+      {/* M3: the address to type on a phone, and the QR that saves the typing. */}
+      <LanFooter />
+      {/* M3: renders nothing unless NEGARCHIVE_PASSWORD is set on the backend. */}
+      <LoginGate />
     </div>
   )
 }

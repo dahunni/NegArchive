@@ -1,0 +1,220 @@
+# Continuous integration (roadmap M3, R#33).
+#
+# Four jobs, deliberately separate so a failure names itself:
+#
+#   backend   ruff + pytest against a real Postgres 16 service container. There is
+#             no SQLite fallback and there never will be again: both of the
+#             data-losing bugs in the review only appeared on Postgres.
+#   frontend  eslint + tsc + next build, with `ignoreBuildErrors` off.
+#   e2e       the Playwright smoke test against a real backend and a production
+#             build of the frontend, over a seeded archive.
+#   compose   `docker compose config`, so a broken stack file is caught in seconds
+#             rather than by the first person who tries to install this.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.11"
+  NODE_VERSION: "20"
+
+jobs:
+  backend:
+    name: Backend (ruff, pytest, Postgres 16)
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: negarchive
+          POSTGRES_PASSWORD: negarchive
+          POSTGRES_DB: negarchive
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U negarchive -d negarchive"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Install dependencies
+        # requirements.txt still carries the dead DeepFace/TensorFlow stack, which
+        # is most of this step's runtime. Roadmap M2 deletes it.
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Lint
+        run: ruff check .
+
+      - name: Alembic migrations apply, roll back and re-apply
+        env:
+          DATABASE_URL: postgresql+psycopg2://negarchive:negarchive@localhost:5432/negarchive
+        run: |
+          alembic upgrade head
+          alembic downgrade base
+          alembic upgrade head
+
+      - name: Tests
+        env:
+          DATABASE_URL: postgresql+psycopg2://negarchive:negarchive@localhost:5432/negarchive
+          DATA_DIR: ${{ runner.temp }}/negarchive-data
+          WATCH_INTERVAL_SECONDS: "off"
+          DEEPFACE_ENABLED: "false"
+        run: pytest tests -q
+
+  frontend:
+    name: Frontend (eslint, tsc, next build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - run: npm ci --legacy-peer-deps
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Type check
+        run: npx tsc --noEmit
+
+      - name: Build
+        # typescript.ignoreBuildErrors is false, so this also fails on a type error.
+        run: npm run build
+
+  e2e:
+    name: End-to-end smoke test
+    runs-on: ubuntu-latest
+    needs: [backend, frontend]
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: negarchive
+          POSTGRES_PASSWORD: negarchive
+          POSTGRES_DB: negarchive
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U negarchive -d negarchive"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql+psycopg2://negarchive:negarchive@localhost:5432/negarchive
+      DATA_DIR: ${{ github.workspace }}/data
+      WATCH_INTERVAL_SECONDS: "off"
+      DEEPFACE_ENABLED: "false"
+      API_BASE: http://127.0.0.1:8010
+      NEXT_PUBLIC_API_BASE: ""
+      BASE_URL: http://127.0.0.1:3010
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+          cd frontend && npm ci --legacy-peer-deps
+
+      - name: Start the backend
+        run: |
+          uvicorn app.main:app --host 127.0.0.1 --port 8010 > backend.log 2>&1 &
+          for attempt in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:8010/api/health > /dev/null; then
+              echo "backend is up"; exit 0
+            fi
+            sleep 1
+          done
+          echo "backend did not start"; cat backend.log; exit 1
+
+      - name: Seed a demo archive
+        # The smoke test walks a populated archive: it searches, filters, opens
+        # the fullest roll and drives the viewer. An empty one proves nothing.
+        run: python scripts/seed_demo.py
+
+      - name: Build and start the frontend
+        working-directory: frontend
+        run: |
+          npm run build
+          npx next start --port 3010 > ../frontend.log 2>&1 &
+          for attempt in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:3010/ > /dev/null; then
+              echo "frontend is up"; exit 0
+            fi
+            sleep 1
+          done
+          echo "frontend did not start"; cat ../frontend.log; exit 1
+
+      - name: Install Chromium
+        working-directory: frontend
+        run: npx playwright install --with-deps chromium
+
+      - name: Smoke test
+        working-directory: frontend
+        run: npm run e2e
+
+      - name: Logs on failure
+        if: failure()
+        run: |
+          echo "--- backend ---"; tail -100 backend.log || true
+          echo "--- frontend ---"; tail -100 frontend.log || true
+
+  compose:
+    name: Compose stack is valid
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: docker compose config
+        run: docker compose config --quiet
+      - name: The scripts parse
+        run: |
+          bash -n scripts/backup.sh
+          bash -n scripts/restore.sh

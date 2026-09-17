@@ -1,6 +1,7 @@
 import { Suspense } from "react"
 
-import { getCameras, getFilms, getFilmstocks, getLenses } from "@/lib/api"
+import { getCameras, getFilmsPage, getFilmstocks, getLenses } from "@/lib/api"
+import { type RollSearchParams, queryFromSearchParams } from "@/lib/roll-query"
 import { RollBrowser } from "@/components/roll-browser"
 import { RollListSkeleton } from "@/components/skeletons"
 
@@ -8,9 +9,16 @@ import { RollListSkeleton } from "@/components/skeletons"
  * The roll list moved to `/` in M1. `/films` keeps working — old bookmarks, the
  * README and the future QR labels all point here — and renders exactly the same page.
  */
-export default async function FilmsPage() {
+export default async function FilmsPage({
+  searchParams,
+}: {
+  searchParams: Promise<RollSearchParams>
+}) {
+  const params = await searchParams
+  const query = queryFromSearchParams(params)
+
   const [films, cameras, lenses, filmstocks] = await Promise.all([
-    getFilms(),
+    getFilmsPage(query),
     getCameras(),
     getLenses(),
     getFilmstocks(),
@@ -18,7 +26,14 @@ export default async function FilmsPage() {
 
   return (
     <Suspense fallback={<RollListSkeleton />}>
-      <RollBrowser films={films} cameras={cameras} lenses={lenses} filmstocks={filmstocks} />
+      <RollBrowser
+        initial={films}
+        initialQuery={query}
+        openWizard={params.new === "1"}
+        cameras={cameras}
+        lenses={lenses}
+        filmstocks={filmstocks}
+      />
     </Suspense>
   )
 }

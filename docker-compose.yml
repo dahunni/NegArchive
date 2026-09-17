@@ -1,23 +1,50 @@
+# One stack, one command, one directory (roadmap M3).
+#
+#   cp .env.example .env     # optional: only to change the password or the port
+#   docker compose up        # → http://localhost:8021
+#
+# Everything the archive owns lives in ./data (override with DATA_DIR):
+#
+#   data/postgres/   the database cluster
+#   data/uploads/    the scans and contact sheets NegArchive manages
+#   data/catalog/    camera, lens and film stock pictures
+#   data/cache/      rendered previews; safe to delete
+#   data/backups/    scripts/backup.sh writes here
+#
+# Back the archive up by stopping the stack and copying that one directory, or by
+# running `make backup`. There are no named volumes on purpose: a volume you
+# cannot see is a volume you forget to back up.
+
+# A fixed project name, so the containers are called negarchive-* whatever the
+# checkout directory happens to be called.
+name: negarchive
+
 services:
   db:
     image: postgres:16
+    restart: unless-stopped
     environment:
-      POSTGRES_USER: negarchive
-      POSTGRES_PASSWORD: negarchive
-      POSTGRES_DB: negarchive
-    ports:
-      - "5432:5432"
+      POSTGRES_USER: ${POSTGRES_USER:-negarchive}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-negarchive}
+      POSTGRES_DB: ${POSTGRES_DB:-negarchive}
+      # Keep the cluster in a subdirectory so Postgres does not trip over
+      # anything the host filesystem puts in the mount point itself.
+      PGDATA: /var/lib/postgresql/data/pgdata
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - ${DATA_DIR:-./data}/postgres:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U negarchive -d negarchive"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-negarchive} -d ${POSTGRES_DB:-negarchive}"]
       interval: 5s
       timeout: 5s
       retries: 10
       start_period: 10s
+    # No published port: only `web` talks to it. Uncomment for psql from the host.
+    # ports:
+    #   - "5432:5432"
 
   web:
     build: .
+    restart: unless-stopped
     depends_on:
       db:
         condition: service_healthy
@@ -25,30 +52,58 @@ services:
       # Required: the backend refuses to start without it (M2, Postgres only).
       # Migrations run at startup (`alembic upgrade head`), so a fresh volume and an
       # archive from M0 both come up on the current schema.
-      DATABASE_URL: postgresql+psycopg2://negarchive:negarchive@db:5432/negarchive
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-negarchive}:${POSTGRES_PASSWORD:-negarchive}@db:5432/${POSTGRES_DB:-negarchive}
+      # Everything the archive owns lives here, and ./data is bind-mounted onto it.
+      DATA_DIR: /data
       # Largest accepted upload, in megabytes (R#18).
-      MAX_UPLOAD_MB: "512"
+      MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-512}
+      # Watch folder: seconds between sweeps. Empty or "off" disables it.
+      WATCH_INTERVAL_SECONDS: ${WATCH_INTERVAL_SECONDS:-30}
+      # Import by reference is off until this names the folder(s) it may read.
+      LIBRARY_ROOTS_ALLOW: ${LIBRARY_ROOTS_ALLOW:-}
+      # Optional single shared password for the whole API. Empty = no login.
+      NEGARCHIVE_PASSWORD: ${NEGARCHIVE_PASSWORD:-}
+      # The container only sees its bridge address; tell it the host's LAN name
+      # or IP so the footer and the QR code point somewhere a phone can reach.
+      NEGARCHIVE_PUBLIC_HOST: ${NEGARCHIVE_PUBLIC_HOST:-}
+      UI_PORT: ${UI_PORT:-8021}
     volumes:
-      # Persist only user-generated images, not the entire codebase
-      - ./static/uploads:/app/static/uploads
-      - ./static/catalog:/app/static/catalog
+      - ${DATA_DIR:-./data}:/data
+      # Your scan library, for import by reference. Read-only: NegArchive never
+      # writes to a linked folder. Set LIBRARY_HOST_DIR and
+      # LIBRARY_ROOTS_ALLOW=/library in .env to switch the feature on.
+      - ${LIBRARY_HOST_DIR:-./data/library}:/library:ro
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=5).status == 200 else 1)"
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 40s
     command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
 
   frontend:
     build:
       context: ./frontend
+    restart: unless-stopped
     depends_on:
-      - web
+      web:
+        # Not just "started": the first page is server-rendered, so a frontend
+        # that comes up before the API has migrated the database renders an error.
+        condition: service_healthy
     environment:
-      # Browser-visible API base; use same-origin and proxy via Next.js rewrites
+      # Browser-visible API base; empty means same-origin, and the Next rewrites
+      # proxy /api and /static to the backend.
       NEXT_PUBLIC_API_BASE: ""
       # Server-side (SSR) internal API base inside the Docker network
       API_BASE: http://web:8000
       PORT: 3000
     ports:
-      - "8021:3000"
-    # No volumes in production; container uses built assets
-    # For live dev, prefer running `npm run dev` locally
-
-volumes:
-  pgdata:
+      - "${UI_PORT:-8021}:3000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:3000/ || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s

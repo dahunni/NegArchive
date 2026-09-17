@@ -30,6 +30,10 @@ negarchive.db
 
 # User uploads are bind-mounted at runtime, never baked into the image
 static/uploads/
+static/cache/
+
+# The M3 data directory is a bind mount; it must never enter the image
+data/
 
 # Tooling and local config
 .env

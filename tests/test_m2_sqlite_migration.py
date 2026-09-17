@@ -10,7 +10,6 @@ import subprocess
 import sys
 
 from sqlalchemy import create_engine, text
-
 from test_m2_migrations import REPO_ROOT, scratch_database
 
 #: The schema a pre-M2 NegArchive left behind on SQLite (`create_all` on the old

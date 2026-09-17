@@ -1,6 +1,7 @@
 import { Suspense } from "react"
 
-import { getCameras, getFilms, getFilmstocks, getLenses } from "@/lib/api"
+import { getCameras, getFilmsPage, getFilmstocks, getLenses } from "@/lib/api"
+import { type RollSearchParams, queryFromSearchParams } from "@/lib/roll-query"
 import { RollBrowser } from "@/components/roll-browser"
 import { RollListSkeleton } from "@/components/skeletons"
 
@@ -8,10 +9,21 @@ import { RollListSkeleton } from "@/components/skeletons"
  * Rolls are the home page: a roll is the unit of work, so it is what you land on.
  * The gear catalog is fetched here as well, because the filters and both dialogs
  * need it and one server round trip beats three client fetches.
+ *
+ * M3: the filters live in the query string and are applied by the API, so only
+ * the first page of matching rolls crosses the wire — and `/?q=harbour` is a URL
+ * you can bookmark.
  */
-export default async function RollsHomePage() {
+export default async function RollsHomePage({
+  searchParams,
+}: {
+  searchParams: Promise<RollSearchParams>
+}) {
+  const params = await searchParams
+  const query = queryFromSearchParams(params)
+
   const [films, cameras, lenses, filmstocks] = await Promise.all([
-    getFilms(),
+    getFilmsPage(query),
     getCameras(),
     getLenses(),
     getFilmstocks(),
@@ -19,7 +31,14 @@ export default async function RollsHomePage() {
 
   return (
     <Suspense fallback={<RollListSkeleton />}>
-      <RollBrowser films={films} cameras={cameras} lenses={lenses} filmstocks={filmstocks} />
+      <RollBrowser
+        initial={films}
+        initialQuery={query}
+        openWizard={params.new === "1"}
+        cameras={cameras}
+        lenses={lenses}
+        filmstocks={filmstocks}
+      />
     </Suspense>
   )
 }

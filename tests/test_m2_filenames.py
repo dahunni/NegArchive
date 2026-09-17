@@ -11,7 +11,13 @@ import uuid
 import pytest
 from PIL import Image as PILImage
 
+from app import paths
 from app.routers.api import frame_number_from_filename
+
+
+def on_disk(stored_path: str) -> str:
+    """Where a stored path really is (M3: under DATA_DIR, not the working directory)."""
+    return str(paths.resolve(stored_path))
 
 
 def unique(prefix: str) -> str:
@@ -185,7 +191,7 @@ def test_the_contact_sheet_is_laid_out_in_frame_order(client):
 
     res = client.post(f"/api/films/{roll['id']}/contact_sheet?columns=3&thumb_size=40")
     assert res.status_code == 200, res.text
-    sheet = PILImage.open(res.json()["image"]["path"]).convert("RGB")
+    sheet = PILImage.open(on_disk(res.json()["image"]["path"])).convert("RGB")
     # The sheet is a JPEG, so compare the dominant channel rather than exact RGB.
     cells = [
         max(range(3), key=lambda c, x=column: sheet.getpixel((20 + 40 * x, 20))[c])

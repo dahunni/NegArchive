@@ -1,17 +1,20 @@
 "use client"
 
 import Link from "next/link"
-import { useRouter, useSearchParams } from "next/navigation"
-import { useMemo, useState } from "react"
+import { useRouter } from "next/navigation"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Film as FilmIcon, Images, Pencil, Plus, Search, Trash2, X } from "lucide-react"
 
 import {
   type Camera,
   type Film,
+  type FilmQuery,
   type Filmstock,
   type Lens,
+  type Page,
   deleteFilm,
   errorMessage,
+  getFilmsPage,
   getPreviewUrl,
 } from "@/lib/api"
 import { formatDateRange, formatStorage, pluralize } from "@/lib/format"
@@ -23,99 +26,122 @@ import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog"
 import { EmptyState } from "@/components/empty-state"
+import { ErrorState } from "@/components/error-state"
 import { RollEditSheet } from "@/components/roll-edit-sheet"
 import { RollWizard } from "@/components/roll-wizard"
 import { useToast } from "@/hooks/use-toast"
 
 const ANY = "__any__"
 
+/** How long to wait after the last keystroke before asking the server. */
+const DEBOUNCE_MS = 250
+
 /**
- * The gear filters work on ids now (M2, R#14). A `?camera=` from an older bookmark
- * still carries a name, so it is resolved against the catalog once on load.
+ * The gear filters work on ids (M2, R#14). A `?camera=` from an older bookmark
+ * still carries a name, so it is resolved against the catalog once on load — and
+ * the API accepts either, so the server-rendered first page is right too.
  */
-function initialGearFilter(raw: string | null, catalog: { id: number; name: string }[]): string {
-  if (!raw) return ANY
-  if (/^\d+$/.test(raw)) return raw
-  const match = catalog.find((item) => item.name.toLowerCase() === raw.toLowerCase())
+function initialGearFilter(raw: string | number | null | undefined, catalog: { id: number; name: string }[]): string {
+  if (raw === null || raw === undefined || raw === "") return ANY
+  const value = String(raw)
+  if (/^\d+$/.test(value)) return value
+  const match = catalog.find((item) => item.name.toLowerCase() === value.toLowerCase())
   return match ? String(match.id) : ANY
-}
-
-/** Overlap test between the roll's shooting dates and the filter range. */
-function withinRange(film: Film, from: string, to: string): boolean {
-  if (!from && !to) return true
-  const start = film.start_date || film.end_date
-  const end = film.end_date || film.start_date
-  if (!start || !end) return false
-  if (from && end < from) return false
-  if (to && start > to) return false
-  return true
-}
-
-function matchesText(film: Film, needle: string): boolean {
-  if (!needle) return true
-  const haystack = [
-    film.title,
-    film.camera,
-    film.lens,
-    film.film_type,
-    film.notes,
-    film.building,
-    film.folder,
-    film.archive_serial,
-  ]
-    .filter(Boolean)
-    .join(" ")
-    .toLowerCase()
-  return needle
-    .toLowerCase()
-    .split(/\s+/)
-    .filter(Boolean)
-    .every((term) => haystack.includes(term))
 }
 
 /**
  * The home page: every roll, with the four things you look for (film, camera, when,
  * where it is filed) and the frames you shot. The old separate Search page is these
  * four filters.
+ *
+ * **M3 (R#20): the filtering happens in Postgres, not here.** The first page is
+ * server-rendered from the URL's query string — so a filtered list can be
+ * bookmarked and shared — and every change after that asks the API for a fresh
+ * page. An archive with 800 rolls used to ship all 800 to the browser on every
+ * page load; now it ships 24 and a total.
  */
 export function RollBrowser({
-  films,
+  initial,
+  initialQuery,
+  openWizard = false,
   cameras,
   lenses,
   filmstocks,
 }: {
-  films: Film[]
+  initial: Page<Film>
+  initialQuery: FilmQuery
+  /** `/?new=1` and the `/films/new` redirect open the wizard straight away. */
+  openWizard?: boolean
   cameras: Camera[]
   lenses: Lens[]
   filmstocks: Filmstock[]
 }) {
   const router = useRouter()
-  const params = useSearchParams()
   const { toast } = useToast()
 
-  const [query, setQuery] = useState(params.get("q") ?? "")
-  const [camera, setCamera] = useState(() => initialGearFilter(params.get("camera"), cameras))
-  const [film, setFilm] = useState(() => initialGearFilter(params.get("film"), filmstocks))
-  const [from, setFrom] = useState(params.get("from") ?? "")
-  const [to, setTo] = useState(params.get("to") ?? "")
+  const [query, setQuery] = useState(initialQuery.q ?? "")
+  const [camera, setCamera] = useState(() =>
+    initialGearFilter(initialQuery.camera_id ?? initialQuery.camera, cameras),
+  )
+  const [film, setFilm] = useState(() =>
+    initialGearFilter(initialQuery.film_stock_id ?? initialQuery.film_type, filmstocks),
+  )
+  const [from, setFrom] = useState(initialQuery.from ?? "")
+  const [to, setTo] = useState(initialQuery.to ?? "")
 
-  const [wizardOpen, setWizardOpen] = useState(params.get("new") === "1")
+  const [items, setItems] = useState<Film[]>(initial.items)
+  const [total, setTotal] = useState(initial.total)
+  const [hasMore, setHasMore] = useState(initial.has_more)
+  const [loading, setLoading] = useState(false)
+  const [loadError, setLoadError] = useState<string | null>(null)
+
+  const [wizardOpen, setWizardOpen] = useState(openWizard)
   const [editing, setEditing] = useState<Film | null>(null)
   const [pendingDelete, setPendingDelete] = useState<Film | null>(null)
 
   const filtersActive = Boolean(query || from || to || camera !== ANY || film !== ANY)
 
-  const visible = useMemo(
-    () =>
-      films.filter(
-        (roll) =>
-          matchesText(roll, query) &&
-          (camera === ANY || roll.camera_id === Number(camera)) &&
-          (film === ANY || roll.film_stock_id === Number(film)) &&
-          withinRange(roll, from, to),
-      ),
-    [films, query, camera, film, from, to],
+  const filters: FilmQuery = useMemo(
+    () => ({
+      q: query.trim() || undefined,
+      // Ids from here on: the selects hold catalog ids, and the API filters on the
+      // foreign key rather than on a name that a rename would invalidate.
+      camera_id: camera === ANY ? undefined : Number(camera),
+      film_stock_id: film === ANY ? undefined : Number(film),
+      from: from || undefined,
+      to: to || undefined,
+    }),
+    [query, camera, film, from, to],
   )
+
+  const fetchPage = useCallback(
+    async (offset: number, append: boolean) => {
+      setLoading(true)
+      try {
+        const page = await getFilmsPage({ ...filters, offset })
+        setItems((current) => (append ? [...current, ...page.items] : page.items))
+        setTotal(page.total)
+        setHasMore(page.has_more)
+        setLoadError(null)
+      } catch (error) {
+        setLoadError(errorMessage(error, "Could not load the rolls."))
+      } finally {
+        setLoading(false)
+      }
+    },
+    [filters],
+  )
+
+  // The first page came from the server; do not immediately fetch it again.
+  const hydrated = useRef(false)
+  useEffect(() => {
+    if (!hydrated.current) {
+      hydrated.current = true
+      return
+    }
+    const handle = window.setTimeout(() => fetchPage(0, false), DEBOUNCE_MS)
+    return () => window.clearTimeout(handle)
+  }, [fetchPage])
 
   const clearFilters = () => {
     setQuery("")
@@ -136,6 +162,7 @@ export function RollBrowser({
           : `“${pendingDelete.title}” and its scans are gone.`,
       })
       setPendingDelete(null)
+      await fetchPage(0, false)
       router.refresh()
     } catch (error) {
       toast({ title: "Could not delete", description: errorMessage(error), variant: "destructive" })
@@ -148,8 +175,10 @@ export function RollBrowser({
         <div>
           <h1 className="type-page">Rolls</h1>
           <p className="mt-1 type-body text-muted-foreground">
-            {pluralize(films.length, "roll")} in the archive
-            {filtersActive ? ` · ${visible.length} shown` : ""}
+            {filtersActive
+              ? `${pluralize(total, "roll")} match${total === 1 ? "es" : ""} these filters`
+              : `${pluralize(total, "roll")} in the archive`}
+            {items.length < total ? ` · showing ${items.length}` : ""}
           </p>
         </div>
         <Button onClick={() => setWizardOpen(true)} className="min-h-11" data-testid="new-roll">
@@ -242,95 +271,119 @@ export function RollBrowser({
         </div>
       </div>
 
-      {films.length === 0 ? (
-        <EmptyState
-          icon={FilmIcon}
-          title="No rolls yet"
-          description="A roll is the unit of work: create one, then drop its scans in and number the frames."
-          action={
-            <Button onClick={() => setWizardOpen(true)}>
-              <Plus className="mr-2 h-4 w-4" />
-              New roll
-            </Button>
-          }
+      {loadError ? (
+        <ErrorState
+          title="Could not load the rolls"
+          error={new Error(loadError)}
+          reset={() => fetchPage(0, false)}
         />
-      ) : visible.length === 0 ? (
-        <EmptyState
-          icon={Search}
-          title="No roll matches these filters"
-          description="Try a different camera or film, or widen the date range."
-          action={
-            <Button variant="outline" onClick={clearFilters}>
-              Clear filters
-            </Button>
-          }
-        />
+      ) : items.length === 0 ? (
+        filtersActive ? (
+          <EmptyState
+            icon={Search}
+            title="No roll matches these filters"
+            description="Try a different camera or film, or widen the date range."
+            action={
+              <Button variant="outline" onClick={clearFilters}>
+                Clear filters
+              </Button>
+            }
+          />
+        ) : (
+          <EmptyState
+            icon={FilmIcon}
+            title="No rolls yet"
+            description="A roll is the unit of work: create one, then drop its scans in and number the frames."
+            action={
+              <Button onClick={() => setWizardOpen(true)}>
+                <Plus className="mr-2 h-4 w-4" />
+                New roll
+              </Button>
+            }
+          />
+        )
       ) : (
-        <ul className="space-y-3" data-testid="roll-list">
-          {visible.map((roll) => (
-            <li
-              key={roll.id}
-              className="rounded-lg border border-border bg-card p-3 transition-colors hover:border-muted-foreground/40 sm:p-4"
-              data-testid="roll-row"
-              data-frames={roll.image_count}
-            >
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:gap-4">
-                <RollStrip roll={roll} />
+        <>
+          <ul className="space-y-3" data-testid="roll-list">
+            {items.map((roll) => (
+              <li
+                key={roll.id}
+                className="rounded-lg border border-border bg-card p-3 transition-colors hover:border-muted-foreground/40 sm:p-4"
+                data-testid="roll-row"
+                data-frames={roll.image_count}
+              >
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:gap-4">
+                  <RollStrip roll={roll} />
 
-                <div className="min-w-0 flex-1">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <Link
-                      href={`/films/${roll.id}`}
-                      className="type-section truncate hover:underline"
-                      data-testid="roll-title"
-                    >
-                      {roll.title}
-                    </Link>
-                    {roll.archive_serial ? (
-                      <Badge variant="outline" className="type-numeric">
-                        {roll.archive_serial}
-                      </Badge>
-                    ) : null}
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Link
+                        href={`/films/${roll.id}`}
+                        className="type-section truncate hover:underline"
+                        data-testid="roll-title"
+                      >
+                        {roll.title}
+                      </Link>
+                      {roll.archive_serial ? (
+                        <Badge variant="outline" className="type-numeric">
+                          {roll.archive_serial}
+                        </Badge>
+                      ) : null}
+                    </div>
+
+                    <dl className="mt-2 grid gap-x-6 gap-y-1 sm:grid-cols-2 lg:grid-cols-4">
+                      <Meta label="Film" value={roll.film_type} />
+                      <Meta label="Camera" value={roll.camera} />
+                      <Meta label="Shot" value={formatDateRange(roll.start_date, roll.end_date)} />
+                      <Meta label="Stored" value={formatStorage(roll)} />
+                    </dl>
                   </div>
 
-                  <dl className="mt-2 grid gap-x-6 gap-y-1 sm:grid-cols-2 lg:grid-cols-4">
-                    <Meta label="Film" value={roll.film_type} />
-                    <Meta label="Camera" value={roll.camera} />
-                    <Meta label="Shot" value={formatDateRange(roll.start_date, roll.end_date)} />
-                    <Meta label="Stored" value={formatStorage(roll)} />
-                  </dl>
-                </div>
-
-                <div className="flex items-center gap-2 sm:flex-col sm:items-end">
-                  <Badge variant="secondary" className="type-numeric whitespace-nowrap">
-                    <Images className="mr-1 h-3 w-3" />
-                    {pluralize(roll.image_count, "frame")}
-                  </Badge>
-                  <div className="ml-auto flex gap-1 sm:ml-0">
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-10 w-10"
-                      aria-label={`Edit ${roll.title}`}
-                      onClick={() => setEditing(roll)}
-                    >
-                      <Pencil className="h-4 w-4" />
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-10 w-10"
-                      aria-label={`Delete ${roll.title}`}
-                      onClick={() => setPendingDelete(roll)}
-                    >
-                      <Trash2 className="h-4 w-4" />
-                    </Button>
+                  <div className="flex items-center gap-2 sm:flex-col sm:items-end">
+                    <Badge variant="secondary" className="type-numeric whitespace-nowrap">
+                      <Images className="mr-1 h-3 w-3" />
+                      {pluralize(roll.image_count, "frame")}
+                    </Badge>
+                    <div className="ml-auto flex gap-1 sm:ml-0">
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-10 w-10"
+                        aria-label={`Edit ${roll.title}`}
+                        onClick={() => setEditing(roll)}
+                      >
+                        <Pencil className="h-4 w-4" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-10 w-10"
+                        aria-label={`Delete ${roll.title}`}
+                        onClick={() => setPendingDelete(roll)}
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    </div>
                   </div>
                 </div>
-              </div>
-            </li>
-          ))}
-        </ul>
+              </li>
+            ))}
+          </ul>
+
+          {hasMore ? (
+            <div className="flex justify-center">
+              <Button
+                variant="outline"
+                className="min-h-11"
+                disabled={loading}
+                onClick={() => fetchPage(items.length, true)}
+                data-testid="load-more-rolls"
+              >
+                {loading ? "Loading…" : `Load more (${total - items.length} left)`}
+              </Button>
+            </div>
+          ) : null}
+        </>
       )}
 
       <RollWizard

@@ -1,10 +1,20 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  // Allow large client request bodies to pass through middleware/rewrites (proxy)
-  // Default is 10MB; set to 1GB for bulk image uploads.
-  middlewareClientMaxBodySize: 1024 * 1024 * 1024,
+  experimental: {
+    // Let a whole roll of TIFFs through the /api proxy. The default is 10 MB,
+    // which is one 16-bit scan.
+    //
+    // M3 found this was doing nothing: the key was set at the top level, where
+    // Next ignores it with a warning ("Unrecognized key(s) in object"). It lives
+    // under `experimental`, and in Next 16 the spelling
+    // `experimental.middlewareClientMaxBodySize` is deprecated in favour of
+    // `proxyClientMaxBodySize` (next/dist/server/config.js warns and copies the
+    // old name over). So: new name, right place, and the limit now applies.
+    proxyClientMaxBodySize: 1024 * 1024 * 1024,
+  },
   typescript: {
-    ignoreBuildErrors: true,
+    // M3/R#30: type errors fail the build. `npx tsc --noEmit` is also a CI step.
+    ignoreBuildErrors: false,
   },
   images: {
     unoptimized: true,

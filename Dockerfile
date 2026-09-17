@@ -17,6 +17,12 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . /app
 
+# One directory for everything the archive owns; the compose stack bind-mounts
+# the host's ./data over it (roadmap M3). Created here so the image also works
+# standalone, without a mount.
+ENV DATA_DIR=/data
+RUN mkdir -p /data
+
 EXPOSE 8000
 
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

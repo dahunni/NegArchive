@@ -1,0 +1,9 @@
+# Test and lint tooling. Not installed in the runtime image.
+#
+#   uv pip install -r requirements.txt -r requirements-dev.txt
+#
+# httpx is here rather than in requirements.txt because it is only needed by
+# FastAPI's TestClient, never by the running application.
+pytest==9.1.1
+httpx==0.28.1
+ruff==0.16.8
