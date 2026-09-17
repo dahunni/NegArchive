@@ -272,6 +272,8 @@ Full checklist: [docs/ROADMAP.md](docs/ROADMAP.md).
    index sheets, strip/position, paper-twin capture, prints and loans.
 6. **M5** NegPy: ingest its XMP on upload, write its gear JSON, roll handoff with a metadata
    preset, sidecar awareness, compatible content hash.
+7. **M6** Immich connector, optional: shared files via an external library, XMP sidecars, one
+   album per roll with tags, "Open in Immich", people from Immich. NegArchive stays standalone.
 
 ## License
 

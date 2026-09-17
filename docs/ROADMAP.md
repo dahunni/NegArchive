@@ -13,6 +13,10 @@ Guiding decisions (see [NEGPY_INTEGRATION.md](NEGPY_INTEGRATION.md) for the reas
    supported database; it hid the Postgres bugs (R#1, R#10) and forces two code paths.
 3. **Never lose the link to the paper**: original filenames, frame numbers, serials and
    storage locations are first-class and printable.
+4. **Immich is the optional photo layer, NegArchive is the film layer.** Immich (external
+   libraries, XMP sidecars, REST API) can own thumbnails, faces and people, map, mobile backup and
+   sharing. NegArchive owns rolls, frames, gear, storage location, serials, labels, contact sheets
+   and unscanned rolls, and must keep working without Immich. See M6.
 
 ---
 
@@ -98,8 +102,9 @@ rewrites remain the only way the browser reaches the backend.
       endpoint, and a `delete_file` checkbox in the UI. **R#9**
 - [ ] Extension + MIME allowlist (`jpg jpeg png tif tiff webp dng`), size limit, never serve
       uploads as `text/html`. **R#18**
-- [ ] Faces: either delete `services/face.py`, `Face`, `Person` and the DeepFace requirement, or
-      wire it in behind an optional extra with a background job. Decide; do not keep dead 2 GB. **R#10, R#15**
+- [ ] Faces: delete `services/face.py`, the `Face` and `Person` models and the `deepface`,
+      `scikit-learn` and `opencv` requirements if nothing else needs them. People detection comes
+      from Immich (M6), not from this codebase. **R#10, R#15**
 - [ ] Filmstock `kind` select lists the enum, not "kinds already used". Add `manufacturer`,
       `format` (35mm/120/4x5…) to filmstocks; add `format` to rolls. **R#21** (also needed for NegPy gear sync)
 
@@ -119,15 +124,17 @@ rewrites remain the only way the browser reaches the backend.
       with the single-`DATA_DIR` compose stack above; async file IO is still open.)* **R#19**
 - [ ] Pagination on `/api/images` and server-side search (`q`, `film_id`, `camera_id`, date range). **R#20**
 - [ ] **Import by reference ("link mode")**: register a folder tree (roll = subfolder) without
-      copying files; NegArchive stores the path and hash. Lets NegPy library roots and NegArchive
-      share one copy of every scan.
+      copying files; NegArchive stores the path and hash. Lets NegPy library roots, an Immich
+      external library and NegArchive share one copy of every scan. Store `original_filename`,
+      `source_path`, `content_hash` and `storage_mode` (`managed` | `linked`) per image.
 - [ ] **Watch folder**: poll a scanner output directory; new subfolder → new roll draft; new file
       → new frame. (Same idea as NegPy's Hot Folder, but headless.)
 - [ ] **Backup / restore**: a `backup` script that runs `pg_dump` and zips it with `uploads/`;
       `GET /api/export` → zip of a JSON dump of all tables plus files (format-independent, for
       longevity); `POST /api/import`. Also a CSV dump of rolls for spreadsheets. Document the restore.
 - [ ] PWA manifest + service worker so the UI installs on phone/tablet and the shell loads with the
-      backend unreachable (read-only cached lists, queued uploads later).
+      backend unreachable (read-only cached lists). Scope: the "at the shelf" lookup, not a photo
+      app; mobile photo backup and browsing are Immich's job.
 - [ ] LAN discoverability: print the LAN URL and a QR code at startup and in the UI footer.
 - [ ] Optional single shared password (env var) for when the LAN is not trusted. **R#26**
 - [ ] Tests: pytest against Postgres (testcontainers or a Compose service; the probe script in
@@ -186,9 +193,33 @@ See [NEGPY_INTEGRATION.md](NEGPY_INTEGRATION.md) for formats and field mappings.
       `MetadataConfig` (building/container/sleeve/serial → XMP), and a headless export entry point.
       Frame both as "external sync", because NegPy's library deliberately has no index database.
 
-## M6 — Nice to have
+## M6 — Immich connector (optional photo layer)
 
-- [ ] Map view from NegPy GPS/city metadata.
+Immich stays optional: every feature below is behind an "Immich" settings section (base URL +
+API key) and NegArchive works fully without it. Two services, two databases; never share
+Immich's Postgres.
+
+- [ ] **Shared files, not copies**: document pointing an Immich external library at NegArchive's
+      uploads folder (or the M3 linked folders). Read-write mount so Immich can write sidecars.
+- [ ] **XMP sidecars from NegArchive**: write `<file>.xmp` next to every frame with capture date,
+      roll serial, frame number, camera, lens, film (same fields NegPy writes, so a NegPy export
+      and a NegArchive frame look identical to Immich). Re-written on edit. This is also the
+      sidecar work M5 needs.
+- [ ] **Roll ↔ album sync** through the Immich API: one album per roll named by serial + title,
+      tags `roll:<serial>`, `film:<name>`, `camera:<name>`, `lens:<name>`; store the Immich asset
+      id on each frame (`image_assets.immich_asset_id`) after matching by path or content hash.
+- [ ] **"Open in Immich"** on frames and rolls; "Open in NegArchive" the other way via the roll
+      tag or album description link.
+- [ ] **People from Immich**: read faces/people per asset from the API and expose a person filter
+      in NegArchive; replaces the deleted DeepFace code.
+- [ ] **Conflict rule**: NegArchive is authoritative for roll, frame, gear and date; Immich is
+      authoritative for people, favourites and ratings. Never overwrite the other side's fields.
+      Note the known Immich issue where in-app edits stop external XMP changes being re-read.
+- [ ] Later, optional: an Immich workflow plugin (Wasm, alpha) that files a newly added asset into
+      the right album by parsing the NegPy/NegArchive XMP, so the connector also runs inside Immich.
+
+## M7 — Nice to have
+
+- [ ] Map view from NegPy GPS/city metadata (or from Immich).
 - [ ] Per-frame ratings/keep-reject imported from NegPy `file_marks`.
 - [ ] Multi-user with roles (only if the archive ever leaves the LAN).
-- [ ] Face/person tagging revived as an optional, on-demand job.
