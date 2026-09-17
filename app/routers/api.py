@@ -62,6 +62,66 @@ def catalog_url(path: Optional[str]):
     return path if path.startswith("/") else f"/{path}"
 
 
+def camera_to_dict(c: Camera):
+    return {
+        "id": c.id,
+        "name": c.name,
+        "mount": c.mount,
+        "image_path": c.image_path,
+        "url": catalog_url(c.image_path),
+        "notes": c.notes,
+    }
+
+
+def lens_to_dict(l: Lens):
+    return {
+        "id": l.id,
+        "name": l.name,
+        "mount": l.mount,
+        "image_path": l.image_path,
+        "url": catalog_url(l.image_path),
+        "notes": l.notes,
+    }
+
+
+def filmstock_to_dict(s: FilmStock):
+    return {
+        "id": s.id,
+        "name": s.name,
+        "iso": s.iso,
+        "kind": s.kind.value if isinstance(s.kind, FilmKind) else str(s.kind),
+        # R#1/R#22: always a real boolean, never 0/1 or None
+        "expired": bool(s.expired),
+        "expiration_date": s.expiration_date.isoformat() if s.expiration_date else None,
+        "image_path": s.image_path,
+        "url": catalog_url(s.image_path),
+    }
+
+
+def to_bool(value) -> Optional[bool]:
+    """Coerce whatever the client sent into a bool the Boolean column accepts."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on", "expired"}
+    return bool(value)
+
+
+def clean_name(value) -> Optional[str]:
+    """Map the UI's "None" placeholder and empty strings to NULL (R#8)."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        value = value.strip()
+        if value == "" or value == "None":
+            return None
+    return value
+
+
 @router.get("/films")
 def list_films(db: Session = Depends(get_db)):
     films = db.query(FilmRoll).order_by(FilmRoll.created_at.desc()).all()
@@ -98,9 +158,9 @@ async def create_film(request: Request, db: Session = Depends(get_db)):
     payload = await request.json()
     f = FilmRoll(
         title=payload.get("title") or "Untitled",
-        camera=payload.get("camera"),
-        lens=payload.get("lens"),
-        film_type=payload.get("film_type"),
+        camera=clean_name(payload.get("camera")),
+        lens=clean_name(payload.get("lens")),
+        film_type=clean_name(payload.get("film_type")),
         notes=payload.get("notes"),
         building=payload.get("building"),
         folder=payload.get("folder"),
@@ -121,7 +181,7 @@ async def update_film(film_id: int, request: Request, db: Session = Depends(get_
     payload = await request.json()
     for key in ["title", "camera", "lens", "film_type", "notes", "building", "folder", "archive_serial"]:
         if key in payload:
-            setattr(f, key, payload[key] or None)
+            setattr(f, key, clean_name(payload[key]))
     if "start_date" in payload:
         f.start_date = date.fromisoformat(payload["start_date"]) if payload["start_date"] else None
     if "end_date" in payload:
@@ -294,8 +354,10 @@ async def update_image(image_id: int, request: Request, db: Session = Depends(ge
     if not i:
         return {"error": "not_found"}
     payload = await request.json()
-    if "film_roll_id" in payload and payload["film_roll_id"]:
-        i.film_roll_id = int(payload["film_roll_id"])
+    if "film_roll_id" in payload:
+        # R#12: an explicit null unassigns the image from its roll
+        raw = payload["film_roll_id"]
+        i.film_roll_id = int(raw) if raw not in (None, "", "none") else None
     if "type" in payload and payload["type"]:
         i.type = ImageType(payload["type"])  # type validation
     if "frame_number" in payload:
@@ -524,7 +586,7 @@ async def bulk_upload_zip(film_id: int, file: UploadFile = File(...), db: Sessio
 @router.get("/cameras")
 def list_cameras(db: Session = Depends(get_db)):
     items = db.query(Camera).order_by(Camera.name.asc()).all()
-    return [{"id": c.id, "name": c.name, "mount": c.mount, "image_path": c.image_path, "url": catalog_url(c.image_path), "notes": c.notes} for c in items]
+    return [camera_to_dict(c) for c in items]
 
 
 @router.get("/cameras/{camera_id}")
@@ -532,7 +594,7 @@ def get_camera(camera_id: int, db: Session = Depends(get_db)):
     c = db.get(Camera, camera_id)
     if not c:
         return {"error": "not_found"}
-    return {"id": c.id, "name": c.name, "mount": c.mount, "image_path": c.image_path, "url": catalog_url(c.image_path), "notes": c.notes}
+    return camera_to_dict(c)
 
 
 @router.post("/cameras")
@@ -541,7 +603,7 @@ async def create_camera(request: Request, db: Session = Depends(get_db)):
     c = Camera(name=payload.get("name"), mount=payload.get("mount"), image_path=payload.get("image_path"), notes=payload.get("notes"))
     db.add(c)
     db.commit()
-    return {"ok": True, "camera": {"id": c.id, "name": c.name, "mount": c.mount, "image_path": c.image_path, "url": catalog_url(c.image_path), "notes": c.notes}}
+    return {"ok": True, "camera": camera_to_dict(c)}
 
 
 @router.put("/cameras/{camera_id}")
@@ -554,7 +616,7 @@ async def update_camera(camera_id: int, request: Request, db: Session = Depends(
         if key in payload:
             setattr(c, key, payload[key] or None)
     db.commit()
-    return {"ok": True, "camera": {"id": c.id, "name": c.name, "mount": c.mount, "image_path": c.image_path, "url": catalog_url(c.image_path), "notes": c.notes}}
+    return {"ok": True, "camera": camera_to_dict(c)}
 
 
 @router.delete("/cameras/{camera_id}")
@@ -581,22 +643,13 @@ async def upload_camera_image(camera_id: int, file: UploadFile = File(...), db: 
         shutil.copyfileobj(file.file, out)
     c.image_path = rel_path
     db.commit()
-    return {"ok": True, "camera": {"id": c.id, "name": c.name, "mount": c.mount, "image_path": c.image_path, "url": catalog_url(c.image_path), "notes": c.notes}}
+    return {"ok": True, "camera": camera_to_dict(c)}
 
 
 @router.get("/filmstocks")
 def list_filmstocks(db: Session = Depends(get_db)):
     items = db.query(FilmStock).order_by(FilmStock.name.asc()).all()
-    return [{
-        "id": s.id,
-        "name": s.name,
-        "iso": s.iso,
-        "kind": s.kind.value if isinstance(s.kind, FilmKind) else str(s.kind),
-        "expired": s.expired,
-        "expiration_date": s.expiration_date.isoformat() if s.expiration_date else None,
-        "image_path": s.image_path,
-        "url": catalog_url(s.image_path),
-    } for s in items]
+    return [filmstock_to_dict(s) for s in items]
 
 
 @router.get("/filmstocks/{stock_id}")
@@ -604,16 +657,7 @@ def get_filmstock(stock_id: int, db: Session = Depends(get_db)):
     s = db.get(FilmStock, stock_id)
     if not s:
         return {"error": "not_found"}
-    return {
-        "id": s.id,
-        "name": s.name,
-        "iso": s.iso,
-        "kind": s.kind.value if isinstance(s.kind, FilmKind) else str(s.kind),
-        "expired": s.expired,
-        "expiration_date": s.expiration_date.isoformat() if s.expiration_date else None,
-        "image_path": s.image_path,
-        "url": catalog_url(s.image_path),
-    }
+    return filmstock_to_dict(s)
 
 
 @router.post("/filmstocks")
@@ -625,22 +669,13 @@ async def create_filmstock(request: Request, db: Session = Depends(get_db)):
         name=payload.get("name"),
         iso=payload.get("iso"),
         kind=kind_enum,
-        expired=payload.get("expired"),
+        expired=to_bool(payload.get("expired")),
         expiration_date=date.fromisoformat(payload["expiration_date"]) if payload.get("expiration_date") else None,
         image_path=payload.get("image_path"),
     )
     db.add(s)
     db.commit()
-    return {"ok": True, "filmstock": {
-        "id": s.id,
-        "name": s.name,
-        "iso": s.iso,
-        "kind": s.kind.value if isinstance(s.kind, FilmKind) else str(s.kind),
-        "expired": s.expired,
-        "expiration_date": s.expiration_date.isoformat() if s.expiration_date else None,
-        "image_path": s.image_path,
-        "url": catalog_url(s.image_path),
-    }}
+    return {"ok": True, "filmstock": filmstock_to_dict(s)}
 
 
 @router.put("/filmstocks/{stock_id}")
@@ -654,13 +689,16 @@ async def update_filmstock(stock_id: int, request: Request, db: Session = Depend
             s.kind = FilmKind(payload["kind"])
         except Exception:
             pass
-    for key in ["name", "iso", "expired", "image_path"]:
+    for key in ["name", "iso", "image_path"]:
         if key in payload:
             setattr(s, key, payload[key])
+    if "expired" in payload:
+        s.expired = to_bool(payload["expired"])
     if "expiration_date" in payload:
         s.expiration_date = date.fromisoformat(payload["expiration_date"]) if payload["expiration_date"] else None
     db.commit()
-    return {"ok": True}
+    # R#6: return the full object so the UI can chain an image upload
+    return {"ok": True, "filmstock": filmstock_to_dict(s)}
 
 
 @router.delete("/filmstocks/{stock_id}")
@@ -687,22 +725,13 @@ async def upload_filmstock_image(stock_id: int, file: UploadFile = File(...), db
         shutil.copyfileobj(file.file, out)
     s.image_path = rel_path
     db.commit()
-    return {"ok": True, "filmstock": {
-        "id": s.id,
-        "name": s.name,
-        "iso": s.iso,
-        "kind": s.kind.value if isinstance(s.kind, FilmKind) else str(s.kind),
-        "expired": s.expired,
-        "expiration_date": s.expiration_date.isoformat() if s.expiration_date else None,
-        "image_path": s.image_path,
-        "url": catalog_url(s.image_path),
-    }}
+    return {"ok": True, "filmstock": filmstock_to_dict(s)}
 
 
 @router.get("/lenses")
 def list_lenses(db: Session = Depends(get_db)):
     items = db.query(Lens).order_by(Lens.name.asc()).all()
-    return [{"id": l.id, "name": l.name, "mount": l.mount, "image_path": l.image_path, "url": catalog_url(l.image_path), "notes": l.notes} for l in items]
+    return [lens_to_dict(l) for l in items]
 
 
 @router.get("/lenses/{lens_id}")
@@ -710,7 +739,7 @@ def get_lens(lens_id: int, db: Session = Depends(get_db)):
     l = db.get(Lens, lens_id)
     if not l:
         return {"error": "not_found"}
-    return {"id": l.id, "name": l.name, "mount": l.mount, "image_path": l.image_path, "url": catalog_url(l.image_path), "notes": l.notes}
+    return lens_to_dict(l)
 
 
 @router.post("/lenses")
@@ -719,7 +748,7 @@ async def create_lens(request: Request, db: Session = Depends(get_db)):
     l = Lens(name=payload.get("name"), mount=payload.get("mount"), image_path=payload.get("image_path"), notes=payload.get("notes"))
     db.add(l)
     db.commit()
-    return {"ok": True, "lens": {"id": l.id, "name": l.name, "mount": l.mount, "image_path": l.image_path, "url": catalog_url(l.image_path), "notes": l.notes}}
+    return {"ok": True, "lens": lens_to_dict(l)}
 
 
 @router.put("/lenses/{lens_id}")
@@ -732,7 +761,8 @@ async def update_lens(lens_id: int, request: Request, db: Session = Depends(get_
         if key in payload:
             setattr(l, key, payload[key] or None)
     db.commit()
-    return {"ok": True}
+    # R#6: return the full object so the UI can chain an image upload
+    return {"ok": True, "lens": lens_to_dict(l)}
 
 
 @router.delete("/lenses/{lens_id}")
@@ -759,4 +789,4 @@ async def upload_lens_image(lens_id: int, file: UploadFile = File(...), db: Sess
         shutil.copyfileobj(file.file, out)
     l.image_path = rel_path
     db.commit()
-    return {"ok": True, "lens": {"id": l.id, "name": l.name, "mount": l.mount, "image_path": l.image_path, "url": catalog_url(l.image_path), "notes": l.notes}}
+    return {"ok": True, "lens": lens_to_dict(l)}

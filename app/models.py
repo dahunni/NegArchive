@@ -1,5 +1,5 @@
 from datetime import datetime, date
-from sqlalchemy import Column, Integer, String, DateTime, Date, ForeignKey, Enum, Text
+from sqlalchemy import Column, Integer, String, DateTime, Date, ForeignKey, Enum, Text, Boolean
 from sqlalchemy.orm import relationship, Mapped, mapped_column
 from sqlalchemy.dialects.postgresql import JSON
 import enum
@@ -37,7 +37,7 @@ class FilmStock(Base):
     name: Mapped[str] = mapped_column(String(200), unique=True, index=True)
     iso: Mapped[int | None] = mapped_column(Integer)
     kind: Mapped[FilmKind] = mapped_column(Enum(FilmKind))
-    expired: Mapped[int | None] = mapped_column(Integer)  # 1 for expired, 0 for not, None unknown
+    expired: Mapped[bool | None] = mapped_column(Boolean)  # True expired, False not, None unknown
     expiration_date: Mapped[date | None] = mapped_column(Date)
     image_path: Mapped[str | None] = mapped_column(String(500))
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
@@ -83,7 +83,10 @@ class ImageAsset(Base):
     __tablename__ = "image_assets"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
-    film_roll_id: Mapped[int] = mapped_column(Integer, ForeignKey("film_rolls.id"), index=True)
+    # Optional: an image can exist before it is assigned to a roll
+    film_roll_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("film_rolls.id"), index=True, nullable=True
+    )
     type: Mapped[ImageType] = mapped_column(Enum(ImageType), index=True)
     path: Mapped[str] = mapped_column(String(500))
     frame_number: Mapped[int | None] = mapped_column(Integer)
@@ -91,7 +94,7 @@ class ImageAsset(Base):
     capture_date: Mapped[date | None] = mapped_column(Date)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
-    film_roll: Mapped[FilmRoll] = relationship("FilmRoll", back_populates="images")
+    film_roll: Mapped["FilmRoll | None"] = relationship("FilmRoll", back_populates="images")
     faces: Mapped[list["Face"]] = relationship("Face", back_populates="image", cascade="all, delete-orphan")
 
 
