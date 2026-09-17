@@ -28,6 +28,7 @@ import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialo
 import { FrameGrid } from "@/components/frame-grid"
 import { FrameViewer } from "@/components/frame-viewer"
 import { MoveRollDialog } from "@/components/move-roll-dialog"
+import { NegpyHandoffButton } from "@/components/negpy-handoff-button"
 import { PrintMenu } from "@/components/print-menu"
 import { RollEditSheet } from "@/components/roll-edit-sheet"
 import { StatusStepper } from "@/components/status-stepper"
@@ -167,6 +168,8 @@ export function RollWorkspace({
             )}
             Contact sheet
           </Button>
+          {/* M5: prepare this roll's folder and preset for NegPy. */}
+          <NegpyHandoffButton rollId={film.id} disabled={frames.length === 0} />
           <Button
             variant="ghost"
             className="min-h-11 text-destructive hover:text-destructive"

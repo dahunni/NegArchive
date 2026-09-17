@@ -2,11 +2,12 @@
 
 import { useEffect, useRef, useState } from "react"
 import { useRouter } from "next/navigation"
-import { Download, FolderPlus, HardDrive, RefreshCw, Trash2, Upload } from "lucide-react"
+import { Download, FlaskConical, FolderPlus, HardDrive, RefreshCw, Trash2, Upload } from "lucide-react"
 
 import {
   type LibraryRoot,
   type LibraryRoots,
+  type NegpyStatus,
   type Settings,
   type SystemInfo,
   type WatchState,
@@ -16,10 +17,13 @@ import {
   deleteLibraryRoot,
   errorMessage,
   getLibraryRoots,
+  getNegpyStatus,
   getSettings,
   getSystemInfo,
   importArchive,
+  ingestNegpyMetadata,
   scanLibraryRoot,
+  syncNegpyGear,
   updateLibraryRoot,
   updateSettings,
 } from "@/lib/api"
@@ -48,6 +52,7 @@ export function SettingsWorkspace() {
   const [library, setLibrary] = useState<LibraryRoots | null>(null)
   const [settings, setSettings] = useState<Settings | null>(null)
   const [watch, setWatch] = useState<WatchState | null>(null)
+  const [negpy, setNegpy] = useState<NegpyStatus | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
   const [pendingRemove, setPendingRemove] = useState<LibraryRoot | null>(null)
 
@@ -62,13 +67,15 @@ export function SettingsWorkspace() {
   const importDryRun = useRef(false)
 
   const reload = async () => {
-    const [nextInfo, nextLibrary, nextSettings] = await Promise.all([
+    const [nextInfo, nextLibrary, nextSettings, nextNegpy] = await Promise.all([
       getSystemInfo().catch(() => null),
       getLibraryRoots().catch(() => null),
       getSettings().catch(() => null),
+      getNegpyStatus().catch(() => null),
     ])
     setInfo(nextInfo)
     setLibrary(nextLibrary)
+    setNegpy(nextNegpy)
     if (nextSettings) {
       setSettings(nextSettings.settings)
       setWatch(nextSettings.watch)
@@ -132,6 +139,49 @@ export function SettingsWorkspace() {
       })
     } catch (caught) {
       toast({ title: "Could not remove", description: errorMessage(caught), variant: "destructive" })
+    }
+  }
+
+  const saveSetting = async (patch: Partial<Settings>) => {
+    try {
+      const next = await updateSettings(patch)
+      setSettings(next.settings)
+      setNegpy(await getNegpyStatus().catch(() => negpy))
+    } catch (caught) {
+      toast({ title: "Could not save", description: errorMessage(caught), variant: "destructive" })
+    }
+  }
+
+  const syncGear = async () => {
+    setBusy("gear")
+    try {
+      const result = await syncNegpyGear()
+      await reload()
+      toast({
+        title: "Gear written for NegPy",
+        description: `${result.total} entries in ${result.directory}`,
+      })
+    } catch (caught) {
+      toast({ title: "Could not write the gear files", description: errorMessage(caught), variant: "destructive" })
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const readBacklog = async () => {
+    setBusy("ingest")
+    try {
+      const report = await ingestNegpyMetadata()
+      await reload()
+      router.refresh()
+      toast({
+        title: "Files read",
+        description: `${report.examined} looked at, ${report.changed} filled in, ${report.sidecars} NegPy sidecars`,
+      })
+    } catch (caught) {
+      toast({ title: "Could not read the files", description: errorMessage(caught), variant: "destructive" })
+    } finally {
+      setBusy(null)
     }
   }
 
@@ -323,6 +373,89 @@ export function SettingsWorkspace() {
               : "The poller is switched off on the server (WATCH_INTERVAL_SECONDS)."}
             {watch?.last_scan_at ? ` · last scan ${formatDate(watch.last_scan_at)}` : " · never scanned"}
           </p>
+        </div>
+      </section>
+
+      {/* ---------------------------------------------------------------- NegPy */}
+      <section className="space-y-3">
+        <div>
+          <h2 className="type-section">NegPy</h2>
+          <p className="mt-1 type-body text-muted-foreground">
+            NegArchive and NegPy exchange files, never code: a scan you export from NegPy arrives here
+            already knowing its roll, frame, date and gear, and a roll you prepare here arrives in NegPy
+            with the same. Nothing below needs NegPy to be running, or even installed on this machine.
+          </p>
+        </div>
+
+        <div className="space-y-3 rounded-lg border border-border bg-card p-4" data-testid="negpy-settings">
+          <label className="flex items-start gap-2">
+            <Checkbox
+              className="mt-1"
+              checked={settings?.negpy_ingest ?? true}
+              onCheckedChange={(value) => saveSetting({ negpy_ingest: value === true })}
+              aria-label="Read metadata from uploaded files"
+              data-testid="negpy-ingest-toggle"
+            />
+            <span className="type-body">
+              Read EXIF and NegPy metadata from every file
+              <span className="block type-meta">
+                Fills the frame number, the capture date and the roll’s gear when they are empty. It never
+                overwrites something you typed.
+              </span>
+            </span>
+          </label>
+
+          <label className="flex items-start gap-2">
+            <Checkbox
+              className="mt-1"
+              checked={settings?.negpy_create_gear ?? false}
+              onCheckedChange={(value) => saveSetting({ negpy_create_gear: value === true })}
+              aria-label="Add gear the files name"
+              data-testid="negpy-create-gear-toggle"
+            />
+            <span className="type-body">
+              Add cameras, lenses and film stocks the files name
+              <span className="block type-meta">
+                Off by default: EXIF spellings (“NIKON CORPORATION NIKON F5”) make near-duplicates of
+                entries your catalog already has.
+              </span>
+            </span>
+          </label>
+
+          <dl className="grid gap-x-6 gap-y-2 border-t border-border pt-3 sm:grid-cols-2">
+            <Fact label="Gear files" value={negpy?.paths.gear_dir ?? "—"} mono />
+            <Fact label="Roll folders" value={negpy?.paths.handoff_dir ?? "—"} mono />
+            <Fact label="Export filename pattern" value={negpy?.filename_pattern ?? "—"} mono />
+            <Fact
+              label="Read so far"
+              value={
+                negpy
+                  ? `${negpy.frames_with_metadata} frames · ${negpy.frames_edited_in_negpy} edited in NegPy`
+                  : "…"
+              }
+            />
+          </dl>
+          {negpy?.paths.error ? (
+            <p role="alert" className="type-meta text-destructive">
+              {negpy.paths.error}
+            </p>
+          ) : null}
+          <p className="type-meta">
+            Set <code className="type-numeric">NEGPY_USER_DIR</code> to write straight into NegPy’s own user
+            directory; without it these live inside the archive’s data directory, ready to copy across.
+            {negpy?.gear_synced_at ? ` Gear last written ${formatDate(negpy.gear_synced_at)}.` : ""}
+          </p>
+
+          <div className="flex flex-wrap gap-2">
+            <Button variant="outline" className="min-h-11" onClick={syncGear} disabled={busy === "gear"} data-testid="negpy-sync-gear">
+              <FlaskConical className="mr-2 h-4 w-4" />
+              {busy === "gear" ? "Writing…" : "Write gear for NegPy"}
+            </Button>
+            <Button variant="outline" className="min-h-11" onClick={readBacklog} disabled={busy === "ingest"} data-testid="negpy-ingest-backlog">
+              <RefreshCw className="mr-2 h-4 w-4" />
+              {busy === "ingest" ? "Reading…" : "Read metadata of older frames"}
+            </Button>
+          </div>
         </div>
       </section>
 

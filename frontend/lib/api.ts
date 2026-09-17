@@ -164,7 +164,46 @@ export interface Image {
   frame_number: number | null
   notes: string | null
   capture_date: string | null
+  /**
+   * M5: what the file itself said when it was ingested — EXIF, the `negpy:` XMP
+   * namespace, the filename preset. Evidence, not authority: ingest only ever
+   * fills a field that was empty.
+   */
+  capture_metadata?: CaptureMetadata | null
+  /** The `.negpy` sidecar beside this file, when NegPy has edited it. */
+  sidecar_path?: string | null
+  negpy_edited_at?: string | null
+  negpy_recipe?: NegpyRecipe | null
+  /** One line describing the recipe, e.g. "12 settings · inverted · cropped". */
+  negpy_summary?: string | null
   created_at: string
+}
+
+export interface CaptureMetadata {
+  roll: string | null
+  frame_number: number | null
+  capture_date: string | null
+  camera: string | null
+  lens: string | null
+  film_stock: string | null
+  film_manufacturer: string | null
+  film_iso: number | null
+  developer: string | null
+  development: string | null
+  notes: string | null
+  /** Which of `xmp`, `exif`, `filename` contributed. */
+  sources: string[]
+  raw?: Record<string, unknown>
+}
+
+export interface NegpyRecipe {
+  path: string
+  edited_at: string | null
+  summary: string
+  setting_count: number
+  file_hash?: string | null
+  version?: unknown
+  settings?: Record<string, unknown>
 }
 
 export interface Camera {
@@ -807,6 +846,13 @@ export interface Settings {
   public_base_url?: string
   label_spine_mm?: string
   label_sticker_mm?: string
+  /** M5: the NegPy integration. Folders are validated by the backend. */
+  negpy_ingest?: boolean
+  negpy_create_gear?: boolean
+  negpy_user_dir?: string
+  negpy_handoff_dir?: string
+  negpy_handoff_mode?: string
+  negpy_gear_synced_at?: string
 }
 
 export async function getSettings(): Promise<{ settings: Settings; watch: WatchState }> {
@@ -1291,5 +1337,95 @@ export async function markPrinted(rollIds: number[]): Promise<number> {
 export async function getAllFilms(): Promise<Film[]> {
   const res = await apiFetch("/api/films")
   await assertOk(res, "Could not load the rolls.")
+  return res.json()
+}
+
+
+// ---------------------------------------------------------------------------
+// NegPy (M5)
+//
+// File-based, both ways: NegArchive reads what NegPy wrote into a scan and writes
+// what NegPy needs to open a roll. Nothing here talks to a running NegPy — there
+// is nothing to talk to (docs/NEGPY_INTEGRATION.md).
+// ---------------------------------------------------------------------------
+
+export interface NegpyStatus {
+  ingest_enabled: boolean
+  create_gear: boolean
+  handoff_mode: string
+  gear_synced_at: string | null
+  paths: {
+    user_dir: string | null
+    gear_dir: string | null
+    presets_dir: string | null
+    handoff_dir: string | null
+    error: string | null
+  }
+  allowed_bases: string[]
+  /** The NegPy export pattern to set, and the one NegArchive parses back. */
+  filename_pattern: string
+  frames_with_metadata: number
+  frames_edited_in_negpy: number
+  xmp_namespace: string
+}
+
+export async function getNegpyStatus(): Promise<NegpyStatus> {
+  const res = await apiFetch("/api/negpy/status")
+  await assertOk(res, "Could not read the NegPy settings.")
+  return res.json()
+}
+
+export interface GearSyncResult {
+  directory: string
+  dry_run: boolean
+  files: Record<string, { path: string; ours: number; kept: number; removed: number; total: number }>
+  synced_at: string | null
+  total: number
+}
+
+export async function syncNegpyGear(dryRun = false): Promise<GearSyncResult> {
+  const res = await apiFetch(`/api/negpy/gear/sync${dryRun ? "?dry_run=true" : ""}`, { method: "POST" })
+  await assertOk(res, "Could not write the gear files.")
+  return (await res.json()).result
+}
+
+export interface HandoffResult {
+  roll_id: number
+  serial: string | null
+  folder: string
+  preset_path: string | null
+  mode: string
+  linked: number
+  copied: number
+  sidecars: number
+  skipped: string[]
+  frames: number
+  prepared_at: string | null
+  filename_pattern: string
+}
+
+export async function prepareNegpyHandoff(rollId: number, mode?: "link" | "copy"): Promise<HandoffResult> {
+  const res = await apiFetch(`/api/negpy/rolls/${rollId}/handoff`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(mode ? { mode } : {}),
+  })
+  await assertOk(res, "Could not prepare the roll for NegPy.")
+  return (await res.json()).handoff
+}
+
+export interface IngestReport {
+  examined: number
+  changed: number
+  sidecars: number
+}
+
+export async function ingestNegpyMetadata(body: { film_id?: number; all?: boolean } = {}): Promise<IngestReport> {
+  const res = await apiFetch("/api/negpy/ingest", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  })
+  await assertOk(res, "Could not read the files.")
   return res.json()
 }
