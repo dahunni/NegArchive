@@ -67,8 +67,16 @@ default), `label_printed_at`.
 every move; the roll page shows the history.
 
 The old free-text `building`, `folder` and `archive_serial` columns: `archive_serial` becomes the
-serial (validated to the pattern, or backfilled), `building`/`folder` are migrated into a
-`building` node and a `binder` node under it by name where possible, then dropped.
+serial (backfilled where empty, made unique), `building`/`folder` are migrated into a
+`building` node and a `binder` node under it by name, and the roll is filed there. The two text
+columns stay for one release, read-only (as M2 did with the gear names), and go in the next
+schema change.
+
+**Implementation note (2026-09-17):** the serial counter is four digits (`NEG-2024-0011`), matching
+the seeded archive, and grows on its own. Printouts are print-optimised Next.js pages, not
+server-side PDFs. The scanner console adds one thing the spec did not spell out: printable
+`CMD-*` command cards (`CMD-MOVE`, `CMD-STATUS-ATLAB`, `CMD-DONE`, …) so a whole re-sleeving
+session is scans only.
 
 ## Strip and position
 

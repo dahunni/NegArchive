@@ -77,11 +77,20 @@ def parse_token(raw: str) -> dict:
 
 
 def qr_svg(text: str, scale: int = 4, border: int = 1) -> str:
-    """A QR code as inline SVG, stroke ``currentColor`` so it follows the page colour."""
+    """A QR code as an SVG document, stroke ``currentColor`` so it follows the page colour.
+
+    ``segno.save(kind="svg")`` rather than ``svg_inline``: the inline variant drops
+    the ``xmlns`` attribute, and a browser refuses to render such an SVG through an
+    ``<img>`` tag, which is how every label and printout embeds it.
+    """
+    import io
+
     import segno
 
     code = segno.make(text, error="m")
-    return code.svg_inline(scale=scale, border=border).replace('stroke="#000"', 'stroke="currentColor"')
+    buffer = io.BytesIO()
+    code.save(buffer, kind="svg", scale=scale, border=border, xmldecl=False, svgclass=None, lineclass=None)
+    return buffer.getvalue().decode("utf-8").replace('stroke="#000"', 'stroke="currentColor"')
 
 
 def code128_svg(text: str, module_height: float = 12.0, module_width: float = 0.3, show_text: bool = True) -> str:

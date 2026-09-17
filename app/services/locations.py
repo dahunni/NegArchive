@@ -134,11 +134,21 @@ def occupant(db: Session, sleeve: Location, except_roll_id: Optional[int] = None
 
 
 def next_free_sleeve(db: Session, container: Location) -> Optional[Location]:
-    """The first empty sleeve page under a binder (or any container), in page order."""
+    """The first empty sleeve page under a binder (or any container), in page order.
+
+    Queried, not read off ``container.children``: pages added a moment ago in the
+    same session are not in the loaded relationship yet.
+    """
     taken = {roll_id for (roll_id,) in db.query(FilmRoll.location_id).filter(FilmRoll.location_id.isnot(None))}
-    for child in sorted(container.children, key=lambda c: (c.sort_order, c.id)):
-        if child.kind == "sleeve" and child.id not in taken:
-            return child
+    pages = (
+        db.query(Location)
+        .filter(Location.parent_id == container.id, Location.kind == "sleeve")
+        .order_by(Location.sort_order.asc(), Location.id.asc())
+        .all()
+    )
+    for page in pages:
+        if page.id not in taken:
+            return page
     return None
 
 
@@ -202,7 +212,7 @@ def add_pages(db: Session, binder: Location, count: int, layout: Optional[Sleeve
     """Append ``count`` sleeve pages to a binder, numbered on from the last page."""
     if count < 1 or count > 500:
         raise ApiError("invalid_count", "Add between 1 and 500 pages at a time.", 400, "count")
-    existing = [c for c in binder.children if c.kind == "sleeve"]
+    existing = db.query(Location).filter(Location.parent_id == binder.id, Location.kind == "sleeve").all()
     highest = max((c.sort_order for c in existing), default=0)
     if binder.capacity is not None and len(existing) + count > binder.capacity:
         raise ApiError(
@@ -225,6 +235,7 @@ def add_pages(db: Session, binder: Location, count: int, layout: Optional[Sleeve
         db.add(page)
         created.append(page)
     db.flush()
+    db.expire(binder, ["children"])
     return created
 
 

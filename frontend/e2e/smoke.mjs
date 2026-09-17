@@ -522,6 +522,9 @@ async function main() {
 
   // The roll page now shows the location and the move history
   await page.goto(`${BASE_URL}/s/${serialText}`, { waitUntil: "load" })
+  // The redirect is issued by the server component; on a hard navigation Next can
+  // apply it just after `load`, so wait for the URL rather than reading it at once.
+  await page.waitForURL(/\/films\/\d+/, { timeout: 8000 }).catch(() => {})
   check("M4: /s/{serial} opens the roll", new URL(page.url()).pathname.startsWith("/films/"), page.url())
   check("M4: the roll shows where it is", ((await page.getByTestId("roll-location").textContent()) || "").includes("E2E"))
   check("M4: sleeved status after the move", (await page.getByTestId("status-sleeved").getAttribute("aria-current")) === "step")

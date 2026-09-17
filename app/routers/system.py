@@ -129,12 +129,12 @@ def system_qr(url: Optional[str] = None):
     target = url or network.ui_url()
     if not target:
         return error_response("no_lan_address", "This machine has no usable LAN address.", 404)
-    import segno
+    from ..services.codes import qr_svg
 
-    code = segno.make(target, error="m")
-    # segno only takes real colours, but the footer wants the code to follow the
-    # light/dark theme, so the stroke is swapped for `currentColor` afterwards.
-    svg = code.svg_inline(scale=4, border=2).replace('stroke="#000"', 'stroke="currentColor"')
+    # One renderer for every QR in the app (M4). It keeps the xmlns attribute, which
+    # `<img>` needs, and swaps the stroke for `currentColor` so the footer follows
+    # the light/dark theme.
+    svg = qr_svg(target, scale=4, border=2)
     return Response(
         content=svg,
         media_type="image/svg+xml",

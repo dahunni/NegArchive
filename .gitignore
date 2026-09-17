@@ -52,3 +52,6 @@ static/cache/
 # cluster, the uploads, the catalog art, the preview cache and the backups.
 # Never commit any of it; `DATA_DIR` can point somewhere else entirely.
 /data/
+
+# A Next.js build started from the wrong directory lands here; never commit it.
+.next/
