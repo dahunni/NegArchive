@@ -42,3 +42,4 @@ frontend/.vercel/
 frontend/out/
 frontend/.env.local
 frontend/.env*
+frontend/tsconfig.tsbuildinfo

@@ -1,20 +1,37 @@
-// Distinguish between internal API base (used for server-side fetches in Docker)
-// and public API base (used for URLs rendered into markup for the browser).
-// Fallback to localhost:8010 for local dev when not provided.
-const INTERNAL_API_BASE =
-  typeof window === "undefined"
-    ? process.env.API_BASE || process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8010"
-    : process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8010"
-
-// Public base should be same-origin when possible; rely on Next.js rewrites.
-// Default to empty string so generated URLs are relative like "/api/...".
+// One place decides which origin a URL points at (R#2, R#3).
+//
+// - Server side (SSR, inside Docker): `API_BASE` reaches the backend service directly
+//   (`http://web:8000`). Locally it falls back to `NEXT_PUBLIC_API_BASE`.
+// - Browser: `NEXT_PUBLIC_API_BASE` is the absolute backend origin in local dev
+//   (`http://localhost:8010`) and empty in Docker, so URLs stay same-origin and the
+//   Next.js rewrites for `/api/*` and `/static/*` proxy them to the backend.
+//
+// Nothing outside this module may build an API or asset URL by hand.
+const SERVER_API_BASE = process.env.API_BASE || process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8010"
 const PUBLIC_API_BASE = process.env.NEXT_PUBLIC_API_BASE || ""
 
-// Choose base depending on environment and intent:
-// - On the server (SSR), use INTERNAL_API_BASE to reach the backend service directly.
-// - In the browser, use same-origin relative paths so Next.js rewrites proxy to backend.
-const API_BASE_FOR_CLIENT = PUBLIC_API_BASE || ""
-const API_BASE_FOR_SERVER = INTERNAL_API_BASE
+/** Base for a fetch issued from wherever this code currently runs. */
+function apiBase(): string {
+  return typeof window === "undefined" ? SERVER_API_BASE : PUBLIC_API_BASE
+}
+
+/**
+ * Absolute-or-same-origin URL for something the browser loads itself
+ * (`<img src>`, download links). Always resolve backend paths through this.
+ */
+export function backendUrl(path: string): string {
+  const normalized = path.startsWith("/") ? path : `/${path}`
+  return `${PUBLIC_API_BASE}${normalized}`
+}
+
+/** Catalog image URL for a camera, lens or filmstock; null when it has no image. */
+export function getCatalogImageUrl(item: {
+  url?: string | null
+  image_path?: string | null
+}): string | null {
+  const path = item.url || item.image_path
+  return path ? backendUrl(path) : null
+}
 
 export interface Film {
   id: number
@@ -74,20 +91,19 @@ export interface Filmstock {
 
 // Films API
 export async function getFilms(): Promise<Film[]> {
-  const res = await fetch(`${INTERNAL_API_BASE}/api/films`, { cache: "no-store" })
+  const res = await fetch(`${apiBase()}/api/films`, { cache: "no-store" })
   if (!res.ok) throw new Error("Failed to fetch films")
   return res.json()
 }
 
 export async function getFilm(id: number): Promise<{ film: Film; images: Image[]; contact_sheets?: Image[] }> {
-  const res = await fetch(`${INTERNAL_API_BASE}/api/films/${id}`, { cache: "no-store" })
+  const res = await fetch(`${apiBase()}/api/films/${id}`, { cache: "no-store" })
   if (!res.ok) throw new Error("Failed to fetch film")
   return res.json()
 }
 
 export async function createFilm(data: Partial<Film>): Promise<Film> {
-  const base = typeof window === "undefined" ? API_BASE_FOR_SERVER : API_BASE_FOR_CLIENT
-  const res = await fetch(`${base}/api/films`, {
+  const res = await fetch(`${apiBase()}/api/films`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
@@ -98,8 +114,7 @@ export async function createFilm(data: Partial<Film>): Promise<Film> {
 }
 
 export async function updateFilm(id: number, data: Partial<Film>): Promise<Film> {
-  const base = typeof window === "undefined" ? API_BASE_FOR_SERVER : API_BASE_FOR_CLIENT
-  const res = await fetch(`${base}/api/films/${id}`, {
+  const res = await fetch(`${apiBase()}/api/films/${id}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
@@ -110,35 +125,34 @@ export async function updateFilm(id: number, data: Partial<Film>): Promise<Film>
 }
 
 export async function deleteFilm(id: number): Promise<void> {
-  const base = typeof window === "undefined" ? API_BASE_FOR_SERVER : API_BASE_FOR_CLIENT
-  const res = await fetch(`${base}/api/films/${id}`, { method: "DELETE" })
+  const res = await fetch(`${apiBase()}/api/films/${id}`, { method: "DELETE" })
   if (!res.ok) throw new Error("Failed to delete film")
 }
 
 // Images API
 export async function getImages(filmId?: number): Promise<Image[]> {
   const url = filmId
-    ? `${INTERNAL_API_BASE}/api/images?film_id=${filmId}&type=scan`
-    : `${INTERNAL_API_BASE}/api/images?type=scan`
+    ? `${apiBase()}/api/images?film_id=${filmId}&type=scan`
+    : `${apiBase()}/api/images?type=scan`
   const res = await fetch(url, { cache: "no-store" })
   if (!res.ok) throw new Error("Failed to fetch images")
   return res.json()
 }
 
 export async function getImage(id: number): Promise<Image> {
-  const res = await fetch(`${INTERNAL_API_BASE}/api/images/${id}`, { cache: "no-store" })
+  const res = await fetch(`${apiBase()}/api/images/${id}`, { cache: "no-store" })
   if (!res.ok) throw new Error("Failed to fetch image")
   return res.json()
 }
 
 export async function uploadImage(formData: FormData): Promise<Image> {
-  const base = typeof window === "undefined" ? API_BASE_FOR_SERVER : API_BASE_FOR_CLIENT
-  const res = await fetch(`${base}/api/images/upload`, {
+  const res = await fetch(`${apiBase()}/api/images/upload`, {
     method: "POST",
     body: formData,
   })
   if (!res.ok) throw new Error("Failed to upload image")
-  return res.json()
+  const json = await res.json()
+  return (json?.image ?? json) as Image
 }
 
 // Bulk operations for film roll images
@@ -149,19 +163,7 @@ export async function createContactSheet(
   const params = new URLSearchParams()
   if (options?.columns) params.set("columns", String(options.columns))
   if (options?.thumb_size) params.set("thumb_size", String(options.thumb_size))
-  const res = await fetch(`${INTERNAL_API_BASE}/api/films/${filmId}/contact_sheet?${params.toString()}`, {
-    // Use same-origin in browser so rewrite proxies to backend
-    // Server-side calls will use INTERNAL base directly
-    // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-    // @ts-ignore
-    // keep type hints minimal per project style
-    // (no additional types introduced)
-    //
-    // Switch base depending on environment
-    //
-    // NOTE: This function is typically used client-side
-    // but works on server too.
-    
+  const res = await fetch(`${apiBase()}/api/films/${filmId}/contact_sheet?${params.toString()}`, {
     method: "POST",
   })
   return res.json()
@@ -175,8 +177,7 @@ export async function bulkUploadImages(
   for (const f of files) {
     formData.append("files", f)
   }
-  const base = typeof window === "undefined" ? API_BASE_FOR_SERVER : API_BASE_FOR_CLIENT
-  const res = await fetch(`${base}/api/films/${filmId}/images/bulk`, {
+  const res = await fetch(`${apiBase()}/api/films/${filmId}/images/bulk`, {
     method: "POST",
     body: formData,
   })
@@ -189,8 +190,7 @@ export async function bulkUploadZip(
 ): Promise<{ ok: boolean; images: Image[] } | { error: string }> {
   const formData = new FormData()
   formData.append("file", zipFile)
-  const base = typeof window === "undefined" ? API_BASE_FOR_SERVER : API_BASE_FOR_CLIENT
-  const res = await fetch(`${base}/api/films/${filmId}/images/bulk_zip`, {
+  const res = await fetch(`${apiBase()}/api/films/${filmId}/images/bulk_zip`, {
     method: "POST",
     body: formData,
   })
@@ -198,19 +198,18 @@ export async function bulkUploadZip(
 }
 
 export async function updateImage(id: number, data: Partial<Image>): Promise<Image> {
-  const base = typeof window === "undefined" ? API_BASE_FOR_SERVER : API_BASE_FOR_CLIENT
-  const res = await fetch(`${base}/api/images/${id}`, {
+  const res = await fetch(`${apiBase()}/api/images/${id}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
   })
   if (!res.ok) throw new Error("Failed to update image")
-  return res.json()
+  const json = await res.json()
+  return (json?.image ?? json) as Image
 }
 
 export async function deleteImage(id: number, deleteFile = false): Promise<void> {
-  const base = typeof window === "undefined" ? API_BASE_FOR_SERVER : API_BASE_FOR_CLIENT
-  const res = await fetch(`${base}/api/images/${id}?delete_file=${deleteFile}`, {
+  const res = await fetch(`${apiBase()}/api/images/${id}?delete_file=${deleteFile}`, {
     method: "DELETE",
   })
   if (!res.ok) throw new Error("Failed to delete image")
@@ -218,169 +217,166 @@ export async function deleteImage(id: number, deleteFile = false): Promise<void>
 
 // Cameras API
 export async function getCameras(): Promise<Camera[]> {
-  const res = await fetch(`${INTERNAL_API_BASE}/api/cameras`, { cache: "no-store" })
+  const res = await fetch(`${apiBase()}/api/cameras`, { cache: "no-store" })
   if (!res.ok) throw new Error("Failed to fetch cameras")
   return res.json()
 }
 
 export async function getCamera(id: number): Promise<Camera> {
-  const res = await fetch(`${INTERNAL_API_BASE}/api/cameras/${id}`, { cache: "no-store" })
+  const res = await fetch(`${apiBase()}/api/cameras/${id}`, { cache: "no-store" })
   if (!res.ok) throw new Error("Failed to fetch camera")
   return res.json()
 }
 
 export async function createCamera(data: Partial<Camera>): Promise<Camera> {
-  const base = typeof window === "undefined" ? API_BASE_FOR_SERVER : API_BASE_FOR_CLIENT
-  const res = await fetch(`${base}/api/cameras`, {
+  const res = await fetch(`${apiBase()}/api/cameras`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
   })
   if (!res.ok) throw new Error("Failed to create camera")
-  return res.json()
+  const json = await res.json()
+  return (json?.camera ?? json) as Camera
 }
 
 export async function updateCamera(id: number, data: Partial<Camera>): Promise<Camera> {
-  const base = typeof window === "undefined" ? API_BASE_FOR_SERVER : API_BASE_FOR_CLIENT
-  const res = await fetch(`${base}/api/cameras/${id}`, {
+  const res = await fetch(`${apiBase()}/api/cameras/${id}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
   })
   if (!res.ok) throw new Error("Failed to update camera")
-  return res.json()
+  const json = await res.json()
+  return (json?.camera ?? json) as Camera
 }
 
 export async function deleteCamera(id: number): Promise<void> {
-  const base = typeof window === "undefined" ? API_BASE_FOR_SERVER : API_BASE_FOR_CLIENT
-  const res = await fetch(`${base}/api/cameras/${id}`, { method: "DELETE" })
+  const res = await fetch(`${apiBase()}/api/cameras/${id}`, { method: "DELETE" })
   if (!res.ok) throw new Error("Failed to delete camera")
 }
 
 export async function uploadCameraImage(id: number, file: File): Promise<Camera> {
   const formData = new FormData()
   formData.append("file", file)
-  const base = typeof window === "undefined" ? API_BASE_FOR_SERVER : API_BASE_FOR_CLIENT
-  const res = await fetch(`${base}/api/cameras/${id}/image`, {
+  const res = await fetch(`${apiBase()}/api/cameras/${id}/image`, {
     method: "POST",
     body: formData,
   })
   if (!res.ok) throw new Error("Failed to upload camera image")
-  return res.json()
+  const json = await res.json()
+  return (json?.camera ?? json) as Camera
 }
 
 // Lenses API
 export async function getLenses(): Promise<Lens[]> {
-  const res = await fetch(`${INTERNAL_API_BASE}/api/lenses`, { cache: "no-store" })
+  const res = await fetch(`${apiBase()}/api/lenses`, { cache: "no-store" })
   if (!res.ok) throw new Error("Failed to fetch lenses")
   return res.json()
 }
 
 export async function getLens(id: number): Promise<Lens> {
-  const res = await fetch(`${INTERNAL_API_BASE}/api/lenses/${id}`, { cache: "no-store" })
+  const res = await fetch(`${apiBase()}/api/lenses/${id}`, { cache: "no-store" })
   if (!res.ok) throw new Error("Failed to fetch lens")
   return res.json()
 }
 
 export async function createLens(data: Partial<Lens>): Promise<Lens> {
-  const base = typeof window === "undefined" ? API_BASE_FOR_SERVER : API_BASE_FOR_CLIENT
-  const res = await fetch(`${base}/api/lenses`, {
+  const res = await fetch(`${apiBase()}/api/lenses`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
   })
   if (!res.ok) throw new Error("Failed to create lens")
-  return res.json()
+  const json = await res.json()
+  return (json?.lens ?? json) as Lens
 }
 
 export async function updateLens(id: number, data: Partial<Lens>): Promise<Lens> {
-  const base = typeof window === "undefined" ? API_BASE_FOR_SERVER : API_BASE_FOR_CLIENT
-  const res = await fetch(`${base}/api/lenses/${id}`, {
+  const res = await fetch(`${apiBase()}/api/lenses/${id}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
   })
   if (!res.ok) throw new Error("Failed to update lens")
-  return res.json()
+  const json = await res.json()
+  return (json?.lens ?? json) as Lens
 }
 
 export async function deleteLens(id: number): Promise<void> {
-  const base = typeof window === "undefined" ? API_BASE_FOR_SERVER : API_BASE_FOR_CLIENT
-  const res = await fetch(`${base}/api/lenses/${id}`, { method: "DELETE" })
+  const res = await fetch(`${apiBase()}/api/lenses/${id}`, { method: "DELETE" })
   if (!res.ok) throw new Error("Failed to delete lens")
 }
 
 export async function uploadLensImage(id: number, file: File): Promise<Lens> {
   const formData = new FormData()
   formData.append("file", file)
-  const base = typeof window === "undefined" ? API_BASE_FOR_SERVER : API_BASE_FOR_CLIENT
-  const res = await fetch(`${base}/api/lenses/${id}/image`, {
+  const res = await fetch(`${apiBase()}/api/lenses/${id}/image`, {
     method: "POST",
     body: formData,
   })
   if (!res.ok) throw new Error("Failed to upload lens image")
-  return res.json()
+  const json = await res.json()
+  return (json?.lens ?? json) as Lens
 }
 
 // Filmstocks API
 export async function getFilmstocks(): Promise<Filmstock[]> {
-  const res = await fetch(`${INTERNAL_API_BASE}/api/filmstocks`, { cache: "no-store" })
+  const res = await fetch(`${apiBase()}/api/filmstocks`, { cache: "no-store" })
   if (!res.ok) throw new Error("Failed to fetch filmstocks")
   return res.json()
 }
 
 export async function getFilmstock(id: number): Promise<Filmstock> {
-  const res = await fetch(`${INTERNAL_API_BASE}/api/filmstocks/${id}`, { cache: "no-store" })
+  const res = await fetch(`${apiBase()}/api/filmstocks/${id}`, { cache: "no-store" })
   if (!res.ok) throw new Error("Failed to fetch filmstock")
   return res.json()
 }
 
 export async function createFilmstock(data: Partial<Filmstock>): Promise<Filmstock> {
-  const base = typeof window === "undefined" ? API_BASE_FOR_SERVER : API_BASE_FOR_CLIENT
-  const res = await fetch(`${base}/api/filmstocks`, {
+  const res = await fetch(`${apiBase()}/api/filmstocks`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
   })
   if (!res.ok) throw new Error("Failed to create filmstock")
-  return res.json()
+  const json = await res.json()
+  return (json?.filmstock ?? json) as Filmstock
 }
 
 export async function updateFilmstock(id: number, data: Partial<Filmstock>): Promise<Filmstock> {
-  const base = typeof window === "undefined" ? API_BASE_FOR_SERVER : API_BASE_FOR_CLIENT
-  const res = await fetch(`${base}/api/filmstocks/${id}`, {
+  const res = await fetch(`${apiBase()}/api/filmstocks/${id}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
   })
   if (!res.ok) throw new Error("Failed to update filmstock")
-  return res.json()
+  const json = await res.json()
+  return (json?.filmstock ?? json) as Filmstock
 }
 
 export async function deleteFilmstock(id: number): Promise<void> {
-  const base = typeof window === "undefined" ? API_BASE_FOR_SERVER : API_BASE_FOR_CLIENT
-  const res = await fetch(`${base}/api/filmstocks/${id}`, { method: "DELETE" })
+  const res = await fetch(`${apiBase()}/api/filmstocks/${id}`, { method: "DELETE" })
   if (!res.ok) throw new Error("Failed to delete filmstock")
 }
 
 export async function uploadFilmstockImage(id: number, file: File): Promise<Filmstock> {
   const formData = new FormData()
   formData.append("file", file)
-  const base = typeof window === "undefined" ? API_BASE_FOR_SERVER : API_BASE_FOR_CLIENT
-  const res = await fetch(`${base}/api/filmstocks/${id}/image`, {
+  const res = await fetch(`${apiBase()}/api/filmstocks/${id}/image`, {
     method: "POST",
     body: formData,
   })
   if (!res.ok) throw new Error("Failed to upload filmstock image")
-  return res.json()
+  const json = await res.json()
+  return (json?.filmstock ?? json) as Filmstock
 }
 
 export function getImageUrl(image: Image): string {
   // Always serve via preview to ensure browser-friendly format (handles TIFF/JPEG/PNG uniformly)
-  return `${PUBLIC_API_BASE}/api/images/${image.id}/preview`
+  return backendUrl(`/api/images/${image.id}/preview`)
 }
 
 export function getImageDownloadUrl(image: Image): string {
   // Download original asset via API to enforce Content-Disposition
-  return `${PUBLIC_API_BASE}/api/images/${image.id}/download`
+  return backendUrl(`/api/images/${image.id}/download`)
 }
