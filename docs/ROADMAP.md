@@ -185,6 +185,11 @@ and "not found" was an HTTP 200. All of that is fixed here.
 
 Left for later, deliberately:
 
+- **No TLS in the stack, so the PWA only installs over `localhost`.** Browsers only register a
+  service worker in a secure context, and `http://192.168.1.37:8021` is not one. The archive still
+  works from a phone; it just does not install and caches nothing. Fixing it properly means
+  shipping a reverse proxy with a certificate (Caddy, or mkcert for a private CA) and documenting
+  the trust step — worth its own milestone, and a prerequisite for M4's "scan a QR at the shelf".
 - Alembic autogenerate is **not** checked in CI (the roadmap asks for it under M2, which owns the
   baseline); CI runs the migrations up, down and up again instead.
 - The service worker has no background sync queue, and should not have one: an edit that silently
