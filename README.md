@@ -7,8 +7,9 @@ FastAPI JSON backend + Next.js frontend.
 **Status: alpha, single user, run it on a trusted LAN only.** There is no authentication and CORS
 is open. A full review with confirmed bugs is in [docs/REVIEW.md](docs/REVIEW.md); the task list is
 in [docs/ROADMAP.md](docs/ROADMAP.md). Milestones M0 (the bugs that broke shipped workflows in
-Docker) and M1 (the UI rework) are done; read the [Known issues](#known-issues) section before
-deploying.
+Docker), M1 (the UI rework) and M2 (archive integrity: Postgres only, Alembic, original
+filenames, gear foreign keys, validation, file lifecycle) are done; read the
+[Known issues](#known-issues) section before deploying.
 
 ## Where this is going
 
@@ -22,7 +23,8 @@ Three goals drive the roadmap (details and reasoning in [docs/ROADMAP.md](docs/R
 2. **Offline-first, on Postgres.** No runtime network calls, one Compose stack that includes
    Postgres, one command to run, everything exportable as plain files, import-by-reference so
    scans are not duplicated, a watch folder for scanner output, and an installable PWA for the
-   phone at the shelf. SQLite still works today but is being dropped (see roadmap M2).
+   phone at the shelf. Postgres is the only supported database since M2; see
+   [Moving an old SQLite database](#moving-an-old-sqlite-database).
 3. **Paper ↔ virtual.** Archive serials with printable QR labels for sleeves and binders, a storage
    hierarchy (location → container → sleeve → strip), printable contact sheets and binder index
    sheets, "scan the QR to open the roll", and darkroom prints as assets with their own location.
@@ -53,26 +55,29 @@ A **roll** is the unit of work, so the roll list is the home page and everything
 
 ## Stack
 
-- Backend: FastAPI, SQLAlchemy 2, Postgres (target; SQLite still the fallback when
-  `DATABASE_URL` is unset), Pillow + OpenCV for previews of TIFF and other non-web formats
+- Backend: FastAPI, SQLAlchemy 2, **Postgres 16 (required — there is no SQLite fallback)**,
+  Alembic for the schema, Pillow + OpenCV for previews of TIFF and other non-web formats
 - Frontend: Next.js 16 (app router), React 19, TypeScript, Tailwind 4, shadcn/ui (15 components,
   the rest were removed in M1), `next-themes` for dark mode, no web fonts and no analytics
-- Storage: files under `static/uploads/{scans,contact_sheets}` and `static/catalog/*`; paths are
-  stored in the database
-- Dead code, still a dependency: DeepFace face detection. Nothing imports it at startup any
-  more; whether it is revived or deleted is decided in roadmap M2.
+- Storage: files under `static/uploads/{scans,contact_sheets}` and `static/catalog/*`; the path,
+  the name the scanner gave the file and whether NegArchive owns it are stored in the database
+- Face detection was deleted in M2: no DeepFace, no TensorFlow, no scikit-learn. People come
+  from Immich in M6. The backend image is about 0.28 GB instead of 2 GB.
 
 ## Project structure
 
 ```
 app/                    FastAPI backend
-  main.py               app, CORS, static mount, startup "migrations" and seed data
-  db.py                 engine and session
-  models.py             SQLAlchemy models (FilmRoll, ImageAsset, Camera, Lens, FilmStock, Person, Face)
-  errors.py             structured {"error": {code, message}} bodies for validation failures
-  schemas.py            Pydantic models (currently unused; M2 will wire them up)
+  main.py               app, CORS, safe static mount, `alembic upgrade head` at startup, seeding
+  db.py                 engine and session; DATABASE_URL is required and must be Postgres
+  models.py             SQLAlchemy models (FilmRoll, ImageAsset, Camera, Lens, FilmStock)
+  errors.py             the {"error": {code, message, field}} body and the input parsers
+  schemas.py            Pydantic request and response models for every endpoint
+  seed.py               the starter catalog, added only when a table is empty
   routers/api.py        the JSON API, everything under /api — the only router
-  services/face.py      DeepFace helpers, currently unreachable (fate decided in M2)
+alembic/                the schema: versions/<YYYYMMDD_HHMM>_<slug>.py, env.py reads DATABASE_URL
+alembic.ini             `sqlalchemy.url` deliberately empty
+scripts/                migrate_sqlite_to_pg.py, the one-way door off SQLite
 frontend/               Next.js app (app router)
   app/                  page.tsx (rolls), films/[id] (roll workspace), images, images/[id]
                         (frame viewer), gear; a loading.tsx and error.tsx beside each
@@ -83,7 +88,8 @@ frontend/               Next.js app (app router)
   lib/format.ts         date range, storage and frame-label formatting
   e2e/smoke.mjs         Playwright smoke test (`npm run e2e`)
   next.config.mjs       the /api and /static rewrites, and the M1 route redirects
-tests/                  pytest suite, runs against Postgres (skipped without DATABASE_URL)
+tests/                  pytest suite, Postgres only (skipped without DATABASE_URL); test_m2_*
+                        cover the migrations, filenames, gear ids, validation and files
 docs/                   REVIEW.md, ROADMAP.md, NEGPY_INTEGRATION.md
 static/                 served at /static; uploads and cache/ are git-ignored
 Dockerfile, docker-compose.yml, frontend/Dockerfile
@@ -113,8 +119,10 @@ docker compose up --build
   `./static/uploads` and `./static/catalog`.
 - The backend waits for the database: `db` has a `pg_isready` healthcheck and `web` depends on
   `service_healthy`.
-- The first build still downloads DeepFace and TensorFlow (about 2 GB) although nothing calls
-  them; removing the dependency is a roadmap M2 decision. `DEEPFACE_ENABLED` defaults to `false`.
+- **The schema migrates itself at startup.** `app/main.py` runs `alembic upgrade head` before
+  serving, so a fresh volume and a database from M0/M1 both come up on the current schema. A
+  failed migration stops the app instead of leaving it to fail at runtime.
+- The image is about 0.28 GB and contains no TensorFlow.
 
 ## Local development
 
@@ -123,21 +131,53 @@ Backend (against the Compose Postgres, which is the target database):
 ```bash
 docker compose up -d db                   # Postgres 16 on localhost:5432
 uv venv --python 3.11 .venv && source .venv/bin/activate
-uv pip install -r requirements.txt        # or: grep -v deepface requirements.txt for a lean install
-DATABASE_URL=postgresql+psycopg2://negarchive:negarchive@localhost:5432/negarchive \
-DEEPFACE_ENABLED=false uvicorn app.main:app --host 0.0.0.0 --port 8010 --reload
+uv pip install -r requirements.txt
+export DATABASE_URL=postgresql+psycopg2://negarchive:negarchive@localhost:5432/negarchive
+uvicorn app.main:app --host 0.0.0.0 --port 8010 --reload
 ```
 
-Leaving `DATABASE_URL` unset falls back to `sqlite:///./negarchive.db`. Do not rely on it: two of
-the confirmed bugs only appeared on Postgres, and SQLite support is scheduled for removal.
+`DATABASE_URL` is required and must be a Postgres URL. Without it the backend stops at startup
+and tells you so: SQLite used to be the default and it hid two Postgres-only bugs behind a second
+code path.
 
-Tests (Postgres only; they are skipped when `DATABASE_URL` is unset):
+### Migrations
+
+Alembic owns the schema; `create_all` is not used anywhere. The app runs `alembic upgrade head`
+itself at startup, so you only need these by hand when writing a migration:
 
 ```bash
-docker run -d --rm --name negarchive-test-db -p 55433:5432 \
+alembic upgrade head                      # what startup does
+alembic downgrade -1                      # step back
+alembic revision --autogenerate -m "what changed"
+alembic check                             # models and migrations agree
+```
+
+`alembic.ini` leaves `sqlalchemy.url` empty on purpose — `alembic/env.py` reads `DATABASE_URL`
+and fails loudly when it is unset, so there is one place that decides which database is migrated.
+Revision files are named `alembic/versions/<YYYYMMDD_HHMM>_<slug>.py`; the chain is linear.
+
+### Moving an old SQLite database
+
+```bash
+export DATABASE_URL=postgresql+psycopg2://negarchive:negarchive@localhost:5432/negarchive
+python scripts/migrate_sqlite_to_pg.py negarchive.db --dry-run   # look first
+python scripts/migrate_sqlite_to_pg.py negarchive.db
+```
+
+It migrates the target schema, then copies cameras, lenses, film stocks, rolls and image assets,
+keeping their ids (paths and bookmarks keep working), resolving each roll's gear names to the new
+foreign keys and dropping the `"None"` strings the old form used to store. `faces` and `persons`
+are left behind — that feature was deleted. The scan files are not touched. Keep the old
+`negarchive.db` until you have checked the archive in the UI.
+
+Tests (Postgres only; they are skipped when `DATABASE_URL` is unset, and refuse a non-Postgres
+URL). They drop the schema and migrate from the first revision, so they exercise the migration
+chain as well:
+
+```bash
+docker run -d --rm --name negarchive-test-db -p 55440:5432 \
   -e POSTGRES_USER=negarchive -e POSTGRES_PASSWORD=negarchive -e POSTGRES_DB=negarchive postgres:16
-DEEPFACE_ENABLED=false \
-DATABASE_URL=postgresql+psycopg2://negarchive:negarchive@localhost:55433/negarchive \
+DATABASE_URL=postgresql+psycopg2://negarchive:negarchive@localhost:55440/negarchive \
   .venv/bin/python -m pytest tests -q
 ```
 
@@ -171,89 +211,144 @@ Environment variables:
 
 | Variable | Where | Meaning |
 |---|---|---|
-| `DATABASE_URL` | backend | Postgres URL, e.g. `postgresql+psycopg2://negarchive:negarchive@db:5432/negarchive` (Compose). Unset falls back to `sqlite:///./negarchive.db`, deprecated |
-| `DEEPFACE_ENABLED` | backend | `true`/`false`; guards the DeepFace import in `services/face.py`, which nothing calls today |
-| `FACE_MATCH_THRESHOLD` | backend | cosine threshold, unused in practice |
+| `DATABASE_URL` | backend | **Required.** Postgres URL, e.g. `postgresql+psycopg2://negarchive:negarchive@db:5432/negarchive` (Compose). Anything else, or unset, stops the backend at startup |
+| `MAX_UPLOAD_MB` | backend | Largest accepted upload, default `512`. Over it the API answers 413 `file_too_large` |
 | `NEXT_PUBLIC_API_BASE` | frontend, browser | absolute API origin for local dev; empty in Docker so the browser uses same-origin `/api` and `/static` via the Next rewrites |
 | `API_BASE` | frontend, server side | origin used for server-side fetches inside Docker (`http://web:8000`) |
 
 ## API
 
-Base: `/api`. All responses are JSON.
+Base: `/api`. All responses are JSON, and every endpoint has a Pydantic request and response
+model.
 
-The validation failures the UI can produce answer with a real 4xx and a structured body:
+### Errors
+
+One body, everywhere:
 
 ```json
-{ "error": { "code": "duplicate_name", "message": "A camera named “Nikon F5” already exists." } }
+{ "error": { "code": "duplicate_name",
+             "message": "A camera named “Nikon F5” already exists.",
+             "field": "name" } }
 ```
 
-Codes in use: `invalid_json`, `invalid_title`, `invalid_name`, `invalid_date`, `invalid_date_range`,
-`invalid_number`, `invalid_kind`, `invalid_type`, `invalid_ids`, `nothing_to_update`,
-`not_enough_images` (400), `duplicate_name` (409), `unknown_roll` (404). Everything else is
-unchanged: "not found" on the read endpoints is still HTTP 200 with `{"error": "not_found"}`, and
-other bad input is still a bare 500. Finishing that job is M2 in
-[docs/ROADMAP.md](docs/ROADMAP.md).
+`field` names the input that caused it, or is `null` when the failure belongs to no single
+input; `lib/api.ts` attaches the message to that field in the forms.
 
-Films: `GET /films`, `GET /films/{id}` → `{film, images, contact_sheets}`, `POST /films`,
-`PUT /films/{id}`, `DELETE /films/{id}` (deletes image rows, not files).
-Fields: `id, title, camera, lens, film_type, notes, building, folder, archive_serial, start_date,
-end_date, created_at, image_count, cover_image_id, cover_image_ids`.
-Camera, lens and film type are stored as **names**, not ids. `image_count` and the (at most four)
-`cover_image_ids` let the roll list show a frame count and a thumbnail strip without a request per
-roll; `cover_image_id` is the first of them.
+| Status | When |
+|---|---|
+| 400 | bad input the API parses itself: `invalid_json`, `invalid_title`, `invalid_name`, `invalid_date`, `invalid_date_range`, `invalid_number`, `invalid_kind`, `invalid_choice`, `invalid_type`, `invalid_ids`, `nothing_to_update`, `not_enough_images`, `invalid_zip` |
+| 404 | `not_found` (any record), `unknown_roll`, `unknown_camera`, `unknown_lens`, `unknown_film_stock`, `file_missing` |
+| 409 | `duplicate_name`, `gear_in_use` (a camera, lens or film stock rolls still refer to) |
+| 413 | `file_too_large` — over `MAX_UPLOAD_MB` |
+| 415 | `unsupported_file_type`, `unreadable_image` |
+| 422 | `invalid_request` — the body has the wrong shape (Pydantic), with the offending `field` |
 
-Images: `GET /images?film_id=&type=scan|contact_sheet`, `GET /images/{id}`, `POST /images`,
+### Films
+
+`GET /films`, `GET /films/{id}` → `{film, images, contact_sheets}`, `POST /films`,
+`PUT /films/{id}`, `DELETE /films/{id}?keep_files=false`.
+
+Fields: `id, title, camera_id, lens_id, film_stock_id, camera, lens, film_type, format, notes,
+building, folder, archive_serial, start_date, end_date, created_at, image_count, cover_image_id,
+cover_image_ids`.
+
+**Gear is referenced by id.** Write `camera_id`, `lens_id`, `film_stock_id`; the `camera`, `lens`
+and `film_type` names are still accepted (a name that matches a catalog entry is resolved to its
+id, one that does not is kept as free text) and are always returned, taken from the catalog entry
+so a rename shows up everywhere. `format` is one of `35mm`, `120`, `4x5`, `8x10`, `other`.
+`image_count` and the (at most four) `cover_image_ids` let the roll list show a frame count and a
+thumbnail strip without a request per roll.
+
+Deleting a roll deletes its frame records **and their files**; `?keep_files=true` leaves the
+files on disk.
+
+### Images
+
+`GET /images?film_id=&type=scan|contact_sheet`, `GET /images/{id}`, `POST /images`,
 `PUT /images/{id}` (`film_roll_id: null` unassigns the image from its roll),
-`DELETE /images/{id}?delete_file=false`,
+`DELETE /images/{id}?keep_files=false`,
 `POST /images/upload` (multipart: `file`, `type`, `film_roll_id?`, `frame_number?`, `notes?`,
 `capture_date?`),
 `POST /images/bulk_update` (`{ids, film_roll_id?, capture_date?, frame_number?}` — only the keys
-you send are written; `film_roll_id: null` unassigns),
-`POST /images/bulk_delete` (`{ids, delete_file}`),
+you send are written),
+`POST /images/bulk_delete` (`{ids, keep_files?}`),
 `GET /images/{id}/preview?width=1200` (JPEG; cached on disk under `static/cache/` keyed by image id
 + width + the source file's mtime, so a re-scan invalidates it — `X-Preview-Cache: hit|miss`),
-`GET /images/{id}/download` (original, as attachment).
-Fields: `id, film_roll_id, type, path, url, frame_number, notes, capture_date, created_at`;
-`film_roll_id` may be `null`. The original filename is **not** stored.
+`GET /images/{id}/download` (the original, named after `original_filename`).
 
-Per film: `POST /films/{id}/contact_sheet?columns=6&thumb_size=300`,
-`POST /films/{id}/images/bulk` (multipart `files[]`), `POST /films/{id}/images/bulk_zip` (multipart `file`).
+Fields: `id, film_roll_id, type, path, url, original_filename, storage_mode, frame_number, notes,
+capture_date, created_at`.
 
-Catalog: `GET|POST /cameras`, `GET|PUT|DELETE /cameras/{id}`, `POST /cameras/{id}/image`; same
-for `/lenses` and `/filmstocks`. Filmstock fields:
-`id, name, iso, kind (black_and_white|color|slide|motion_picture), expired (boolean), expiration_date, image_path, url`.
-`PUT` on a camera, lens or filmstock returns the updated object.
+`original_filename` is the name the scanner gave the file; the stored name is a UUID. When the
+client sends no `frame_number`, it is parsed from that name — an explicit `frame<n>` wins,
+otherwise the last group of one to four digits does (`Roll12_007.tif`, `NEG-2024-011_007.jpg`,
+`_Frame007`, `007.jpg`, `img_0007` all mean frame 7; `Roll12.tif` means nothing, because a number
+glued to a word is part of the word). Frames are always listed in `frame_number NULLS LAST, id`
+order.
 
-Examples:
+`storage_mode` is `managed` (NegArchive owns the file and deletes it with the record) or `linked`
+(the file belongs to somebody else and is never deleted — M3's import-by-reference).
+
+Uploads must be `jpg jpeg png tif tiff webp dng`, by extension *and* by their leading bytes, and
+smaller than `MAX_UPLOAD_MB`. A bulk upload is all-or-nothing. Nothing under `/static/uploads` is
+ever served as `text/html`.
+
+### Per film
+
+`POST /films/{id}/contact_sheet?columns=6&thumb_size=300` (laid out in frame order),
+`POST /films/{id}/images/bulk` (multipart `files[]`), `POST /films/{id}/images/bulk_zip`
+(multipart `file`; files inside the ZIP that are not images are skipped).
+
+### Catalog
+
+`GET|POST /cameras`, `GET|PUT|DELETE /cameras/{id}?force=false`, `POST /cameras/{id}/image`; same
+for `/lenses` and `/filmstocks`. `PUT` returns the updated object.
+
+Filmstock fields: `id, name, manufacturer, format, iso,
+kind (black_and_white|color|slide|motion_picture), expired (boolean), expiration_date, image_path,
+url`.
+
+Deleting an entry that rolls still use answers 409 `gear_in_use` with the count. `?force=true`
+deletes it anyway: the rolls' ids are set to NULL and they keep the name as plain text.
+
+### Maintenance
+
+`POST /seed` puts the starter cameras and film stocks back (startup only seeds while a catalog
+table is empty, so a deleted entry stays deleted).
+
+`POST /maintenance/sweep_orphans?apply=false` → `{orphan_files, missing_files, deleted_files,
+bytes_reclaimed}`: files under `static/uploads` that no record points at, and records whose file
+is missing from disk. A dry run unless `apply=true`, which deletes the orphan **files** only —
+records are reported, never deleted.
+
+### Examples
 
 ```bash
 curl -X POST http://localhost:8010/api/films -H 'Content-Type: application/json' \
-  -d '{"title":"Roll 12","camera":"Nikon F5","film_type":"Fomapan 400","start_date":"2024-07-01"}'
+  -d '{"title":"Roll 12","camera_id":1,"film_stock_id":4,"format":"35mm","start_date":"2024-07-01"}'
 ```
 
 ```bash
-curl -X POST http://localhost:8010/api/images/upload -F 'file=@scan.tif' -F 'type=scan' -F 'film_roll_id=1' -F 'frame_number=12'
+curl -X POST http://localhost:8010/api/films/1/images/bulk -F 'files=@Roll12_007.tif'   # frame 7
+curl -X DELETE 'http://localhost:8010/api/images/12?keep_files=true'
+curl -X POST http://localhost:8010/api/maintenance/sweep_orphans
 ```
 
 ## Known issues
 
-The full list with evidence and file references is [docs/REVIEW.md](docs/REVIEW.md). The ones
-that matter most:
+The full list with evidence and file references is [docs/REVIEW.md](docs/REVIEW.md). M2 closed
+the data-integrity ones (R#7, R#9, R#10, R#11, R#14, R#15, R#16, R#17, R#18, R#21, R#23, R#24).
+What is left:
 
-- **Docker + Postgres:** deleting a film that has face rows fails on a foreign key.
-- **Data loss:** original filenames are discarded on every upload path (files are renamed to a
-  UUID, frame numbers from bulk import are lost). Deleting a film or image leaves its files on
-  disk forever. Renaming or deleting a camera, lens or film stock silently orphans every roll
-  that used it.
-- **Crashes:** the inputs the UI produces are validated (see the API section), but other bad
-  input still returns a bare HTTP 500, and every endpoint is still unvalidated below that.
-- **Wrong data:** seed cameras and film stocks come back on every restart; "not found" is an
-  HTTP 200 with `{"error": "not_found"}`.
-- **Security:** any file type is accepted and served back from `/static`, including HTML
-  (stored XSS on the LAN). No size limits. No auth.
-- **Offline:** DeepFace/TensorFlow are still hard requirements although the feature is dead, so
-  the backend image is about 2 GB. (The frontend no longer loads analytics or web fonts and
-  builds without internet.)
+- **Security:** no authentication and CORS is open — do not expose this outside a trusted LAN
+  (R#26). Uploads are now limited by type and size and are never served as HTML.
+- **Performance:** `/api/images` is unpaginated and the roll list filters in the browser
+  (R#20, roadmap M3).
+- **Offline/setup:** the Compose stack still uses separate volumes and no `.env`; one
+  bind-mounted `data/` directory is roadmap M3. Some frontend dependencies are still pinned to
+  `"latest"` (R#29) and `typescript.ignoreBuildErrors` is still on (R#30).
+- **Backups:** there is no export/restore yet (roadmap M3). Deleting a roll now deletes its
+  scan files by default — the dialog offers "keep the files on disk", but there is no undo.
 
 ## Next steps (short version)
 
@@ -263,9 +358,10 @@ Full checklist: [docs/ROADMAP.md](docs/ROADMAP.md).
 2. **M1** *(done)* UI rework around the roll as the unit of work: roll list with thumbnails,
    roll page as a workspace with inline editing, drag-and-drop upload, frame viewer, dialogs
    instead of form pages, mobile layout, dark mode.
-3. **M2** archive integrity: Postgres only (drop SQLite, migration script for existing DBs),
-   keep original filenames and parse frame numbers, foreign keys for gear, Alembic, validation
-   with real status codes, file lifecycle, upload allowlist, decide the fate of face detection.
+3. **M2** *(done)* archive integrity: Postgres only with a migration script off SQLite, Alembic,
+   original filenames and frame numbers parsed from them, foreign keys for gear, validation with
+   real status codes, file lifecycle with an orphan sweep, upload allowlist, face detection
+   deleted.
 4. **M3** offline-first: drop analytics/fonts, single Postgres compose stack, thumbnail cache, pagination,
    import-by-reference, watch folder, backup/restore, PWA, LAN QR, tests + CI.
 5. **M4** paper ↔ virtual: storage hierarchy, serial scheme, QR labels, printable contact and
