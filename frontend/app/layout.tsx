@@ -1,20 +1,18 @@
 import type React from "react"
 import type { Metadata } from "next"
 
-import { Analytics } from "@vercel/analytics/next"
 import "./globals.css"
 import { Toaster } from "@/components/ui/toaster"
-import { Geist_Mono, Inter as V0_Font_Inter, Geist_Mono as V0_Font_Geist_Mono, Source_Serif_4 as V0_Font_Source_Serif_4 } from 'next/font/google'
+import { AppShell } from "@/components/app-shell"
+import { ThemeProvider } from "@/components/theme-provider"
 
-// Initialize fonts
-const _inter = V0_Font_Inter({ subsets: ['latin'], weight: ["100","200","300","400","500","600","700","800","900"] })
-const _geistMono = V0_Font_Geist_Mono({ subsets: ['latin'], weight: ["100","200","300","400","500","600","700","800","900"] })
-const _sourceSerif_4 = V0_Font_Source_Serif_4({ subsets: ['latin'], weight: ["200","300","400","500","600","700","800","900"] })
+// No web fonts and no analytics on purpose: this is an offline-first archive that
+// must build and run without internet (R#27, R#28). The system font stack lives in
+// globals.css.
 
 export const metadata: Metadata = {
-  title: "NegArchive - Film Photography Archive",
-  description: "Manage your film photography archive",
-  generator: "v0.app",
+  title: "NegArchive",
+  description: "A self-hosted archive for film rolls, their scans and where the negatives live.",
   icons: {
     icon: [
       {
@@ -40,11 +38,12 @@ export default function RootLayout({
   children: React.ReactNode
 }>) {
   return (
-    <html lang="en">
-      <body className={`font-sans antialiased`}>
-        {children}
-        <Toaster />
-        <Analytics />
+    <html lang="en" suppressHydrationWarning>
+      <body className="font-sans antialiased">
+        <ThemeProvider attribute="class" defaultTheme="system" enableSystem disableTransitionOnChange>
+          <AppShell>{children}</AppShell>
+          <Toaster />
+        </ThemeProvider>
       </body>
     </html>
   )

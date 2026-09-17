@@ -46,6 +46,12 @@ export interface Film {
   start_date: string | null
   end_date: string | null
   created_at: string
+  /** Number of scans in this roll (M1: the roll list avoids an N+1). */
+  image_count: number
+  /** First frame in display order, used as the row thumbnail. */
+  cover_image_id: number | null
+  /** Up to four leading frames, for the thumbnail strip on a roll row. */
+  cover_image_ids: number[]
 }
 
 export interface Image {
@@ -89,6 +95,70 @@ export interface Filmstock {
   url?: string | null
 }
 
+/**
+ * A 4xx from the API with its structured body:
+ * `{"error": {"code": "duplicate_name", "message": "…"}}`.
+ * Forms show `message` next to the field instead of "Failed to save".
+ */
+export class ApiError extends Error {
+  readonly code: string
+  readonly status: number
+
+  constructor(code: string, message: string, status: number) {
+    super(message)
+    this.name = "ApiError"
+    this.code = code
+    this.status = status
+  }
+}
+
+/** Which form field a given error code belongs to, when it belongs to one. */
+export const ERROR_FIELDS: Record<string, string> = {
+  invalid_title: "title",
+  invalid_name: "name",
+  duplicate_name: "name",
+  invalid_date: "start_date",
+  invalid_date_range: "end_date",
+  invalid_kind: "kind",
+  invalid_number: "iso",
+  invalid_type: "type",
+  unknown_roll: "film_roll_id",
+}
+
+/** The message to show the user for any thrown error. */
+export function errorMessage(error: unknown, fallback = "Something went wrong."): string {
+  if (error instanceof ApiError) return error.message
+  if (error instanceof Error && error.message) return error.message
+  return fallback
+}
+
+/** Throw an ApiError carrying the server's message, or `fallback` if it sent none. */
+async function assertOk(res: Response, fallback: string): Promise<void> {
+  if (res.ok) return
+  let code = "request_failed"
+  let message = fallback
+  try {
+    const body = await res.json()
+    if (body?.error && typeof body.error === "object") {
+      code = body.error.code ?? code
+      message = body.error.message ?? message
+    } else if (typeof body?.error === "string") {
+      code = body.error
+    }
+  } catch {
+    // no JSON body; keep the fallback message
+  }
+  throw new ApiError(code, message, res.status)
+}
+
+/** Unwrap `{ok, <key>}` and surface a legacy `{"error": "not_found"}` as an ApiError. */
+function unwrap<T>(json: any, key: string, fallback: string): T {
+  if (json && typeof json.error === "string") {
+    throw new ApiError(json.error, fallback, 404)
+  }
+  return (json?.[key] ?? json) as T
+}
+
 // Films API
 export async function getFilms(): Promise<Film[]> {
   const res = await fetch(`${apiBase()}/api/films`, { cache: "no-store" })
@@ -96,10 +166,14 @@ export async function getFilms(): Promise<Film[]> {
   return res.json()
 }
 
-export async function getFilm(id: number): Promise<{ film: Film; images: Image[]; contact_sheets?: Image[] }> {
+export async function getFilm(id: number): Promise<{ film: Film; images: Image[]; contact_sheets: Image[] }> {
   const res = await fetch(`${apiBase()}/api/films/${id}`, { cache: "no-store" })
-  if (!res.ok) throw new Error("Failed to fetch film")
-  return res.json()
+  await assertOk(res, "Could not load the roll.")
+  const json = await res.json()
+  // The API still answers "not found" with HTTP 200 (R#17 is scheduled for M2), so
+  // the shape is what decides here.
+  if (!json?.film) throw new ApiError("not_found", "This roll does not exist.", 404)
+  return { film: json.film, images: json.images ?? [], contact_sheets: json.contact_sheets ?? [] }
 }
 
 export async function createFilm(data: Partial<Film>): Promise<Film> {
@@ -108,9 +182,9 @@ export async function createFilm(data: Partial<Film>): Promise<Film> {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
   })
-  if (!res.ok) throw new Error("Failed to create film")
+  await assertOk(res, "Could not create the roll.")
   const json = await res.json()
-  return (json?.film ?? json) as Film
+  return unwrap<Film>(json, "film", "Roll not found.")
 }
 
 export async function updateFilm(id: number, data: Partial<Film>): Promise<Film> {
@@ -119,14 +193,14 @@ export async function updateFilm(id: number, data: Partial<Film>): Promise<Film>
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
   })
-  if (!res.ok) throw new Error("Failed to update film")
+  await assertOk(res, "Could not save the roll.")
   const json = await res.json()
-  return (json?.film ?? json) as Film
+  return unwrap<Film>(json, "film", "Roll not found.")
 }
 
 export async function deleteFilm(id: number): Promise<void> {
   const res = await fetch(`${apiBase()}/api/films/${id}`, { method: "DELETE" })
-  if (!res.ok) throw new Error("Failed to delete film")
+  await assertOk(res, "Could not delete the roll.")
 }
 
 // Images API
@@ -141,8 +215,10 @@ export async function getImages(filmId?: number): Promise<Image[]> {
 
 export async function getImage(id: number): Promise<Image> {
   const res = await fetch(`${apiBase()}/api/images/${id}`, { cache: "no-store" })
-  if (!res.ok) throw new Error("Failed to fetch image")
-  return res.json()
+  await assertOk(res, "Could not load the frame.")
+  const json = await res.json()
+  if (json?.error || !json?.id) throw new ApiError("not_found", "This frame does not exist.", 404)
+  return json as Image
 }
 
 export async function uploadImage(formData: FormData): Promise<Image> {
@@ -150,51 +226,25 @@ export async function uploadImage(formData: FormData): Promise<Image> {
     method: "POST",
     body: formData,
   })
-  if (!res.ok) throw new Error("Failed to upload image")
+  await assertOk(res, "Could not upload the file.")
   const json = await res.json()
-  return (json?.image ?? json) as Image
+  return unwrap<Image>(json, "image", "Frame not found.")
 }
 
 // Bulk operations for film roll images
 export async function createContactSheet(
   filmId: number,
   options?: { columns?: number; thumb_size?: number }
-): Promise<{ ok: boolean; image: Image } | { error: string }> {
+): Promise<Image> {
   const params = new URLSearchParams()
   if (options?.columns) params.set("columns", String(options.columns))
   if (options?.thumb_size) params.set("thumb_size", String(options.thumb_size))
   const res = await fetch(`${apiBase()}/api/films/${filmId}/contact_sheet?${params.toString()}`, {
     method: "POST",
   })
-  return res.json()
-}
-
-export async function bulkUploadImages(
-  filmId: number,
-  files: File[]
-): Promise<{ ok: boolean; images: Image[] } | { error: string }> {
-  const formData = new FormData()
-  for (const f of files) {
-    formData.append("files", f)
-  }
-  const res = await fetch(`${apiBase()}/api/films/${filmId}/images/bulk`, {
-    method: "POST",
-    body: formData,
-  })
-  return res.json()
-}
-
-export async function bulkUploadZip(
-  filmId: number,
-  zipFile: File
-): Promise<{ ok: boolean; images: Image[] } | { error: string }> {
-  const formData = new FormData()
-  formData.append("file", zipFile)
-  const res = await fetch(`${apiBase()}/api/films/${filmId}/images/bulk_zip`, {
-    method: "POST",
-    body: formData,
-  })
-  return res.json()
+  await assertOk(res, "Could not generate the contact sheet.")
+  const json = await res.json()
+  return unwrap<Image>(json, "image", "Roll not found.")
 }
 
 export async function updateImage(id: number, data: Partial<Image>): Promise<Image> {
@@ -203,16 +253,16 @@ export async function updateImage(id: number, data: Partial<Image>): Promise<Ima
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
   })
-  if (!res.ok) throw new Error("Failed to update image")
+  await assertOk(res, "Could not save the frame.")
   const json = await res.json()
-  return (json?.image ?? json) as Image
+  return unwrap<Image>(json, "image", "Frame not found.")
 }
 
 export async function deleteImage(id: number, deleteFile = false): Promise<void> {
   const res = await fetch(`${apiBase()}/api/images/${id}?delete_file=${deleteFile}`, {
     method: "DELETE",
   })
-  if (!res.ok) throw new Error("Failed to delete image")
+  await assertOk(res, "Could not delete the frame.")
 }
 
 // Cameras API
@@ -234,9 +284,9 @@ export async function createCamera(data: Partial<Camera>): Promise<Camera> {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
   })
-  if (!res.ok) throw new Error("Failed to create camera")
+  await assertOk(res, "Could not create the camera.")
   const json = await res.json()
-  return (json?.camera ?? json) as Camera
+  return unwrap<Camera>(json, "camera", "Camera not found.")
 }
 
 export async function updateCamera(id: number, data: Partial<Camera>): Promise<Camera> {
@@ -245,14 +295,14 @@ export async function updateCamera(id: number, data: Partial<Camera>): Promise<C
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
   })
-  if (!res.ok) throw new Error("Failed to update camera")
+  await assertOk(res, "Could not save the camera.")
   const json = await res.json()
-  return (json?.camera ?? json) as Camera
+  return unwrap<Camera>(json, "camera", "Camera not found.")
 }
 
 export async function deleteCamera(id: number): Promise<void> {
   const res = await fetch(`${apiBase()}/api/cameras/${id}`, { method: "DELETE" })
-  if (!res.ok) throw new Error("Failed to delete camera")
+  await assertOk(res, "Could not delete the camera.")
 }
 
 export async function uploadCameraImage(id: number, file: File): Promise<Camera> {
@@ -262,9 +312,9 @@ export async function uploadCameraImage(id: number, file: File): Promise<Camera>
     method: "POST",
     body: formData,
   })
-  if (!res.ok) throw new Error("Failed to upload camera image")
+  await assertOk(res, "Could not upload the camera image.")
   const json = await res.json()
-  return (json?.camera ?? json) as Camera
+  return unwrap<Camera>(json, "camera", "Camera not found.")
 }
 
 // Lenses API
@@ -286,9 +336,9 @@ export async function createLens(data: Partial<Lens>): Promise<Lens> {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
   })
-  if (!res.ok) throw new Error("Failed to create lens")
+  await assertOk(res, "Could not create the lens.")
   const json = await res.json()
-  return (json?.lens ?? json) as Lens
+  return unwrap<Lens>(json, "lens", "Lens not found.")
 }
 
 export async function updateLens(id: number, data: Partial<Lens>): Promise<Lens> {
@@ -297,14 +347,14 @@ export async function updateLens(id: number, data: Partial<Lens>): Promise<Lens>
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
   })
-  if (!res.ok) throw new Error("Failed to update lens")
+  await assertOk(res, "Could not save the lens.")
   const json = await res.json()
-  return (json?.lens ?? json) as Lens
+  return unwrap<Lens>(json, "lens", "Lens not found.")
 }
 
 export async function deleteLens(id: number): Promise<void> {
   const res = await fetch(`${apiBase()}/api/lenses/${id}`, { method: "DELETE" })
-  if (!res.ok) throw new Error("Failed to delete lens")
+  await assertOk(res, "Could not delete the lens.")
 }
 
 export async function uploadLensImage(id: number, file: File): Promise<Lens> {
@@ -314,9 +364,9 @@ export async function uploadLensImage(id: number, file: File): Promise<Lens> {
     method: "POST",
     body: formData,
   })
-  if (!res.ok) throw new Error("Failed to upload lens image")
+  await assertOk(res, "Could not upload the lens image.")
   const json = await res.json()
-  return (json?.lens ?? json) as Lens
+  return unwrap<Lens>(json, "lens", "Lens not found.")
 }
 
 // Filmstocks API
@@ -338,9 +388,9 @@ export async function createFilmstock(data: Partial<Filmstock>): Promise<Filmsto
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
   })
-  if (!res.ok) throw new Error("Failed to create filmstock")
+  await assertOk(res, "Could not create the film stock.")
   const json = await res.json()
-  return (json?.filmstock ?? json) as Filmstock
+  return unwrap<Filmstock>(json, "filmstock", "Filmstock not found.")
 }
 
 export async function updateFilmstock(id: number, data: Partial<Filmstock>): Promise<Filmstock> {
@@ -349,14 +399,14 @@ export async function updateFilmstock(id: number, data: Partial<Filmstock>): Pro
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
   })
-  if (!res.ok) throw new Error("Failed to update filmstock")
+  await assertOk(res, "Could not save the film stock.")
   const json = await res.json()
-  return (json?.filmstock ?? json) as Filmstock
+  return unwrap<Filmstock>(json, "filmstock", "Filmstock not found.")
 }
 
 export async function deleteFilmstock(id: number): Promise<void> {
   const res = await fetch(`${apiBase()}/api/filmstocks/${id}`, { method: "DELETE" })
-  if (!res.ok) throw new Error("Failed to delete filmstock")
+  await assertOk(res, "Could not delete the film stock.")
 }
 
 export async function uploadFilmstockImage(id: number, file: File): Promise<Filmstock> {
@@ -366,9 +416,46 @@ export async function uploadFilmstockImage(id: number, file: File): Promise<Film
     method: "POST",
     body: formData,
   })
-  if (!res.ok) throw new Error("Failed to upload filmstock image")
+  await assertOk(res, "Could not upload the film stock image.")
   const json = await res.json()
-  return (json?.filmstock ?? json) as Filmstock
+  return unwrap<Filmstock>(json, "filmstock", "Filmstock not found.")
+}
+
+/** Partial patch applied to many frames at once (multi-select in the roll workspace). */
+export interface BulkImagePatch {
+  film_roll_id?: number | null
+  capture_date?: string | null
+  frame_number?: number | null
+}
+
+export async function bulkUpdateImages(ids: number[], patch: BulkImagePatch): Promise<Image[]> {
+  const res = await fetch(`${apiBase()}/api/images/bulk_update`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ids, ...patch }),
+  })
+  await assertOk(res, "Could not update the selected frames.")
+  const json = await res.json()
+  return (json?.images ?? []) as Image[]
+}
+
+export async function bulkDeleteImages(ids: number[], deleteFile = false): Promise<number> {
+  const res = await fetch(`${apiBase()}/api/images/bulk_delete`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ids, delete_file: deleteFile }),
+  })
+  await assertOk(res, "Could not delete the selected frames.")
+  const json = await res.json()
+  return Number(json?.deleted ?? 0)
+}
+
+/**
+ * Preview URL at a given width. The backend caches each width on disk, so grids
+ * ask for small thumbnails and the viewer for a large one.
+ */
+export function getPreviewUrl(imageId: number, width: number): string {
+  return backendUrl(`/api/images/${imageId}/preview?width=${width}`)
 }
 
 export function getImageUrl(image: Image): string {
@@ -379,4 +466,88 @@ export function getImageUrl(image: Image): string {
 export function getImageDownloadUrl(image: Image): string {
   // Download original asset via API to enforce Content-Disposition
   return backendUrl(`/api/images/${image.id}/download`)
+}
+
+/**
+ * One upload with a progress callback. `fetch` cannot report upload progress, so the
+ * drop zone uses XMLHttpRequest for this and this alone; the URL still comes from
+ * `backendUrl`, so the `/api` rewrite is the only path to the backend.
+ */
+function uploadWithProgress(
+  path: string,
+  formData: FormData,
+  onProgress: (fraction: number) => void,
+): Promise<{ images: Image[] }> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest()
+    xhr.open("POST", backendUrl(path))
+    xhr.upload.onprogress = (event) => {
+      if (event.lengthComputable) onProgress(event.loaded / event.total)
+    }
+    xhr.onerror = () => reject(new ApiError("network_error", "The upload could not reach the server.", 0))
+    xhr.onabort = () => reject(new ApiError("aborted", "The upload was cancelled.", 0))
+    xhr.onload = () => {
+      let body: any = null
+      try {
+        body = JSON.parse(xhr.responseText)
+      } catch {
+        // fall through to the status check
+      }
+      if (xhr.status >= 400 || (body && typeof body.error === "string")) {
+        const structured = body?.error && typeof body.error === "object" ? body.error : null
+        reject(
+          new ApiError(
+            structured?.code ?? (typeof body?.error === "string" ? body.error : "upload_failed"),
+            structured?.message ?? "The server rejected this file.",
+            xhr.status,
+          ),
+        )
+        return
+      }
+      onProgress(1)
+      const images: Image[] = body?.images ?? (body?.image ? [body.image] : [])
+      resolve({ images })
+    }
+    xhr.send(formData)
+  })
+}
+
+/** Upload one scan into a roll, reporting progress. ZIPs go through the ZIP importer. */
+export function uploadRollFile(
+  filmId: number,
+  file: File,
+  onProgress: (fraction: number) => void,
+): Promise<{ images: Image[] }> {
+  const isZip = file.name.toLowerCase().endsWith(".zip") || file.type === "application/zip"
+  const formData = new FormData()
+  if (isZip) {
+    formData.append("file", file)
+    return uploadWithProgress(`/api/films/${filmId}/images/bulk_zip`, formData, onProgress)
+  }
+  formData.append("files", file)
+  return uploadWithProgress(`/api/films/${filmId}/images/bulk`, formData, onProgress)
+}
+
+/** Upload one scan that does not belong to a roll yet. */
+export function uploadLooseFile(
+  file: File,
+  onProgress: (fraction: number) => void,
+): Promise<{ images: Image[] }> {
+  const formData = new FormData()
+  formData.append("file", file)
+  formData.append("type", "scan")
+  return uploadWithProgress("/api/images/upload", formData, onProgress)
+}
+
+/** Upload a scanned contact sheet (a single image) for a roll. */
+export function uploadContactSheetFile(
+  filmId: number,
+  file: File,
+  onProgress: (fraction: number) => void,
+): Promise<{ images: Image[] }> {
+  const formData = new FormData()
+  formData.append("file", file)
+  formData.append("type", "contact_sheet")
+  formData.append("film_roll_id", String(filmId))
+  return uploadWithProgress("/api/images/upload", formData, onProgress)
 }

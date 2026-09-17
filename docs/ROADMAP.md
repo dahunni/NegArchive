@@ -33,38 +33,47 @@ Guiding decisions (see [NEGPY_INTEGRATION.md](NEGPY_INTEGRATION.md) for the reas
       compose `version:` key. **R#25**
 - [x] Render `expired` as boolean in the API and fix the `{0 && …}` render. **R#22**
 
-## M1 — UI rework (high priority)
+## M1 — UI rework (high priority) *(done)*
 
-The current UI is a generic CRUD scaffold (one table or card grid per entity, a separate page
+The UI used to be a generic CRUD scaffold (one table or card grid per entity, a separate page
 for every form, icon-only actions, no thumbnails on the roll list, no lightbox, no drag-and-drop,
-navigation that overflows on phones). Rework it around the real workflow: **a roll is the unit of
-work**, and most sessions are "new roll → dump scans → number and annotate frames → find it later".
+navigation that overflowed on phones). It is now built around the real workflow: **a roll is the
+unit of work**, and most sessions are "new roll → dump scans → number and annotate frames → find
+it later".
 
 **Stack constraint: the rework stays on Next.js.** App router, React 19, TypeScript, Tailwind 4
 and shadcn/ui as today; no framework switch, no separate SPA. Server components keep fetching
 through `lib/api.ts`, interactive parts are client components, and the `/api` and `/static`
 rewrites remain the only way the browser reaches the backend.
 
-- [ ] **Information architecture**: Rolls as the home page with thumbnail strip, film, camera,
-      date range, frame count and storage location per row; catalog (cameras, lenses, film stocks)
-      demoted to a single "Gear" section; Search folded into the roll list as filters, not a page.
-- [ ] **Roll page as a workspace**: contact sheet on top, frames in a grid with frame number and
-      date visible, inline edit of frame number and notes, keyboard navigation, multi-select for
-      bulk delete / reassign / set date, drag-and-drop upload zone that accepts files and ZIPs.
-- [ ] **Lightbox / frame viewer** with previous/next, zoom, download, and the metadata panel beside
-      it instead of a separate detail page and a separate edit page.
-- [ ] **Forms as dialogs or side panels** with proper validation messages from the API, not
-      "Failed to save"; keep the user on the page after saving.
-- [ ] **New roll wizard**: title, gear, film, dates, storage location, then straight into the
-      upload zone; remember the last used camera and film.
-- [ ] **Mobile / tablet layout**: collapsible navigation, one-column roll list, touch-sized targets;
-      this is the "at the shelf" view for M4's QR lookup.
-- [ ] **Consistent empty, loading and error states**; skeletons for lists; toasts only for
-      background results.
-- [ ] **Visual pass**: dark mode toggle (the theme provider already exists), typography scale,
-      real thumbnails everywhere (needs the M3 thumbnail cache), image aspect ratio preserved
-      instead of square crops for 35mm frames.
-- [ ] Remove unused shadcn components from `components/ui` after the rework; keep the bundle lean.
+- [x] **Information architecture**: Rolls are the home page (`/`, with `/films` kept working),
+      each row a thumbnail strip, film, camera, date range, frame count and storage location;
+      cameras, lenses and film stocks are one "Gear" section with tabs (`/cameras`, `/lenses`,
+      `/filmstocks` redirect into it); Search is the filter bar above the roll list (text, camera,
+      film, date range) and `/search?q=` redirects to `/?q=`.
+- [x] **Roll page as a workspace**: contact sheet on top, frames in a grid with frame number and
+      date visible, inline edit of frame number and notes, keyboard navigation (arrows, Enter,
+      Space, Escape), multi-select with bulk delete / reassign / set date, drag-and-drop upload
+      zone for many files and ZIPs with per-file progress.
+- [x] **Lightbox / frame viewer** with previous/next (buttons and arrow keys), zoom, download and
+      the metadata panel beside the image. It replaced both the image detail page and the image
+      edit page; `/images/{id}` opens the viewer, `/images/{id}/edit` redirects to it.
+- [x] **Forms as dialogs or side panels** (`Dialog` for the wizard and the gear forms, `Sheet` for
+      the roll editor) with the API's own validation message on the field that caused it; saving
+      keeps the user where they were and calls `router.refresh()`.
+- [x] **New roll wizard**: title and dates → gear and film → storage, then straight into the upload
+      zone; the last camera, lens and film are remembered in `localStorage`.
+- [x] **Mobile / tablet layout**: navigation collapses into a Sheet, one-column roll list, 44px
+      targets; tested at 375px (no horizontal scrolling on any route).
+- [x] **Consistent empty, loading and error states**: one `EmptyState` and one `ErrorState`,
+      `loading.tsx` skeletons that mirror each layout, `error.tsx` per section; toasts only report
+      background results (uploads, bulk actions, deletes).
+- [x] **Visual pass**: dark mode toggle on the existing `next-themes` provider
+      (`attribute="class"`), a four-step typography scale, real thumbnails everywhere (the
+      thumbnail cache was pulled forward from M3), and 3:2 `object-contain` cells so 35mm frames
+      are never square-cropped.
+- [x] Removed 42 unused shadcn components from `components/ui` (15 left) and the 31 dependencies
+      that only they imported, including `@vercel/analytics` and the Google font loaders.
 
 ## M2 — Archive integrity (data model)
 
@@ -83,7 +92,8 @@ rewrites remain the only way the browser reaches the backend.
       empty, or via `POST /api/seed`). **R#11, R#23**
 - [ ] Pydantic request/response models for every endpoint (the unused `schemas.py` is the start);
       proper 404/400/409 status codes; structured error body `{ "error": { code, message } }`.
-      **R#16, R#17**
+      *(M1 added that body and real 4xx codes for the cases its forms hit — see `app/errors.py`.
+      Every other endpoint, and "not found", still answers the old way.)* **R#16, R#17**
 - [ ] File lifecycle: delete files with records (with a "keep files" option), an orphan sweep
       endpoint, and a `delete_file` checkbox in the UI. **R#9**
 - [ ] Extension + MIME allowlist (`jpg jpeg png tif tiff webp dng`), size limit, never serve
@@ -95,16 +105,18 @@ rewrites remain the only way the browser reaches the backend.
 
 ## M3 — Offline-first and easy local use
 
-- [ ] Remove `@vercel/analytics` and the Google font loaders; use a system font stack. **R#27, R#28**
-- [ ] Pin every `"latest"` dependency; delete `pnpm-lock.yaml`; rename the package; turn
-      `ignoreBuildErrors` off. **R#29, R#30**
+- [x] Remove `@vercel/analytics` and the Google font loaders; use a system font stack. **R#27, R#28**
+      *(done in M1: they were in the way of the layout rework)*
+- [ ] Pin the remaining `"latest"` dependencies (4 of 5 went with the unused components in M1);
+      delete `pnpm-lock.yaml`; rename the package; turn `ignoreBuildErrors` off. **R#29, R#30**
 - [ ] One Compose stack for everyone: Postgres + backend + frontend, with a single bind-mounted
       `data/` directory holding the Postgres data dir and `uploads/`, a Postgres healthcheck, and
       `.env` for the password. Document `DATA_DIR`. One command: `docker compose up`.
 - [ ] `make dev` / `uv run` scripts so local dev is `uv sync && make dev` (Python 3.11 pinned via
       `.python-version`). **R#31**
-- [ ] Disk thumbnail cache for `/preview` (`data/cache/<image_id>_<width>.jpg`, invalidated on
-      file change) and async file IO. **R#19**
+- [x] Disk thumbnail cache for `/preview`, keyed by image id + width + source mtime under
+      `static/cache/`. *(pulled forward into M1: the frame grid needs it. It moves to `data/cache/`
+      with the single-`DATA_DIR` compose stack above; async file IO is still open.)* **R#19**
 - [ ] Pagination on `/api/images` and server-side search (`q`, `film_id`, `camera_id`, date range). **R#20**
 - [ ] **Import by reference ("link mode")**: register a folder tree (roll = subfolder) without
       copying files; NegArchive stores the path and hash. Lets NegPy library roots and NegArchive
@@ -119,8 +131,8 @@ rewrites remain the only way the browser reaches the backend.
 - [ ] LAN discoverability: print the LAN URL and a QR code at startup and in the UI footer.
 - [ ] Optional single shared password (env var) for when the LAN is not trusted. **R#26**
 - [ ] Tests: pytest against Postgres (testcontainers or a Compose service; the probe script in
-      the review is a starting point), Playwright smoke test for the 6 main pages, GitHub Actions
-      with a Postgres service container. **R#33**
+      the review is a starting point) and GitHub Actions with a Postgres service container.
+      *(The Playwright smoke test landed in M1: `frontend/e2e/smoke.mjs`, `npm run e2e`.)* **R#33**
 
 ## M4 — Paper ↔ virtual (physical archive features)
 
