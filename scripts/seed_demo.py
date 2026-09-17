@@ -37,17 +37,41 @@ ROLLS = [
     ("NEG-2025-0001", "The long walk", "Minolta XG9", "Kodak Gold 200", "Archive B", "Box 3", date(2025, 3, 8), date(2025, 3, 8), 9),
 ]
 
-#: Enough grey levels that the thumbnails are distinguishable at a glance.
-SHADES = [(28, 28, 30), (70, 68, 66), (120, 116, 112), (168, 162, 156), (212, 208, 202)]
+#: Base tone per roll, so the thumbnails are distinguishable at a glance.
+SHADES = [(196, 186, 172), (150, 143, 134), (122, 112, 104), (176, 170, 160), (98, 94, 92)]
 
 
 def frame_image(roll_index: int, frame_number: int) -> Image.Image:
-    """A 3:2 placeholder with the frame number on it — 35mm proportions."""
+    """A placeholder that reads as a scanned negative at thumbnail size.
+
+    3:2 like 35mm, sprocketed edges, and a few soft shapes whose positions come
+    from the frame number, so consecutive frames look related but not identical.
+    Good enough for a screenshot; obviously not a photograph, which is the point.
+    """
     width, height = 600, 400
-    image = Image.new("RGB", (width, height), SHADES[roll_index % len(SHADES)])
+    base = SHADES[roll_index % len(SHADES)]
+    image = Image.new("RGB", (width, height), base)
     draw = ImageDraw.Draw(image)
-    draw.rectangle([8, 8, width - 8, height - 8], outline=(245, 245, 245), width=3)
-    draw.text((24, 24), f"{frame_number:03d}", fill=(245, 245, 245))
+
+    # Soft blobs, deterministic from (roll, frame).
+    seed = roll_index * 37 + frame_number * 101
+    for blob in range(4):
+        value = seed + blob * 53
+        cx = 60 + (value * 47) % (width - 120)
+        cy = 70 + (value * 29) % (height - 140)
+        radius = 24 + (value * 13) % 70
+        tint = min(250, base[0] + 35 + (value % 40))
+        draw.ellipse([cx - radius, cy - radius, cx + radius, cy + radius], fill=(tint, tint - 4, tint - 10))
+
+    # Sprocketed edges, top and bottom.
+    edge = 26
+    draw.rectangle([0, 0, width, edge], fill=(24, 24, 26))
+    draw.rectangle([0, height - edge, width, height], fill=(24, 24, 26))
+    for x in range(14, width - 20, 44):
+        draw.rounded_rectangle([x, 6, x + 26, edge - 6], radius=3, fill=(238, 238, 238))
+        draw.rounded_rectangle([x, height - edge + 6, x + 26, height - 6], radius=3, fill=(238, 238, 238))
+
+    draw.text((16, edge + 8), f"{frame_number:03d}", fill=(250, 250, 250))
     return image
 
 

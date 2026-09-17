@@ -160,7 +160,7 @@ and "not found" was an HTTP 200. All of that is fixed here.
       frame number. Rescans are idempotent by path, a moved file is re-homed by hash, previews and
       downloads work, and nothing linked is ever written to or deleted.
 - [x] **Watch folder**: an asyncio poller over the roots marked `watch`, every
-      `WATCH_INTERVAL_SECONDS` (default 30, off when unset), with a toggle and a last-scan readout
+      `WATCH_INTERVAL_SECONDS` (30 in the Compose stack; unset means off), with a toggle and a last-scan readout
       in Settings. Polling rather than inotify, because the interesting case is an SMB share.
 - [x] **Backup / restore**: `scripts/backup.sh` (`pg_dump` + the managed files + a MANIFEST, into
       `data/backups/`, pruned to `BACKUP_KEEP`) and `scripts/restore.sh`; `GET /api/export` streams

@@ -65,18 +65,27 @@ def _watch_state(db: Session) -> dict:
     }
 
 
+#: What the Compose stack and `.env.example` set, and what to use if you want one.
+DEFAULT_WATCH_INTERVAL_SECONDS = 30
+
+
 def watch_interval_seconds() -> Optional[int]:
-    """Poll interval, or ``None`` when the watcher is switched off by env."""
-    raw = os.getenv("WATCH_INTERVAL_SECONDS")
-    if raw is None:
-        return 30
-    raw = raw.strip()
+    """Poll interval, or ``None`` when the watch folder is switched off.
+
+    **Unset means off.** A process that walks directories every thirty seconds is
+    not something an archive should start doing because somebody ran `uvicorn`;
+    the Compose stack sets `WATCH_INTERVAL_SECONDS=30` explicitly, so the feature
+    is on where it was installed on purpose and off where it was not. An
+    unparseable value falls back to the default rather than to silence, because
+    a typo should not quietly disable a feature you asked for.
+    """
+    raw = (os.getenv("WATCH_INTERVAL_SECONDS") or "").strip()
     if not raw or raw.lower() in {"0", "off", "false", "none"}:
         return None
     try:
         value = int(raw)
     except ValueError:
-        return 30
+        return DEFAULT_WATCH_INTERVAL_SECONDS
     return value if value > 0 else None
 
 

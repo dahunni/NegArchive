@@ -12,8 +12,9 @@ per file, so a sweep over an unchanged library costs almost nothing.
 
 Controls:
 
-* ``WATCH_INTERVAL_SECONDS`` — seconds between sweeps. Default 30. Empty, ``0``
-  or ``off`` disables the task entirely (it is then never started).
+* ``WATCH_INTERVAL_SECONDS`` — seconds between sweeps. **Unset, empty, ``0`` or
+  ``off`` means the task is never started**; the Compose stack sets 30, so the
+  poller runs where NegArchive was installed on purpose and nowhere else.
 * the ``watch_enabled`` setting — the toggle in the UI. Checked on every tick, so
   it takes effect without a restart.
 * ``library_roots.watch`` — per folder.
