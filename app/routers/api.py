@@ -1230,7 +1230,7 @@ def commit_unique(db: Session, what: str, name: Optional[str]):
         raise ApiError("duplicate_name", f"A {what} named “{name}” already exists.", 409, "name")
 
 
-def _delete_catalog_entry(db: Session, prefix: str, entry, force: bool, label: str):
+def _delete_catalog_entry(db: Session, prefix: str, entry, force: bool):
     """Delete a camera/lens/film stock, refusing while rolls still use it (R#14)."""
     in_use = _rolls_using(db, prefix, entry)
     if in_use and not force:
@@ -1292,7 +1292,7 @@ def delete_camera(camera_id: int, force: bool = False, db: Session = Depends(get
     c = db.get(Camera, camera_id)
     if not c:
         return not_found("Camera")
-    return _delete_catalog_entry(db, "camera", c, force, "camera")
+    return _delete_catalog_entry(db, "camera", c, force)
 
 
 @router.post(
@@ -1416,7 +1416,7 @@ def delete_filmstock(stock_id: int, force: bool = False, db: Session = Depends(g
     s = db.get(FilmStock, stock_id)
     if not s:
         return not_found("Film stock")
-    return _delete_catalog_entry(db, "film_stock", s, force, "film stock")
+    return _delete_catalog_entry(db, "film_stock", s, force)
 
 
 @router.post(
@@ -1508,7 +1508,7 @@ def delete_lens(lens_id: int, force: bool = False, db: Session = Depends(get_db)
     l = db.get(Lens, lens_id)
     if not l:
         return not_found("Lens")
-    return _delete_catalog_entry(db, "lens", l, force, "lens")
+    return _delete_catalog_entry(db, "lens", l, force)
 
 
 @router.post(
@@ -1587,11 +1587,12 @@ def sweep_orphans(
         for relative in orphans:
             absolute = _abs(relative)
             try:
-                reclaimed += os.path.getsize(absolute)
+                size = os.path.getsize(absolute)
                 os.remove(absolute)
-                deleted += 1
             except OSError:
-                reclaimed = max(0, reclaimed - 0)
+                continue  # gone or unreadable: nothing reclaimed, nothing to report
+            deleted += 1
+            reclaimed += size
 
     return {
         "ok": True,

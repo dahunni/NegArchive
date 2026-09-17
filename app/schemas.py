@@ -237,9 +237,6 @@ class CameraEnvelope(Model):
     camera: CameraOut
 
 
-LensWrite = CameraWrite
-
-
 class LensCreate(CameraWrite):
     pass
 
