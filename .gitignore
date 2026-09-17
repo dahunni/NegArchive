@@ -43,3 +43,6 @@ frontend/out/
 frontend/.env.local
 frontend/.env*
 frontend/tsconfig.tsbuildinfo
+
+# Preview thumbnail cache (regenerated on demand)
+static/cache/
