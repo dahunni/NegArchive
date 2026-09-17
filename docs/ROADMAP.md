@@ -143,28 +143,31 @@ rewrites remain the only way the browser reaches the backend.
 
 ## M4 — Paper ↔ virtual (physical archive features)
 
-- [ ] **Storage hierarchy** instead of two free-text fields: `Location` (building/room) →
-      `Container` (binder/box, with a printable label) → `Sleeve` (page, with slots) → strip and
-      position. A roll lives in one container/sleeve; a "Where is it?" panel on the roll page.
-- [ ] **Archive serial scheme** with auto-numbering (`YYYY-NNNN` or a configurable prefix),
-      unique, shown everywhere, searchable, encoded in every QR.
-- [ ] **Label printing**: PDF for sleeve/binder/box labels (Avery/Brother sizes) with serial,
-      title, date range, film, and a QR to `/films/{id}` (or `/s/{serial}` short route).
-- [ ] **Printable contact sheet / index print**: extend the existing generator with frame numbers,
-      serial, date, camera/film, and the QR; A4/Letter layout; PDF output.
-- [ ] **Binder index sheet**: a printable table of contents per container.
-- [ ] **Strip / position from frame number**: derive "strip 3, frame 2" (configurable frames per
-      strip: 6 for 35mm, 3–4 for 120) and show it on the image page and in the grid.
-- [ ] **Paper twin capture**: mobile-friendly page to photograph the physical contact print or the
-      sleeve and attach it as `contact_sheet` (or a new `paper_scan` type) with an OCR/handwritten
-      notes field.
-- [ ] **Scan a QR to open the record**: `/s/{serial}` route; camera-based QR reader in the PWA
-      for quick lookups at the shelf.
-- [ ] **Darkroom prints as assets**: a `print` asset type with paper stock, size, grade/filter,
-      exposure notes, and its own storage location; link to the source frame.
-- [ ] **Loan / status log** per roll and per print: on shelf, lent to, at the lab, missing.
-- [ ] **Roll lifecycle**: `loaded → shot → developed → scanned → archived` with dates
-      (development date, lab, process) so unscanned rolls are visible in the archive too.
+Specification with the owner's decisions: [M4_PAPER.md](M4_PAPER.md). Depends on M2 and M3.
+
+- [ ] **Serial** `NEG-YYYY-NNN`: auto-assigned, unique, immutable once printed, backfill for
+      existing rolls, `/s/{serial}` route, `serial:` search prefix, `/` focuses search.
+- [ ] **Location tree**: `locations` (building/room/shelf/row/box/binder/envelope/sleeve),
+      `sleeve_layouts` (PrintFile 7×6 default, 7×5, 120 variants), `film_rolls.location_id` +
+      `strips` override, `location_moves` history; migrate `building`/`folder` into nodes and drop
+      them. Binder extras (capacity, page order, missing pages), sleeve holds exactly one roll.
+- [ ] **Strip / position** from the roll's strips: on frame cards, in the viewer, and as the
+      contact sheet grid.
+- [ ] **Roll lifecycle** loaded → shot → at lab → back → scanned → sleeved with timestamps,
+      "Load film" on a camera, automatic `scanned`/`sleeved`, home page work lists (in cameras, at
+      the lab, to scan, to sleeve), status filter.
+- [ ] **Codes**: `GET /api/codes/qr` and `/api/codes/code128` as SVG; QR = `{PUBLIC_BASE_URL}/s/{serial}`,
+      Code128 = bare serial.
+- [ ] **Printouts** as print-optimised pages with cut marks (browser "Save as PDF"): sleeve cover
+      sheet (A4, grid mirrors the sleeve, frame numbers, header with all metadata + QR + Code128),
+      binder spine label (50×200, 4/A4), small roll sticker (50×25, 20/A4), binder index, roll
+      index card (A6, 4/A4), location tree sheet. One `print.css`; label sizes are settings.
+- [ ] **Print queue**: rolls never printed or moved since last print; batch print; `label_printed_at`.
+- [ ] **Scan page** in the PWA (QR + Code128 via `BarcodeDetector`, `jsQR` fallback) and a
+      **location browser** with counts, page order, discrepancies and per-node QR.
+- [ ] **Move roll** action (single and bulk) with next-free-page suggestion.
+- [ ] Tests for serial allocation, strip math, location constraints, lifecycle transitions; a
+      Playwright check that each printout renders at its paper size.
 
 ## M5 — NegPy integration (file-based, no NegPy code in NegArchive)
 
@@ -220,6 +223,9 @@ Immich's Postgres.
 
 ## M7 — Nice to have
 
+- [ ] Paper twin: photograph the DM index print or sleeve page as the roll's contact sheet.
+- [ ] Darkroom prints as assets with paper, size, location; loan / status log.
+- [ ] German printouts.
 - [ ] Map view from NegPy GPS/city metadata (or from Immich).
 - [ ] Per-frame ratings/keep-reject imported from NegPy `file_marks`.
 - [ ] Multi-user with roles (only if the archive ever leaves the LAN).
