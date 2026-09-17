@@ -256,6 +256,7 @@ export function RollBrowser({
               key={roll.id}
               className="rounded-lg border border-border bg-card p-3 transition-colors hover:border-muted-foreground/40 sm:p-4"
               data-testid="roll-row"
+              data-frames={roll.image_count}
             >
               <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:gap-4">
                 <RollStrip roll={roll} />
