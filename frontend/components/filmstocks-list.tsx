@@ -8,7 +8,7 @@ import Link from "next/link"
 import { Pencil, Trash2 } from "lucide-react"
 import { useState } from "react"
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog"
-import { deleteFilmstock } from "@/lib/api"
+import { deleteFilmstock, getCatalogImageUrl } from "@/lib/api"
 import { useRouter } from "next/navigation"
 import { useToast } from "@/hooks/use-toast"
 import Image from "next/image"
@@ -16,8 +16,6 @@ import Image from "next/image"
 interface FilmstocksListProps {
   filmstocks: Filmstock[]
 }
-
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8010"
 
 export function FilmstocksList({ filmstocks }: FilmstocksListProps) {
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
@@ -61,11 +59,7 @@ export function FilmstocksList({ filmstocks }: FilmstocksListProps) {
         {filmstocks.map((filmstock) => (
           <Card key={filmstock.id} className="overflow-hidden">
             {(() => {
-              const src = filmstock.url
-                ? `${API_BASE}${filmstock.url}`
-                : filmstock.image_path
-                  ? `${API_BASE}${filmstock.image_path.startsWith("/") ? filmstock.image_path : "/" + filmstock.image_path}`
-                  : null
+              const src = getCatalogImageUrl(filmstock)
               return src ? (
                 <div className="relative aspect-[4/3] overflow-hidden bg-muted">
                   <Image
@@ -81,11 +75,11 @@ export function FilmstocksList({ filmstocks }: FilmstocksListProps) {
             <CardContent className="p-4">
               <div className="flex items-start justify-between">
                 <h3 className="font-semibold">{filmstock.name}</h3>
-                {filmstock.expired && (
+                {filmstock.expired ? (
                   <Badge variant="destructive" className="text-xs">
                     Expired
                   </Badge>
-                )}
+                ) : null}
               </div>
               <div className="mt-2 flex gap-2 text-sm text-muted-foreground">
                 <Badge variant="secondary" className="text-xs">

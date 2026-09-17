@@ -29,6 +29,13 @@ const nextConfig = {
         source: '/api/:path*',
         destination: `${target}/api/:path*`,
       },
+      {
+        // Catalog images and uploads are served by the backend from /static.
+        // Without this the browser would have to reach the backend directly,
+        // which it cannot do in Docker (the backend publishes no host port).
+        source: '/static/:path*',
+        destination: `${target}/static/:path*`,
+      },
     ]
   },
 }

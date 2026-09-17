@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   db:
     image: postgres:16
@@ -11,14 +9,21 @@ services:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U negarchive -d negarchive"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
 
   web:
     build: .
     depends_on:
-      - db
+      db:
+        condition: service_healthy
     environment:
       DATABASE_URL: postgresql+psycopg2://negarchive:negarchive@db:5432/negarchive
-      DEEPFACE_ENABLED: "true"
+      DEEPFACE_ENABLED: "false"
       FACE_MATCH_THRESHOLD: "0.7"
     volumes:
       # Persist only user-generated images, not the entire codebase

@@ -7,7 +7,7 @@ import Link from "next/link"
 import { Pencil, Trash2 } from "lucide-react"
 import { useState } from "react"
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog"
-import { deleteCamera, deleteLens } from "@/lib/api"
+import { deleteCamera, deleteLens, getCatalogImageUrl } from "@/lib/api"
 import { useRouter } from "next/navigation"
 import { useToast } from "@/hooks/use-toast"
 import Image from "next/image"
@@ -16,8 +16,6 @@ interface CatalogListProps {
   items: (Camera | Lens)[]
   type: "camera" | "lens"
 }
-
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8010"
 
 export function CatalogList({ items, type }: CatalogListProps) {
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
@@ -64,17 +62,20 @@ export function CatalogList({ items, type }: CatalogListProps) {
       <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
         {items.map((item) => (
           <Card key={item.id} className="overflow-hidden">
-            {item.image_path && (
-              <div className="relative aspect-[4/3] overflow-hidden bg-muted">
-                <Image
-                  src={`${API_BASE}${item.url ? item.url : (item.image_path.startsWith("/") ? item.image_path : "/" + item.image_path)}`}
-                  alt={item.name}
-                  fill
-                  className="object-cover"
-                  sizes="(max-width: 640px) 100vw, (max-width: 1024px) 50vw, (max-width: 1280px) 33vw, 25vw"
-                />
-              </div>
-            )}
+            {(() => {
+              const src = getCatalogImageUrl(item)
+              return src ? (
+                <div className="relative aspect-[4/3] overflow-hidden bg-muted">
+                  <Image
+                    src={src}
+                    alt={item.name}
+                    fill
+                    className="object-cover"
+                    sizes="(max-width: 640px) 100vw, (max-width: 1024px) 50vw, (max-width: 1280px) 33vw, 25vw"
+                  />
+                </div>
+              ) : null
+            })()}
             <CardContent className="p-4">
               <h3 className="font-semibold">{item.name}</h3>
               {item.mount && <p className="mt-1 text-sm text-muted-foreground">Mount: {item.mount}</p>}

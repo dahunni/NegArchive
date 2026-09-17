@@ -6,8 +6,8 @@ FastAPI JSON backend + Next.js frontend.
 
 **Status: alpha, single user, run it on a trusted LAN only.** There is no authentication and CORS
 is open. A full review with confirmed bugs is in [docs/REVIEW.md](docs/REVIEW.md); the task list is
-in [docs/ROADMAP.md](docs/ROADMAP.md). Read the [Known issues](#known-issues) section before
-deploying, several shipped workflows are currently broken.
+in [docs/ROADMAP.md](docs/ROADMAP.md). Milestone M0 (the bugs that broke shipped workflows in
+Docker) is done; read the [Known issues](#known-issues) section before deploying.
 
 ## Where this is going
 
@@ -33,7 +33,8 @@ Three goals drive the roadmap (details and reasoning in [docs/ROADMAP.md](docs/R
 - Frontend: Next.js 16, React 19, TypeScript, Tailwind 4, shadcn/ui
 - Storage: files under `static/uploads/{scans,contact_sheets}` and `static/catalog/*`; paths are
   stored in the database
-- Optional, currently dead code: DeepFace face detection (see Known issues)
+- Dead code, still a dependency: DeepFace face detection. Nothing imports it at startup any
+  more; whether it is revived or deleted is decided in roadmap M2.
 
 ## Project structure
 
@@ -42,15 +43,14 @@ app/                    FastAPI backend
   main.py               app, CORS, static mount, startup "migrations" and seed data
   db.py                 engine and session
   models.py             SQLAlchemy models (FilmRoll, ImageAsset, Camera, Lens, FilmStock, Person, Face)
-  schemas.py            Pydantic models (currently unused)
-  routers/api.py        the JSON API, everything under /api
-  routers/{films,images,search,cameras,filmstocks,lenses}.py
-                        legacy HTML routes whose templates were removed; they 500 (to be deleted)
-  services/face.py      DeepFace helpers, only reachable from the legacy routes
+  schemas.py            Pydantic models (currently unused; M2 will wire them up)
+  routers/api.py        the JSON API, everything under /api — the only router
+  services/face.py      DeepFace helpers, currently unreachable (fate decided in M2)
 frontend/               Next.js app (app router)
   app/                  pages: films, images, cameras, lenses, filmstocks, search
   components/           forms, lists, grids; components/ui is shadcn
   lib/api.ts            typed fetch helpers and API base handling
+tests/                  pytest suite, runs against Postgres (skipped without DATABASE_URL)
 docs/                   REVIEW.md, ROADMAP.md, NEGPY_INTEGRATION.md
 static/                 served at /static; uploads are git-ignored
 Dockerfile, docker-compose.yml, frontend/Dockerfile
@@ -74,8 +74,10 @@ docker compose up --build
   The backend publishes no host port.
 - Postgres data lives in the `pgdata` volume; uploads and catalog images are bind-mounted from
   `./static/uploads` and `./static/catalog`.
-- The first build downloads DeepFace and TensorFlow (about 2 GB) although nothing calls them.
-  Set `DEEPFACE_ENABLED=false` in `docker-compose.yml` to at least skip importing them at startup.
+- The backend waits for the database: `db` has a `pg_isready` healthcheck and `web` depends on
+  `service_healthy`.
+- The first build still downloads DeepFace and TensorFlow (about 2 GB) although nothing calls
+  them; removing the dependency is a roadmap M2 decision. `DEEPFACE_ENABLED` defaults to `false`.
 
 ## Local development
 
@@ -90,7 +92,17 @@ DEEPFACE_ENABLED=false uvicorn app.main:app --host 0.0.0.0 --port 8010 --reload
 ```
 
 Leaving `DATABASE_URL` unset falls back to `sqlite:///./negarchive.db`. Do not rely on it: two of
-the confirmed bugs only appear on Postgres, and SQLite support is scheduled for removal.
+the confirmed bugs only appeared on Postgres, and SQLite support is scheduled for removal.
+
+Tests (Postgres only; they are skipped when `DATABASE_URL` is unset):
+
+```bash
+docker run -d --rm --name negarchive-test-db -p 55433:5432 \
+  -e POSTGRES_USER=negarchive -e POSTGRES_PASSWORD=negarchive -e POSTGRES_DB=negarchive postgres:16
+DEEPFACE_ENABLED=false \
+DATABASE_URL=postgresql+psycopg2://negarchive:negarchive@localhost:55433/negarchive \
+  .venv/bin/python -m pytest tests -q
+```
 
 Frontend:
 
@@ -106,9 +118,9 @@ Environment variables:
 | Variable | Where | Meaning |
 |---|---|---|
 | `DATABASE_URL` | backend | Postgres URL, e.g. `postgresql+psycopg2://negarchive:negarchive@db:5432/negarchive` (Compose). Unset falls back to `sqlite:///./negarchive.db`, deprecated |
-| `DEEPFACE_ENABLED` | backend | `true`/`false`; only affects an import at startup today |
+| `DEEPFACE_ENABLED` | backend | `true`/`false`; guards the DeepFace import in `services/face.py`, which nothing calls today |
 | `FACE_MATCH_THRESHOLD` | backend | cosine threshold, unused in practice |
-| `NEXT_PUBLIC_API_BASE` | frontend, browser | absolute API origin for local dev; empty in Docker so the browser uses same-origin `/api` via the Next rewrite |
+| `NEXT_PUBLIC_API_BASE` | frontend, browser | absolute API origin for local dev; empty in Docker so the browser uses same-origin `/api` and `/static` via the Next rewrites |
 | `API_BASE` | frontend, server side | origin used for server-side fetches inside Docker (`http://web:8000`) |
 
 ## API
@@ -123,20 +135,22 @@ Fields: `id, title, camera, lens, film_type, notes, building, folder, archive_se
 Camera, lens and film type are stored as **names**, not ids.
 
 Images: `GET /images?film_id=&type=scan|contact_sheet`, `GET /images/{id}`, `POST /images`,
-`PUT /images/{id}`, `DELETE /images/{id}?delete_file=false`,
-`POST /images/upload` (multipart: `file`, `type`, `film_roll_id` **required** in practice,
-`frame_number?`, `notes?`, `capture_date?`),
+`PUT /images/{id}` (`film_roll_id: null` unassigns the image from its roll),
+`DELETE /images/{id}?delete_file=false`,
+`POST /images/upload` (multipart: `file`, `type`, `film_roll_id?`, `frame_number?`, `notes?`,
+`capture_date?`),
 `GET /images/{id}/preview?width=1200` (JPEG, re-encoded on every request),
 `GET /images/{id}/download` (original, as attachment).
-Fields: `id, film_roll_id, type, path, url, frame_number, notes, capture_date, created_at`.
-The original filename is **not** stored.
+Fields: `id, film_roll_id, type, path, url, frame_number, notes, capture_date, created_at`;
+`film_roll_id` may be `null`. The original filename is **not** stored.
 
 Per film: `POST /films/{id}/contact_sheet?columns=6&thumb_size=300`,
 `POST /films/{id}/images/bulk` (multipart `files[]`), `POST /films/{id}/images/bulk_zip` (multipart `file`).
 
 Catalog: `GET|POST /cameras`, `GET|PUT|DELETE /cameras/{id}`, `POST /cameras/{id}/image`; same
 for `/lenses` and `/filmstocks`. Filmstock fields:
-`id, name, iso, kind (black_and_white|color|slide|motion_picture), expired (0|1), expiration_date, image_path, url`.
+`id, name, iso, kind (black_and_white|color|slide|motion_picture), expired (boolean), expiration_date, image_path, url`.
+`PUT` on a camera, lens or filmstock returns the updated object.
 
 Examples:
 
@@ -154,19 +168,15 @@ curl -X POST http://localhost:8010/api/images/upload -F 'file=@scan.tif' -F 'typ
 The full list with evidence and file references is [docs/REVIEW.md](docs/REVIEW.md). The ones
 that matter most:
 
-- **Docker + Postgres:** creating or editing a filmstock from the UI fails (boolean sent to an
-  integer column). Catalog images and "Generate Contact Sheet" point at `localhost:8010` in the
-  browser and never load. Deleting a film that has face rows fails on a foreign key.
+- **Docker + Postgres:** deleting a film that has face rows fails on a foreign key.
 - **Data loss:** original filenames are discarded on every upload path (files are renamed to a
   UUID, frame numbers from bulk import are lost). Deleting a film or image leaves its files on
   disk forever. Renaming or deleting a camera, lens or film stock silently orphans every roll
   that used it.
-- **Crashes:** upload without a film, invalid dates, non-numeric frame numbers, duplicate
-  catalog names, empty request bodies and unknown film kinds all return a bare HTTP 500. The six
-  legacy HTML routes (`/films`, `/cameras`, …) always 500.
-- **Wrong data:** the film form stores the literal string `"None"` for camera/lens/film type;
-  images cannot be unassigned from a film; seed cameras and film stocks come back on every restart;
-  every non-expired filmstock card shows a stray `0`.
+- **Crashes:** invalid dates, non-numeric frame numbers, duplicate catalog names, empty request
+  bodies and unknown film kinds all return a bare HTTP 500.
+- **Wrong data:** seed cameras and film stocks come back on every restart; "not found" is an
+  HTTP 200 with `{"error": "not_found"}`.
 - **Security:** any file type is accepted and served back from `/static`, including HTML
   (stored XSS on the LAN). No size limits. No auth.
 - **Offline:** the UI loads `@vercel/analytics` and Google fonts; the frontend build needs
@@ -176,7 +186,7 @@ that matter most:
 
 Full checklist: [docs/ROADMAP.md](docs/ROADMAP.md).
 
-1. **M0** fix the Docker-breaking bugs, remove the legacy routers, add `.dockerignore`.
+1. **M0** *(done)* fix the Docker-breaking bugs, remove the legacy routers, add `.dockerignore`.
 2. **M1** complete UI rework around the roll as the unit of work: roll list with thumbnails,
    roll page as a workspace with inline editing, drag-and-drop upload, lightbox, dialogs instead
    of form pages, mobile layout.

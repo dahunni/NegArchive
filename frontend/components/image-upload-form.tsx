@@ -22,7 +22,7 @@ export function ImageUploadForm() {
   const [file, setFile] = useState<File | null>(null)
   const [formData, setFormData] = useState({
     type: "scan" as "scan" | "contact_sheet",
-    film_roll_id: "",
+    film_roll_id: "none",
     frame_number: "",
     notes: "",
     capture_date: "",
@@ -67,7 +67,9 @@ export function ImageUploadForm() {
       const uploadFormData = new FormData()
       uploadFormData.append("file", file)
       uploadFormData.append("type", formData.type)
-      if (formData.film_roll_id) {
+      // "none" is the placeholder value of the select; leave the field out entirely
+      // so the image is uploaded without a film roll.
+      if (formData.film_roll_id && formData.film_roll_id !== "none") {
         uploadFormData.append("film_roll_id", formData.film_roll_id)
       }
       if (formData.frame_number) {

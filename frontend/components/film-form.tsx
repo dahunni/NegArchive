@@ -85,20 +85,31 @@ export function FilmForm({ film }: FilmFormProps) {
 
   const filteredLenses = selectedCamera?.mount ? lenses.filter((lens) => lens.mount === selectedCamera.mount) : lenses
 
+  // The selects use "None" as their placeholder value; the API must store null (R#8).
+  const toPayload = () => {
+    const nullable = (value: string) => (value === "None" || value === "" ? null : value)
+    return {
+      ...formData,
+      camera: nullable(formData.camera),
+      lens: nullable(formData.lens),
+      film_type: nullable(formData.film_type),
+    }
+  }
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setLoading(true)
 
     try {
       if (film) {
-        await updateFilm(film.id, formData)
+        await updateFilm(film.id, toPayload())
         toast({
           title: "Film updated",
           description: "The film has been successfully updated.",
         })
         router.push(`/films/${film.id}`)
       } else {
-        const newFilm = await createFilm(formData)
+        const newFilm = await createFilm(toPayload())
         toast({
           title: "Film created",
           description: "The film has been successfully created.",
