@@ -1,31 +1,24 @@
-import { getFilms } from "@/lib/api"
-import { FilmsList } from "@/components/films-list"
-import { Navigation } from "@/components/navigation"
-import { Button } from "@/components/ui/button"
-import Link from "next/link"
-import { Plus } from "lucide-react"
+import { Suspense } from "react"
 
+import { getCameras, getFilms, getFilmstocks, getLenses } from "@/lib/api"
+import { RollBrowser } from "@/components/roll-browser"
+import { RollListSkeleton } from "@/components/skeletons"
+
+/**
+ * The roll list moved to `/` in M1. `/films` keeps working — old bookmarks, the
+ * README and the future QR labels all point here — and renders exactly the same page.
+ */
 export default async function FilmsPage() {
-  const films = await getFilms()
+  const [films, cameras, lenses, filmstocks] = await Promise.all([
+    getFilms(),
+    getCameras(),
+    getLenses(),
+    getFilmstocks(),
+  ])
 
   return (
-    <div className="min-h-screen bg-background">
-      <Navigation />
-      <main className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
-        <div className="mb-8 flex items-center justify-between">
-          <div>
-            <h1 className="text-3xl font-bold">Films</h1>
-            <p className="mt-1 text-muted-foreground">Manage your film rolls and photography archive</p>
-          </div>
-          <Button asChild>
-            <Link href="/films/new">
-              <Plus className="mr-2 h-4 w-4" />
-              New Film
-            </Link>
-          </Button>
-        </div>
-        <FilmsList films={films} />
-      </main>
-    </div>
+    <Suspense fallback={<RollListSkeleton />}>
+      <RollBrowser films={films} cameras={cameras} lenses={lenses} filmstocks={filmstocks} />
+    </Suspense>
   )
 }
