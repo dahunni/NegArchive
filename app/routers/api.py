@@ -483,7 +483,9 @@ def store_upload(file: UploadFile, subdir: str) -> Tuple[str, str]:
         raise
     except OSError as exc:
         _remove_quietly(abs_path)
-        raise ApiError("write_failed", f"“{original}” could not be stored: {exc}", 500, "file")
+        raise ApiError(
+            "write_failed", f"“{original}” could not be stored: {exc}", 500, "file"
+        ) from exc
     return rel_path, original
 
 
@@ -1034,8 +1036,10 @@ def create_image(body: schemas.ImageCreate, db: Session = Depends(get_db)):
 def _parse_image_type(value) -> ImageType:
     try:
         return ImageType(str(value))
-    except ValueError:
-        raise ApiError("invalid_type", "Type must be 'scan' or 'contact_sheet'.", 400, "type")
+    except ValueError as exc:
+        raise ApiError(
+            "invalid_type", "Type must be 'scan' or 'contact_sheet'.", 400, "type"
+        ) from exc
 
 
 @router.put(
@@ -1110,8 +1114,8 @@ def _require_ids(raw) -> List[int]:
     for value in raw:
         try:
             parsed = parse_int(value, "id", minimum=1)
-        except ApiError:
-            raise ApiError("invalid_ids", "Frame ids must be whole numbers.", 400, "ids")
+        except ApiError as exc:
+            raise ApiError("invalid_ids", "Frame ids must be whole numbers.", 400, "ids") from exc
         if parsed is None:
             raise ApiError("invalid_ids", "Frame ids must be whole numbers.", 400, "ids")
         ids.append(parsed)
@@ -1424,9 +1428,11 @@ def commit_unique(db: Session, what: str, name: Optional[str]):
     """Commit, turning the UNIQUE violation on ``name`` into a 409 instead of a 500."""
     try:
         db.commit()
-    except IntegrityError:
+    except IntegrityError as exc:
         db.rollback()
-        raise ApiError("duplicate_name", f"A {what} named “{name}” already exists.", 409, "name")
+        raise ApiError(
+            "duplicate_name", f"A {what} named “{name}” already exists.", 409, "name"
+        ) from exc
 
 
 def _delete_catalog_entry(db: Session, prefix: str, entry, force: bool):
@@ -1538,9 +1544,9 @@ def get_filmstock(stock_id: int, db: Session = Depends(get_db)):
 def parse_kind(value) -> FilmKind:
     try:
         return FilmKind(value)
-    except (ValueError, KeyError):
+    except (ValueError, KeyError) as exc:
         valid = ", ".join(k.value for k in FilmKind)
-        raise ApiError("invalid_kind", f"Kind must be one of: {valid}.", 400, "kind")
+        raise ApiError("invalid_kind", f"Kind must be one of: {valid}.", 400, "kind") from exc
 
 
 @router.post(

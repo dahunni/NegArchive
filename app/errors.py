@@ -84,13 +84,13 @@ def parse_date(value, field: str) -> Optional[date]:
         return value
     try:
         return date.fromisoformat(str(value))
-    except (ValueError, TypeError):
+    except (ValueError, TypeError) as exc:
         raise ApiError(
             "invalid_date",
             f"{_label(field)} must be a date like 2024-07-01.",
             400,
             field,
-        )
+        ) from exc
 
 
 def parse_int(value, field: str, minimum: Optional[int] = None) -> Optional[int]:
@@ -98,8 +98,10 @@ def parse_int(value, field: str, minimum: Optional[int] = None) -> Optional[int]
         return None
     try:
         parsed = int(value)
-    except (ValueError, TypeError):
-        raise ApiError("invalid_number", f"{_label(field)} must be a whole number.", 400, field)
+    except (ValueError, TypeError) as exc:
+        raise ApiError(
+            "invalid_number", f"{_label(field)} must be a whole number.", 400, field
+        ) from exc
     if minimum is not None and parsed < minimum:
         raise ApiError(
             "invalid_number", f"{_label(field)} must be {minimum} or greater.", 400, field
@@ -125,8 +127,8 @@ def parse_choice(value, field: str, allowed: Sequence[str]) -> Optional[str]:
 async def read_json(request) -> dict:
     try:
         payload = await request.json()
-    except Exception:
-        raise ApiError("invalid_json", "The request body is not valid JSON.")
+    except Exception as exc:
+        raise ApiError("invalid_json", "The request body is not valid JSON.") from exc
     if not isinstance(payload, dict):
         raise ApiError("invalid_json", "The request body must be a JSON object.")
     return payload

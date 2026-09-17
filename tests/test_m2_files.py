@@ -11,7 +11,17 @@ import uuid
 
 from PIL import Image as PILImage
 
+from app import paths
+
+#: The *stored* form of the scans directory — the shape `image_assets.path` has and
+#: the shape the orphan sweep reports. M3 moved the bytes under DATA_DIR, so use
+#: `on_disk()` whenever the filesystem is actually touched.
 UPLOADS = os.path.join("static", "uploads", "scans")
+
+
+def on_disk(stored_path: str) -> str:
+    """Where a stored path really is (M3: under DATA_DIR, not the working directory)."""
+    return str(paths.resolve(stored_path))
 
 
 def unique(prefix: str) -> str:
@@ -47,12 +57,12 @@ def upload(client, roll_id=None, filename="frame.png") -> dict:
 def test_deleting_a_frame_deletes_its_file_by_default(client):
     frame = upload(client)
     path = frame["path"]
-    assert os.path.exists(path)
+    assert os.path.exists(on_disk(path))
 
     res = client.delete(f"/api/images/{frame['id']}")
     assert res.status_code == 200, res.text
     assert res.json()["files_deleted"] == 1
-    assert not os.path.exists(path), "M2 default: the file goes with the record (R#9)"
+    assert not os.path.exists(on_disk(path)), "M2 default: the file goes with the record (R#9)"
 
 
 def test_keep_files_leaves_the_file_alone(client):
@@ -62,8 +72,8 @@ def test_keep_files_leaves_the_file_alone(client):
     res = client.delete(f"/api/images/{frame['id']}?keep_files=true")
     assert res.status_code == 200, res.text
     assert res.json()["files_deleted"] == 0
-    assert os.path.exists(path)
-    os.remove(path)
+    assert os.path.exists(on_disk(path))
+    os.remove(on_disk(path))
 
 
 def test_the_m1_delete_file_flag_still_wins_when_it_is_sent(client):
@@ -71,8 +81,8 @@ def test_the_m1_delete_file_flag_still_wins_when_it_is_sent(client):
     frame = upload(client)
     path = frame["path"]
     assert client.delete(f"/api/images/{frame['id']}?delete_file=false").status_code == 200
-    assert os.path.exists(path)
-    os.remove(path)
+    assert os.path.exists(on_disk(path))
+    os.remove(on_disk(path))
 
 
 def test_bulk_delete_removes_the_files_by_default(client):
@@ -81,7 +91,7 @@ def test_bulk_delete_removes_the_files_by_default(client):
     res = client.post("/api/images/bulk_delete", json={"ids": [f["id"] for f in frames]})
     assert res.status_code == 200, res.text
     assert res.json()["files_deleted"] == 2
-    assert not any(os.path.exists(f["path"]) for f in frames)
+    assert not any(os.path.exists(on_disk(f["path"])) for f in frames)
 
 
 # --- deleting a roll ----------------------------------------------------------
@@ -94,7 +104,7 @@ def test_deleting_a_roll_deletes_its_frames_and_their_files(client):
     res = client.delete(f"/api/films/{roll['id']}")
     assert res.status_code == 200, res.text
     assert res.json()["files_deleted"] == 3
-    assert not any(os.path.exists(f["path"]) for f in frames)
+    assert not any(os.path.exists(on_disk(f["path"])) for f in frames)
     assert client.get(f"/api/films/{roll['id']}").status_code == 404
     assert client.get(f"/api/images/{frames[0]['id']}").status_code == 404
 
@@ -106,11 +116,11 @@ def test_deleting_a_roll_with_keep_files_leaves_the_scans(client):
     res = client.delete(f"/api/films/{roll['id']}?keep_files=true")
     assert res.status_code == 200, res.text
     assert res.json()["files_deleted"] == 0
-    assert os.path.exists(frame["path"])
+    assert os.path.exists(on_disk(frame["path"]))
     # The file is now an orphan, which is exactly what the sweep is for.
     sweep = client.post("/api/maintenance/sweep_orphans").json()
     assert frame["path"] in sweep["orphan_files"]
-    os.remove(frame["path"])
+    os.remove(on_disk(frame["path"]))
 
 
 # --- storage_mode (M3's linked files) -----------------------------------------
@@ -118,9 +128,9 @@ def test_deleting_a_roll_with_keep_files_leaves_the_scans(client):
 
 def test_a_linked_file_is_never_deleted(client):
     """M3 registers files it does not own; M2 promises not to touch them."""
-    os.makedirs("static/uploads/linked", exist_ok=True)
     path = os.path.join("static", "uploads", "linked", f"{unique('external')}.png")
-    with open(path, "wb") as out:
+    os.makedirs(os.path.dirname(on_disk(path)), exist_ok=True)
+    with open(on_disk(path), "wb") as out:
         out.write(png_bytes())
 
     created = client.post(
@@ -134,8 +144,8 @@ def test_a_linked_file_is_never_deleted(client):
     res = client.delete(f"/api/images/{image['id']}")
     assert res.status_code == 200, res.text
     assert res.json()["files_deleted"] == 0
-    assert os.path.exists(path), "a linked file belongs to somebody else"
-    os.remove(path)
+    assert os.path.exists(on_disk(path)), "a linked file belongs to somebody else"
+    os.remove(on_disk(path))
 
 
 def test_an_unknown_storage_mode_is_rejected(client):
@@ -150,9 +160,9 @@ def test_an_unknown_storage_mode_is_rejected(client):
 
 
 def test_the_sweep_is_a_dry_run_by_default(client):
-    os.makedirs(UPLOADS, exist_ok=True)
+    os.makedirs(on_disk(UPLOADS), exist_ok=True)
     orphan = os.path.join(UPLOADS, f"{unique('orphan')}.png")
-    with open(orphan, "wb") as out:
+    with open(on_disk(orphan), "wb") as out:
         out.write(png_bytes())
 
     res = client.post("/api/maintenance/sweep_orphans")
@@ -161,19 +171,19 @@ def test_the_sweep_is_a_dry_run_by_default(client):
     assert body["applied"] is False
     assert orphan in body["orphan_files"]
     assert body["deleted_files"] == 0
-    assert os.path.exists(orphan), "a dry run deletes nothing"
+    assert os.path.exists(on_disk(orphan)), "a dry run deletes nothing"
 
     applied = client.post("/api/maintenance/sweep_orphans?apply=true").json()
     assert applied["applied"] is True
     assert applied["deleted_files"] >= 1
     assert applied["bytes_reclaimed"] > 0
-    assert not os.path.exists(orphan)
+    assert not os.path.exists(on_disk(orphan))
 
 
 def test_the_sweep_reports_records_whose_file_is_gone(client):
     roll = make_roll(client)
     frame = upload(client, roll["id"])
-    os.remove(frame["path"])  # a file that vanished behind the archive's back
+    os.remove(on_disk(frame["path"]))  # a file that vanished behind the archive's back
 
     body = client.post("/api/maintenance/sweep_orphans").json()
     missing = {entry["image_id"]: entry for entry in body["missing_files"]}
@@ -267,9 +277,9 @@ def test_the_upload_size_limit_is_configurable(client, monkeypatch):
 
 def test_an_html_file_under_uploads_is_never_served_as_a_page(client):
     """Even if one gets in another way, /static must not render it."""
-    os.makedirs(UPLOADS, exist_ok=True)
+    os.makedirs(on_disk(UPLOADS), exist_ok=True)
     path = os.path.join(UPLOADS, f"{unique('planted')}.html")
-    with open(path, "w") as out:
+    with open(on_disk(path), "w") as out:
         out.write("<html><body><script>alert(1)</script></body></html>")
     try:
         res = client.get(f"/{path}")
@@ -278,7 +288,7 @@ def test_an_html_file_under_uploads_is_never_served_as_a_page(client):
         assert res.headers["content-disposition"] == "attachment"
         assert res.headers["x-content-type-options"] == "nosniff"
     finally:
-        os.remove(path)
+        os.remove(on_disk(path))
 
 
 def test_a_normal_scan_is_still_served_as_an_image(client):

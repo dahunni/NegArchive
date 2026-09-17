@@ -10,10 +10,11 @@ import uuid
 from contextlib import contextmanager
 
 import pytest
-from alembic import command
 from alembic.config import Config
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import make_url
+
+from alembic import command
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -23,6 +24,18 @@ def alembic_config(url: str) -> Config:
     config.set_main_option("script_location", os.path.join(REPO_ROOT, "alembic"))
     config.set_main_option("sqlalchemy.url", url)
     return config
+
+
+def head_revision() -> str:
+    """The id of the latest revision, so a test does not hard-code one.
+
+    M3 added `0003_m3_offline_first` on top of M2's chain; asserting the literal id
+    would have meant editing this test with every milestone, which is a test that
+    describes the past rather than the rule.
+    """
+    from alembic.script import ScriptDirectory
+
+    return ScriptDirectory.from_config(alembic_config("postgresql://unused/unused")).get_current_head()
 
 
 def run(url: str, action, target: str) -> None:
@@ -258,4 +271,4 @@ def test_the_baseline_is_a_no_op_on_a_schema_that_already_exists():
         finally:
             engine.dispose()
         assert kept == "Keep me"
-        assert stamped == "0002_m2_archive_integrity"
+        assert stamped == head_revision()

@@ -7,8 +7,8 @@ The schema is owned by Alembic (``alembic/versions``); ``create_all`` is not cal
 anywhere any more. Change a model *and* write a revision.
 """
 
-from datetime import date, datetime
 import enum
+from datetime import date, datetime
 
 from sqlalchemy import Boolean, Date, DateTime, Enum, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship

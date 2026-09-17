@@ -5,13 +5,14 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from alembic import command
 from alembic.config import Config
 from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from starlette.responses import Response
+
+from alembic import command
 
 from . import auth, paths
 from .db import SessionLocal, engine

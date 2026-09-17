@@ -10,7 +10,7 @@ import os
 
 import pytest
 
-from app.services.importer import parse_folder_name, parse_frame_number
+from app.services.importer import parse_folder_name
 
 PNG_1x1 = bytes.fromhex(
     "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4"
@@ -47,25 +47,11 @@ def scan(client, root_id):
     return res.json()["result"]
 
 
-# --- filename and folder parsing ---------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "filename,expected",
-    [
-        ("Roll12_007.tif", 7),
-        ("harbour_Frame007.jpg", 7),
-        ("007.jpg", 7),
-        ("2024-0007_03.tif", 3),
-        ("IMG_1234.jpg", 1234),
-        ("frame-12.png", 12),
-        ("untitled.tif", None),
-        ("", None),
-        (None, None),
-    ],
-)
-def test_frame_numbers_are_parsed_from_the_filename(filename, expected):
-    assert parse_frame_number(filename) == expected
+# --- folder parsing ----------------------------------------------------------
+#
+# Frame numbers are M2's `frame_number_from_filename`, tested in
+# tests/test_m2_filenames.py; link mode calls the same function, and the scan test
+# below checks that the numbers actually land on the frames.
 
 
 @pytest.mark.parametrize(

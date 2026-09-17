@@ -149,6 +149,10 @@ class ImageOut(Model):
     url: str
     original_filename: Optional[str] = None
     storage_mode: str
+    #: M3, import by reference: where a linked original really is (NULL for a
+    #: managed file), and the sampled hash that identifies it across a move.
+    source_path: Optional[str] = None
+    content_hash: Optional[str] = None
     frame_number: Optional[int] = None
     notes: Optional[str] = None
     capture_date: Optional[date] = None
