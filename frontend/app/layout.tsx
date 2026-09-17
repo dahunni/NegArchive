@@ -1,5 +1,5 @@
 import type React from "react"
-import type { Metadata } from "next"
+import type { Metadata, Viewport } from "next"
 
 import "./globals.css"
 import { Toaster } from "@/components/ui/toaster"
@@ -13,6 +13,14 @@ import { ThemeProvider } from "@/components/theme-provider"
 export const metadata: Metadata = {
   title: "NegArchive",
   description: "A self-hosted archive for film rolls, their scans and where the negatives live.",
+  // M3: installable on a phone or tablet, for the lookup you do at the shelf.
+  manifest: "/manifest.webmanifest",
+  applicationName: "NegArchive",
+  appleWebApp: {
+    capable: true,
+    title: "NegArchive",
+    statusBarStyle: "black-translucent",
+  },
   icons: {
     icon: [
       {
@@ -28,8 +36,23 @@ export const metadata: Metadata = {
         type: "image/svg+xml",
       },
     ],
-    apple: "/apple-icon.png",
+    apple: "/icons/apple-touch-icon.png",
   },
+}
+
+/**
+ * The colour the phone paints around the installed app. Both schemes are given,
+ * because the archive follows the system theme and a white bar above a dark page
+ * is the tell-tale sign of a web page pretending to be an app.
+ */
+export const viewport: Viewport = {
+  themeColor: [
+    { media: "(prefers-color-scheme: light)", color: "#ffffff" },
+    { media: "(prefers-color-scheme: dark)", color: "#0a0a0b" },
+  ],
+  width: "device-width",
+  initialScale: 1,
+  viewportFit: "cover",
 }
 
 export default function RootLayout({

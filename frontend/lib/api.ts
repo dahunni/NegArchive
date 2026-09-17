@@ -16,6 +16,60 @@ function apiBase(): string {
 }
 
 /**
+ * Name of the cookie the optional shared password (M3, R#26) sets. It is not
+ * `httpOnly`, because the upload XHR and the service worker need to read it.
+ */
+export const TOKEN_COOKIE = "negarchive_token"
+
+/** The session token this browser holds, or null. */
+export function readTokenCookie(): string | null {
+  if (typeof document === "undefined") return null
+  const match = document.cookie.match(/(?:^|;\s*)negarchive_token=([^;]*)/)
+  return match ? decodeURIComponent(match[1]) : null
+}
+
+/**
+ * The token for whichever side is calling.
+ *
+ * In the browser it comes from the cookie. **Server-side it comes from the
+ * request's own cookies**: the page is same-origin with the API proxy, so the
+ * browser sends the cookie with the page request and the server component can
+ * forward it. Without this, a signed-in visitor would still get a 401 for every
+ * server-rendered page.
+ */
+async function sessionToken(): Promise<string | null> {
+  if (typeof window !== "undefined") return readTokenCookie()
+  try {
+    const { cookies } = await import("next/headers")
+    const store = await cookies()
+    return store.get(TOKEN_COOKIE)?.value ?? null
+  } catch {
+    // No request context (a build-time prerender, say) — nothing to forward.
+    return null
+  }
+}
+
+/**
+ * Every request to the backend goes through here: it picks the right base for
+ * this side of the wire and attaches the session token when there is one.
+ */
+export async function apiFetch(path: string, init: RequestInit = {}): Promise<Response> {
+  const headers = new Headers(init.headers)
+  const token = await sessionToken()
+  if (token) headers.set("Authorization", `Bearer ${token}`)
+  return fetch(`${apiBase()}${path}`, { cache: "no-store", ...init, headers })
+}
+
+/** A page of results: what the API returns when `limit` is given (M3, R#20). */
+export interface Page<T> {
+  items: T[]
+  total: number
+  limit: number
+  offset: number
+  has_more: boolean
+}
+
+/**
  * Absolute-or-same-origin URL for something the browser loads itself
  * (`<img src>`, download links). Always resolve backend paths through this.
  */
@@ -75,8 +129,16 @@ export interface Image {
   url: string
   /** The name the scanner gave the file, kept by every upload path (M2, R#7). */
   original_filename: string | null
-  /** `managed`: NegArchive owns the file and deletes it with the record. */
+  /**
+   * `managed`: NegArchive owns the file and deletes it with the record.
+   * `linked`: the file lives in a folder you manage and is never written to or
+   * removed (M3, import by reference).
+   */
   storage_mode: "managed" | "linked"
+  /** M3: absolute path of a linked original; null for managed files. */
+  source_path?: string | null
+  /** M3: sampled SHA-256, used to spot a file that moved or is already imported. */
+  content_hash?: string | null
   frame_number: number | null
   notes: string | null
   capture_date: string | null
@@ -191,12 +253,19 @@ async function assertOk(res: Response, fallback: string): Promise<void> {
   throw new ApiError(code, message, res.status, field)
 }
 
-/** Unwrap `{ok, <key>}`. M2 answers a failure with a 4xx, so `assertOk` sees it first. */
-function unwrap<T>(json: any, key: string, fallback: string): T {
-  if (json && typeof json.error === "string") {
-    throw new ApiError(json.error, fallback, 404)
+/**
+ * Unwrap `{ok, <key>}`. M2 answers a failure with a 4xx, so `assertOk` sees it first.
+ *
+ * The parameter is `unknown` rather than `any` because it is whatever the server
+ * sent; the two shapes it may have are narrowed here, once, instead of being
+ * assumed at every call site.
+ */
+function unwrap<T>(json: unknown, key: string, fallback: string): T {
+  const body = (json ?? {}) as Record<string, unknown>
+  if (typeof body.error === "string") {
+    throw new ApiError(body.error, fallback, 404)
   }
-  return (json?.[key] ?? json) as T
+  return (body[key] ?? json) as T
 }
 
 /** `?keep_files=true` when the user asked to leave the files on disk (M2, R#9). */
@@ -206,13 +275,13 @@ function keepFilesQuery(keepFiles: boolean): string {
 
 // Films API
 export async function getFilms(): Promise<Film[]> {
-  const res = await fetch(`${apiBase()}/api/films`, { cache: "no-store" })
+  const res = await apiFetch(`/api/films`, { cache: "no-store" })
   if (!res.ok) throw new Error("Failed to fetch films")
   return res.json()
 }
 
 export async function getFilm(id: number): Promise<{ film: Film; images: Image[]; contact_sheets: Image[] }> {
-  const res = await fetch(`${apiBase()}/api/films/${id}`, { cache: "no-store" })
+  const res = await apiFetch(`/api/films/${id}`, { cache: "no-store" })
   // M2: a missing roll is a real 404 with a structured body (R#17).
   await assertOk(res, "Could not load the roll.")
   const json = await res.json()
@@ -220,7 +289,7 @@ export async function getFilm(id: number): Promise<{ film: Film; images: Image[]
 }
 
 export async function createFilm(data: Partial<Film>): Promise<Film> {
-  const res = await fetch(`${apiBase()}/api/films`, {
+  const res = await apiFetch(`/api/films`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
@@ -231,7 +300,7 @@ export async function createFilm(data: Partial<Film>): Promise<Film> {
 }
 
 export async function updateFilm(id: number, data: Partial<Film>): Promise<Film> {
-  const res = await fetch(`${apiBase()}/api/films/${id}`, {
+  const res = await apiFetch(`/api/films/${id}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
@@ -246,7 +315,7 @@ export async function updateFilm(id: number, data: Partial<Film>): Promise<Film>
  * `keepFiles` is set — the "keep files on disk" checkbox in the delete dialog (R#9).
  */
 export async function deleteFilm(id: number, keepFiles = false): Promise<void> {
-  const res = await fetch(`${apiBase()}/api/films/${id}${keepFilesQuery(keepFiles)}`, {
+  const res = await apiFetch(`/api/films/${id}${keepFilesQuery(keepFiles)}`, {
     method: "DELETE",
   })
   await assertOk(res, "Could not delete the roll.")
@@ -254,22 +323,20 @@ export async function deleteFilm(id: number, keepFiles = false): Promise<void> {
 
 // Images API
 export async function getImages(filmId?: number): Promise<Image[]> {
-  const url = filmId
-    ? `${apiBase()}/api/images?film_id=${filmId}&type=scan`
-    : `${apiBase()}/api/images?type=scan`
-  const res = await fetch(url, { cache: "no-store" })
+  const path = filmId ? `/api/images?film_id=${filmId}&type=scan` : `/api/images?type=scan`
+  const res = await apiFetch(path)
   if (!res.ok) throw new Error("Failed to fetch images")
   return res.json()
 }
 
 export async function getImage(id: number): Promise<Image> {
-  const res = await fetch(`${apiBase()}/api/images/${id}`, { cache: "no-store" })
+  const res = await apiFetch(`/api/images/${id}`, { cache: "no-store" })
   await assertOk(res, "Could not load the frame.")
   return (await res.json()) as Image
 }
 
 export async function uploadImage(formData: FormData): Promise<Image> {
-  const res = await fetch(`${apiBase()}/api/images/upload`, {
+  const res = await apiFetch(`/api/images/upload`, {
     method: "POST",
     body: formData,
   })
@@ -286,7 +353,7 @@ export async function createContactSheet(
   const params = new URLSearchParams()
   if (options?.columns) params.set("columns", String(options.columns))
   if (options?.thumb_size) params.set("thumb_size", String(options.thumb_size))
-  const res = await fetch(`${apiBase()}/api/films/${filmId}/contact_sheet?${params.toString()}`, {
+  const res = await apiFetch(`/api/films/${filmId}/contact_sheet?${params.toString()}`, {
     method: "POST",
   })
   await assertOk(res, "Could not generate the contact sheet.")
@@ -295,7 +362,7 @@ export async function createContactSheet(
 }
 
 export async function updateImage(id: number, data: Partial<Image>): Promise<Image> {
-  const res = await fetch(`${apiBase()}/api/images/${id}`, {
+  const res = await apiFetch(`/api/images/${id}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
@@ -307,7 +374,7 @@ export async function updateImage(id: number, data: Partial<Image>): Promise<Ima
 
 /** Delete a frame; its file goes too unless `keepFiles` is set (M2, R#9). */
 export async function deleteImage(id: number, keepFiles = false): Promise<void> {
-  const res = await fetch(`${apiBase()}/api/images/${id}${keepFilesQuery(keepFiles)}`, {
+  const res = await apiFetch(`/api/images/${id}${keepFilesQuery(keepFiles)}`, {
     method: "DELETE",
   })
   await assertOk(res, "Could not delete the frame.")
@@ -315,19 +382,19 @@ export async function deleteImage(id: number, keepFiles = false): Promise<void> 
 
 // Cameras API
 export async function getCameras(): Promise<Camera[]> {
-  const res = await fetch(`${apiBase()}/api/cameras`, { cache: "no-store" })
+  const res = await apiFetch(`/api/cameras`, { cache: "no-store" })
   if (!res.ok) throw new Error("Failed to fetch cameras")
   return res.json()
 }
 
 export async function getCamera(id: number): Promise<Camera> {
-  const res = await fetch(`${apiBase()}/api/cameras/${id}`, { cache: "no-store" })
+  const res = await apiFetch(`/api/cameras/${id}`, { cache: "no-store" })
   if (!res.ok) throw new Error("Failed to fetch camera")
   return res.json()
 }
 
 export async function createCamera(data: Partial<Camera>): Promise<Camera> {
-  const res = await fetch(`${apiBase()}/api/cameras`, {
+  const res = await apiFetch(`/api/cameras`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
@@ -338,7 +405,7 @@ export async function createCamera(data: Partial<Camera>): Promise<Camera> {
 }
 
 export async function updateCamera(id: number, data: Partial<Camera>): Promise<Camera> {
-  const res = await fetch(`${apiBase()}/api/cameras/${id}`, {
+  const res = await apiFetch(`/api/cameras/${id}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
@@ -353,7 +420,7 @@ export async function updateCamera(id: number, data: Partial<Camera>): Promise<C
  * (R#14); pass `force` to delete it anyway — those rolls keep the name as text.
  */
 export async function deleteCamera(id: number, force = false): Promise<void> {
-  const res = await fetch(`${apiBase()}/api/cameras/${id}${force ? "?force=true" : ""}`, {
+  const res = await apiFetch(`/api/cameras/${id}${force ? "?force=true" : ""}`, {
     method: "DELETE",
   })
   await assertOk(res, "Could not delete the camera.")
@@ -362,7 +429,7 @@ export async function deleteCamera(id: number, force = false): Promise<void> {
 export async function uploadCameraImage(id: number, file: File): Promise<Camera> {
   const formData = new FormData()
   formData.append("file", file)
-  const res = await fetch(`${apiBase()}/api/cameras/${id}/image`, {
+  const res = await apiFetch(`/api/cameras/${id}/image`, {
     method: "POST",
     body: formData,
   })
@@ -373,19 +440,19 @@ export async function uploadCameraImage(id: number, file: File): Promise<Camera>
 
 // Lenses API
 export async function getLenses(): Promise<Lens[]> {
-  const res = await fetch(`${apiBase()}/api/lenses`, { cache: "no-store" })
+  const res = await apiFetch(`/api/lenses`, { cache: "no-store" })
   if (!res.ok) throw new Error("Failed to fetch lenses")
   return res.json()
 }
 
 export async function getLens(id: number): Promise<Lens> {
-  const res = await fetch(`${apiBase()}/api/lenses/${id}`, { cache: "no-store" })
+  const res = await apiFetch(`/api/lenses/${id}`, { cache: "no-store" })
   if (!res.ok) throw new Error("Failed to fetch lens")
   return res.json()
 }
 
 export async function createLens(data: Partial<Lens>): Promise<Lens> {
-  const res = await fetch(`${apiBase()}/api/lenses`, {
+  const res = await apiFetch(`/api/lenses`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
@@ -396,7 +463,7 @@ export async function createLens(data: Partial<Lens>): Promise<Lens> {
 }
 
 export async function updateLens(id: number, data: Partial<Lens>): Promise<Lens> {
-  const res = await fetch(`${apiBase()}/api/lenses/${id}`, {
+  const res = await apiFetch(`/api/lenses/${id}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
@@ -408,7 +475,7 @@ export async function updateLens(id: number, data: Partial<Lens>): Promise<Lens>
 
 /** Delete a lens; 409 `gear_in_use` unless `force` (see {@link deleteCamera}). */
 export async function deleteLens(id: number, force = false): Promise<void> {
-  const res = await fetch(`${apiBase()}/api/lenses/${id}${force ? "?force=true" : ""}`, {
+  const res = await apiFetch(`/api/lenses/${id}${force ? "?force=true" : ""}`, {
     method: "DELETE",
   })
   await assertOk(res, "Could not delete the lens.")
@@ -417,7 +484,7 @@ export async function deleteLens(id: number, force = false): Promise<void> {
 export async function uploadLensImage(id: number, file: File): Promise<Lens> {
   const formData = new FormData()
   formData.append("file", file)
-  const res = await fetch(`${apiBase()}/api/lenses/${id}/image`, {
+  const res = await apiFetch(`/api/lenses/${id}/image`, {
     method: "POST",
     body: formData,
   })
@@ -428,19 +495,19 @@ export async function uploadLensImage(id: number, file: File): Promise<Lens> {
 
 // Filmstocks API
 export async function getFilmstocks(): Promise<Filmstock[]> {
-  const res = await fetch(`${apiBase()}/api/filmstocks`, { cache: "no-store" })
+  const res = await apiFetch(`/api/filmstocks`, { cache: "no-store" })
   if (!res.ok) throw new Error("Failed to fetch filmstocks")
   return res.json()
 }
 
 export async function getFilmstock(id: number): Promise<Filmstock> {
-  const res = await fetch(`${apiBase()}/api/filmstocks/${id}`, { cache: "no-store" })
+  const res = await apiFetch(`/api/filmstocks/${id}`, { cache: "no-store" })
   if (!res.ok) throw new Error("Failed to fetch filmstock")
   return res.json()
 }
 
 export async function createFilmstock(data: Partial<Filmstock>): Promise<Filmstock> {
-  const res = await fetch(`${apiBase()}/api/filmstocks`, {
+  const res = await apiFetch(`/api/filmstocks`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
@@ -451,7 +518,7 @@ export async function createFilmstock(data: Partial<Filmstock>): Promise<Filmsto
 }
 
 export async function updateFilmstock(id: number, data: Partial<Filmstock>): Promise<Filmstock> {
-  const res = await fetch(`${apiBase()}/api/filmstocks/${id}`, {
+  const res = await apiFetch(`/api/filmstocks/${id}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
@@ -463,7 +530,7 @@ export async function updateFilmstock(id: number, data: Partial<Filmstock>): Pro
 
 /** Delete a film stock; 409 `gear_in_use` unless `force` (see {@link deleteCamera}). */
 export async function deleteFilmstock(id: number, force = false): Promise<void> {
-  const res = await fetch(`${apiBase()}/api/filmstocks/${id}${force ? "?force=true" : ""}`, {
+  const res = await apiFetch(`/api/filmstocks/${id}${force ? "?force=true" : ""}`, {
     method: "DELETE",
   })
   await assertOk(res, "Could not delete the film stock.")
@@ -472,7 +539,7 @@ export async function deleteFilmstock(id: number, force = false): Promise<void> 
 export async function uploadFilmstockImage(id: number, file: File): Promise<Filmstock> {
   const formData = new FormData()
   formData.append("file", file)
-  const res = await fetch(`${apiBase()}/api/filmstocks/${id}/image`, {
+  const res = await apiFetch(`/api/filmstocks/${id}/image`, {
     method: "POST",
     body: formData,
   })
@@ -489,7 +556,7 @@ export interface BulkImagePatch {
 }
 
 export async function bulkUpdateImages(ids: number[], patch: BulkImagePatch): Promise<Image[]> {
-  const res = await fetch(`${apiBase()}/api/images/bulk_update`, {
+  const res = await apiFetch(`/api/images/bulk_update`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ ids, ...patch }),
@@ -500,7 +567,7 @@ export async function bulkUpdateImages(ids: number[], patch: BulkImagePatch): Pr
 }
 
 export async function bulkDeleteImages(ids: number[], keepFiles = false): Promise<number> {
-  const res = await fetch(`${apiBase()}/api/images/bulk_delete`, {
+  const res = await apiFetch(`/api/images/bulk_delete`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ ids, keep_files: keepFiles }),
@@ -541,23 +608,29 @@ function uploadWithProgress(
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest()
     xhr.open("POST", backendUrl(path))
+    // `fetch` cannot report progress, so this path does not go through
+    // `apiFetch` and has to attach the session token itself (M3, R#26).
+    const token = readTokenCookie()
+    if (token) xhr.setRequestHeader("Authorization", `Bearer ${token}`)
     xhr.upload.onprogress = (event) => {
       if (event.lengthComputable) onProgress(event.loaded / event.total)
     }
     xhr.onerror = () => reject(new ApiError("network_error", "The upload could not reach the server.", 0))
     xhr.onabort = () => reject(new ApiError("aborted", "The upload was cancelled.", 0))
     xhr.onload = () => {
-      let body: any = null
+      let body: Record<string, unknown> | null = null
       try {
-        body = JSON.parse(xhr.responseText)
+        body = JSON.parse(xhr.responseText) as Record<string, unknown>
       } catch {
         // fall through to the status check
       }
-      if (xhr.status >= 400 || (body && typeof body.error === "string")) {
-        const structured = body?.error && typeof body.error === "object" ? body.error : null
+      const failure = body?.error
+      if (xhr.status >= 400 || typeof failure === "string") {
+        const structured =
+          failure && typeof failure === "object" ? (failure as { code?: string; message?: string }) : null
         reject(
           new ApiError(
-            structured?.code ?? (typeof body?.error === "string" ? body.error : "upload_failed"),
+            structured?.code ?? (typeof failure === "string" ? failure : "upload_failed"),
             structured?.message ?? "The server rejected this file.",
             xhr.status,
           ),
@@ -565,7 +638,7 @@ function uploadWithProgress(
         return
       }
       onProgress(1)
-      const images: Image[] = body?.images ?? (body?.image ? [body.image] : [])
+      const images: Image[] = (body?.images as Image[]) ?? (body?.image ? [body.image as Image] : [])
       resolve({ images })
     }
     xhr.send(formData)
@@ -611,3 +684,210 @@ export function uploadContactSheetFile(
   formData.append("film_roll_id", String(filmId))
   return uploadWithProgress("/api/images/upload", formData, onProgress)
 }
+
+// ---------------------------------------------------------------------------
+// M3: paginated, server-side filtered lists (R#20)
+//
+// The archive used to send every roll and every frame to the browser and filter
+// them in React. These call the same endpoints with `limit`, so the API answers
+// with a page and a total instead.
+// ---------------------------------------------------------------------------
+
+/** How many rolls or frames one "page" holds before "Load more" appears. */
+export const PAGE_SIZE = 24
+
+export interface FilmQuery {
+  q?: string
+  camera?: string
+  film_type?: string
+  camera_id?: number
+  film_stock_id?: number
+  from?: string
+  to?: string
+  limit?: number
+  offset?: number
+}
+
+export interface ImageQuery {
+  film_id?: number
+  type?: "scan" | "contact_sheet"
+  q?: string
+  unassigned?: boolean
+  storage_mode?: "managed" | "linked"
+  limit?: number
+  offset?: number
+}
+
+function queryString(params: Record<string, unknown>): string {
+  const search = new URLSearchParams()
+  for (const [key, value] of Object.entries(params)) {
+    if (value === undefined || value === null || value === "" || value === false) continue
+    search.set(key, String(value))
+  }
+  const rendered = search.toString()
+  return rendered ? `?${rendered}` : ""
+}
+
+/** One page of rolls, filtered in Postgres. */
+export async function getFilmsPage(query: FilmQuery = {}): Promise<Page<Film>> {
+  const res = await apiFetch(`/api/films${queryString({ limit: PAGE_SIZE, ...query })}`)
+  await assertOk(res, "Could not load the rolls.")
+  return res.json()
+}
+
+/** One page of frames, filtered in Postgres. */
+export async function getImagesPage(query: ImageQuery = {}): Promise<Page<Image>> {
+  const res = await apiFetch(`/api/images${queryString({ limit: PAGE_SIZE, ...query })}`)
+  await assertOk(res, "Could not load the frames.")
+  return res.json()
+}
+
+// ---------------------------------------------------------------------------
+// M3: system info, settings, library roots and the optional password
+// ---------------------------------------------------------------------------
+
+export interface WatchState {
+  enabled: boolean
+  interval_seconds: number | null
+  roots_total?: number
+  roots_watched?: number
+  last_scan_at?: string | null
+}
+
+export interface SystemInfo {
+  app: string
+  lan_ips: string[]
+  ui_url: string | null
+  ui_urls: string[]
+  ui_port: number
+  qr_url: string
+  data_dir: string
+  auth_required: boolean
+  counts: { rolls: number; frames: number }
+  watch: WatchState
+  server_time: string
+}
+
+export async function getSystemInfo(): Promise<SystemInfo> {
+  const res = await apiFetch("/api/system/info")
+  await assertOk(res, "Could not reach the archive.")
+  return res.json()
+}
+
+export interface Settings {
+  watch_enabled: boolean
+}
+
+export async function getSettings(): Promise<{ settings: Settings; watch: WatchState }> {
+  const res = await apiFetch("/api/system/settings")
+  await assertOk(res, "Could not load the settings.")
+  return res.json()
+}
+
+export async function updateSettings(patch: Partial<Settings>): Promise<{ settings: Settings; watch: WatchState }> {
+  const res = await apiFetch("/api/system/settings", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  })
+  await assertOk(res, "Could not save the settings.")
+  return res.json()
+}
+
+export interface LibraryRoot {
+  id: number
+  path: string
+  label: string | null
+  watch: boolean
+  last_scan_at: string | null
+  last_scan_summary: string | null
+  created_at: string | null
+  frame_count: number | null
+}
+
+export interface LibraryRoots {
+  roots: LibraryRoot[]
+  allowed_bases: string[]
+  /** False when LIBRARY_ROOTS_ALLOW is unset: the whole feature is switched off. */
+  enabled: boolean
+}
+
+export async function getLibraryRoots(): Promise<LibraryRoots> {
+  const res = await apiFetch("/api/library/roots")
+  await assertOk(res, "Could not load the library folders.")
+  return res.json()
+}
+
+export async function createLibraryRoot(data: {
+  path: string
+  label?: string
+  watch?: boolean
+}): Promise<LibraryRoot> {
+  const res = await apiFetch("/api/library/roots", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  })
+  await assertOk(res, "Could not register that folder.")
+  return unwrap<LibraryRoot>(await res.json(), "root", "Folder not found.")
+}
+
+export async function updateLibraryRoot(id: number, data: Partial<LibraryRoot>): Promise<LibraryRoot> {
+  const res = await apiFetch(`/api/library/roots/${id}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  })
+  await assertOk(res, "Could not save that folder.")
+  return unwrap<LibraryRoot>(await res.json(), "root", "Folder not found.")
+}
+
+export async function deleteLibraryRoot(id: number, forgetFrames = false): Promise<void> {
+  const res = await apiFetch(`/api/library/roots/${id}?forget_frames=${forgetFrames}`, { method: "DELETE" })
+  await assertOk(res, "Could not remove that folder.")
+}
+
+export interface ScanResult {
+  rolls_created: number
+  frames_added: number
+  frames_rehomed: number
+  frames_updated: number
+  frames_unchanged: number
+  files_skipped: number
+  roll_ids: number[]
+  summary: string
+}
+
+export async function scanLibraryRoot(id: number): Promise<ScanResult> {
+  const res = await apiFetch(`/api/library/roots/${id}/scan`, { method: "POST" })
+  await assertOk(res, "Could not scan that folder.")
+  return (await res.json()).result as ScanResult
+}
+
+/** Sign in with the shared password. The API also sets the cookie. */
+export async function login(password: string): Promise<{ auth_required: boolean; token: string | null }> {
+  const res = await apiFetch("/api/system/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ password }),
+  })
+  await assertOk(res, "Could not sign in.")
+  return res.json()
+}
+
+export async function logout(): Promise<void> {
+  await apiFetch("/api/system/logout", { method: "POST" })
+}
+
+/** Upload an export ZIP. `dryRun` reports what it would do and writes nothing. */
+export async function importArchive(file: File, dryRun: boolean): Promise<Record<string, unknown>> {
+  const form = new FormData()
+  form.append("file", file)
+  const res = await apiFetch(`/api/import?dry_run=${dryRun}`, { method: "POST", body: form })
+  await assertOk(res, "Could not read that export.")
+  return (await res.json()).report as Record<string, unknown>
+}
+
+/** Download links; the browser navigates to these, so they are plain URLs. */
+export const EXPORT_URL = "/api/export"
+export const EXPORT_CSV_URL = "/api/export/rolls.csv"
