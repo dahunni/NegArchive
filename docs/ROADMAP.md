@@ -18,17 +18,20 @@ Guiding decisions (see [NEGPY_INTEGRATION.md](NEGPY_INTEGRATION.md) for the reas
 
 ## M0 — Stop the bleeding (bugs that break shipped workflows)
 
-- [ ] Fix filmstock create/update on Postgres: change `expired` to a Boolean column via the first
-      Alembic migration (see M2), or coerce to int in the API as a stopgap. **R#1**
-- [ ] Proxy `/static/*` through Next (add a rewrite) and make *every* browser URL go through one
+- [x] Fix filmstock create/update on Postgres: `expired` is now a Boolean column, migrated in the
+      startup hook (Alembic still to come in M2), and the API coerces whatever the client sends. **R#1**
+- [x] Proxy `/static/*` through Next (add a rewrite) and make *every* browser URL go through one
       helper in `lib/api.ts`; delete the two local `API_BASE` constants. **R#2, R#3**
-- [ ] Remove the six legacy HTML routers and `Jinja2`; keep only `routers/api.py`. **R#4**
-- [ ] Make `image_assets.film_roll_id` nullable (migration) or make the UI require a film. **R#5, R#12**
-- [ ] Return the full object from `PUT /api/lenses/{id}` and `PUT /api/filmstocks/{id}`. **R#6**
-- [ ] Map the "None" select value to `null` in `film-form.tsx` before submit; also add a one-off
+- [x] Remove the six legacy HTML routers and `Jinja2`; keep only `routers/api.py`. **R#4**
+- [x] Make `image_assets.film_roll_id` nullable (startup `DROP NOT NULL` on Postgres) and let
+      `PUT /api/images/{id}` unassign a frame with `film_roll_id: null`. **R#5, R#12**
+- [x] Return the full object from `PUT /api/lenses/{id}` and `PUT /api/filmstocks/{id}`. **R#6**
+- [x] Map the "None" select value to `null` in `film-form.tsx` before submit; also add a one-off
       data fix that nulls existing `"None"` strings. **R#8**
-- [ ] Add `.dockerignore`; fix README ports; add a Postgres healthcheck to `depends_on`. **R#25**
-- [ ] Render `expired` as boolean in the API and fix the `{0 && …}` render. **R#22**
+- [x] Add `.dockerignore` (backend and frontend); README ports already matched compose; add a
+      Postgres healthcheck with `depends_on: condition: service_healthy`; drop the obsolete
+      compose `version:` key. **R#25**
+- [x] Render `expired` as boolean in the API and fix the `{0 && …}` render. **R#22**
 
 ## M1 — UI rework (high priority)
 
