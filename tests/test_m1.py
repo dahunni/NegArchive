@@ -55,6 +55,18 @@ def test_film_list_reports_zero_frames_for_an_empty_roll(client):
     listed = find_roll(client, roll["id"])
     assert listed["image_count"] == 0
     assert listed["cover_image_id"] is None
+    assert listed["cover_image_ids"] == []
+
+
+def test_film_list_returns_a_short_thumbnail_strip(client):
+    roll = make_roll(client)
+    frames = [upload_frame(client, roll["id"], frame_number=n) for n in range(1, 7)]
+
+    listed = find_roll(client, roll["id"])
+    assert listed["image_count"] == 6
+    # capped, so a 36-frame roll does not ship 36 ids per row
+    assert listed["cover_image_ids"] == [f["id"] for f in frames[:4]]
+    assert listed["cover_image_id"] == listed["cover_image_ids"][0]
 
 
 def test_film_list_counts_frames_and_picks_the_lowest_frame_as_cover(client):

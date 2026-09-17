@@ -36,7 +36,10 @@ router = APIRouter(prefix="/api", tags=["api"])
 CACHE_DIR = os.path.join("static", "cache")
 
 
-def film_to_dict(f: FilmRoll, image_count: Optional[int] = None, cover_image_id: Optional[int] = None):
+COVER_STRIP = 4  # thumbnails shown per row in the roll list
+
+
+def film_to_dict(f: FilmRoll, image_count: Optional[int] = None, cover_image_ids: Optional[List[int]] = None):
     return {
         "id": f.id,
         "title": f.title,
@@ -50,15 +53,20 @@ def film_to_dict(f: FilmRoll, image_count: Optional[int] = None, cover_image_id:
         "start_date": f.start_date.isoformat() if f.start_date else None,
         "end_date": f.end_date.isoformat() if f.end_date else None,
         "created_at": f.created_at.isoformat(),
-        # M1: the roll list shows a frame count and a thumbnail per row without
+        # M1: the roll list shows a frame count and a thumbnail strip per row without
         # fetching every roll's images (no N+1).
         "image_count": int(image_count or 0),
-        "cover_image_id": cover_image_id,
+        "cover_image_id": (cover_image_ids or [None])[0],
+        "cover_image_ids": list(cover_image_ids or []),
     }
 
 
-def roll_summaries(db: Session, film_ids: Optional[Iterable[int]] = None) -> Dict[int, Tuple[int, Optional[int]]]:
-    """``{film_roll_id: (scan count, cover image id)}`` in two cheap queries."""
+def roll_summaries(db: Session, film_ids: Optional[Iterable[int]] = None) -> Dict[int, Tuple[int, List[int]]]:
+    """``{film_roll_id: (scan count, first few image ids)}`` in two cheap queries.
+
+    Two queries for the whole list, not two per roll: the roll list renders a frame
+    count and a thumbnail strip without fetching anybody's images.
+    """
     ids = list(film_ids) if film_ids is not None else None
     if ids is not None and not ids:
         return {}
@@ -73,18 +81,18 @@ def roll_summaries(db: Session, film_ids: Optional[Iterable[int]] = None) -> Dic
         counts = counts.filter(ImageAsset.film_roll_id.in_(ids))
         covers = covers.filter(ImageAsset.film_roll_id.in_(ids))
 
-    summary: Dict[int, Tuple[int, Optional[int]]] = {
-        roll_id: (count, None) for roll_id, count in counts.group_by(ImageAsset.film_roll_id).all()
+    summary: Dict[int, Tuple[int, List[int]]] = {
+        roll_id: (count, []) for roll_id, count in counts.group_by(ImageAsset.film_roll_id).all()
     }
-    # First frame of each roll in display order: lowest frame number, then oldest row.
+    # First frames of each roll in display order: lowest frame number, then oldest row.
     for roll_id, image_id in covers.order_by(
         ImageAsset.film_roll_id.asc(),
         ImageAsset.frame_number.asc().nulls_last(),
         ImageAsset.id.asc(),
     ).all():
-        count, cover = summary.get(roll_id, (0, None))
-        if cover is None:
-            summary[roll_id] = (count, image_id)
+        count, strip = summary.setdefault(roll_id, (0, []))
+        if len(strip) < COVER_STRIP:
+            strip.append(image_id)
     return summary
 
 
@@ -177,7 +185,7 @@ def clean_name(value) -> Optional[str]:
 def list_films(db: Session = Depends(get_db)):
     films = db.query(FilmRoll).order_by(FilmRoll.created_at.desc()).all()
     summaries = roll_summaries(db)
-    return [film_to_dict(f, *summaries.get(f.id, (0, None))) for f in films]
+    return [film_to_dict(f, *summaries.get(f.id, (0, []))) for f in films]
 
 
 @router.get("/films/{film_id}")
@@ -201,7 +209,7 @@ def get_film(film_id: int, db: Session = Depends(get_db)):
         .all()
     )
     return {
-        "film": film_to_dict(f, len(scans), scans[0].id if scans else None),
+        "film": film_to_dict(f, len(scans), [i.id for i in scans[:COVER_STRIP]]),
         "images": [image_to_dict(i) for i in scans],
         "contact_sheets": [image_to_dict(i) for i in contact_sheets],
     }
@@ -260,8 +268,8 @@ async def update_film(film_id: int, request: Request, db: Session = Depends(get_
     f.start_date = start
     f.end_date = end
     db.commit()
-    count, cover = roll_summaries(db, [f.id]).get(f.id, (0, None))
-    return {"ok": True, "film": film_to_dict(f, count, cover)}
+    count, strip = roll_summaries(db, [f.id]).get(f.id, (0, []))
+    return {"ok": True, "film": film_to_dict(f, count, strip)}
 
 
 @router.delete("/films/{film_id}")
