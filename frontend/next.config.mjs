@@ -1,10 +1,12 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   // Allow large client request bodies to pass through middleware/rewrites (proxy)
-  // Default is 10MB; set to 1GB for bulk image uploads.
+  // Default is 10MB; set to 1GB for bulk image uploads. This is a real Next 16 key
+  // (`middlewareClientMaxBodySize` in next/dist/server/config-schema), not a leftover.
   middlewareClientMaxBodySize: 1024 * 1024 * 1024,
   typescript: {
-    ignoreBuildErrors: true,
+    // M3/R#30: type errors fail the build. `npx tsc --noEmit` is also a CI step.
+    ignoreBuildErrors: false,
   },
   images: {
     unoptimized: true,
