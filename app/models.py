@@ -111,6 +111,10 @@ class FilmRoll(Base):
     folder: Mapped[str | None] = mapped_column(String(200))
     archive_serial: Mapped[str | None] = mapped_column(String(200))
 
+    #: M3: the folder this roll was imported from by reference, so a rescan knows
+    #: which roll a directory already maps to. NULL for rolls created in the UI.
+    source_dir: Mapped[str | None] = mapped_column(String(1000), unique=True, index=True)
+
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     images: Mapped[list["ImageAsset"]] = relationship(
@@ -153,9 +157,50 @@ class ImageAsset(Base):
     storage_mode: Mapped[str] = mapped_column(
         String(20), nullable=False, server_default="managed", default="managed"
     )
+    #: M3: absolute path of a linked original. NULL for managed files, which live
+    #: under DATA_DIR and are found through `path`.
+    source_path: Mapped[str | None] = mapped_column(String(1000), index=True)
+    #: M3: NegPy-compatible sampled SHA-256 (app/services/hashing.py). Indexed,
+    #: because rescans and imports look files up by it.
+    content_hash: Mapped[str | None] = mapped_column(String(64), index=True)
     frame_number: Mapped[int | None] = mapped_column(Integer, index=True)
     notes: Mapped[str | None] = mapped_column(Text)
     capture_date: Mapped[date | None] = mapped_column(Date)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     film_roll: Mapped["FilmRoll | None"] = relationship("FilmRoll", back_populates="images")
+
+
+class LibraryRoot(Base):
+    """A folder registered for import by reference and, optionally, watching (M3).
+
+    One row per tree the user pointed NegArchive at. Each direct subfolder of it
+    becomes a roll; the files inside become linked frames. The path is validated
+    against ``LIBRARY_ROOTS_ALLOW`` before it is ever stored.
+    """
+
+    __tablename__ = "library_roots"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    path: Mapped[str] = mapped_column(String(1000), unique=True, index=True)
+    label: Mapped[str | None] = mapped_column(String(200))
+    #: Included in the background poller's sweep.
+    watch: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    last_scan_at: Mapped[datetime | None] = mapped_column(DateTime)
+    #: Human-readable result of the last scan, shown in Settings.
+    last_scan_summary: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class Setting(Base):
+    """Key/value settings that outlive a container restart (M3).
+
+    Deliberately schemaless: the archive is single-user and the settings page is
+    a handful of toggles. Anything that needs validation gets its own column.
+    """
+
+    __tablename__ = "settings"
+
+    key: Mapped[str] = mapped_column(String(100), primary_key=True)
+    value: Mapped[str | None] = mapped_column(Text)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

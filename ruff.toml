@@ -1,0 +1,49 @@
+# Ruff configuration (roadmap M3: a lint step in CI, with its config checked in).
+#
+# Deliberately modest. The point of linting a small archive app is to catch the
+# things that actually bite — an unused import that hides a missing dependency, a
+# name that does not exist, a mutable default — not to re-format a working
+# codebase or to argue about line length. `ruff check` must be clean on `main`,
+# so every rule enabled here is one we are prepared to fix rather than ignore.
+
+line-length = 120
+target-version = "py311"
+
+exclude = [
+    ".venv",
+    "frontend",
+    "static",
+    # Alembic writes these; they are a record of what ran, not code we maintain.
+    "alembic/versions/*.mako",
+]
+
+[lint]
+select = [
+    "E",    # pycodestyle errors
+    "F",    # pyflakes: undefined names, unused imports, f-strings without placeholders
+    "W",    # pycodestyle warnings
+    "I",    # import sorting
+    "B",    # flake8-bugbear: mutable defaults, except-in-loop, …
+    "C4",   # comprehensions
+]
+# `UP` (pyupgrade) is deliberately off. It wants every `Optional[int]` rewritten
+# as `int | None` — around a hundred edits across code M2 has just rewritten, for
+# no behavioural gain. Worth doing as its own commit some quiet afternoon, not as
+# a side effect of a milestone.
+ignore = [
+    "E501",  # line length is handled by the formatter, not by failing the build
+    "B008",  # FastAPI's whole dependency system is `Depends()` in a default
+    "E741",  # `l` for a lens row, throughout the catalog handlers (M2 renames them)
+]
+
+[lint.per-file-ignores]
+# The env script runs as a script: alembic puts the imports where it needs them.
+"alembic/env.py" = ["E402"]
+# Tests say `assert client.get(...)` and read better with long literal payloads.
+"tests/*" = ["E402"]
+# `scripts/` are entry points: they put the repository root on sys.path before
+# importing the application, which has to happen after the imports at the top.
+"scripts/*.py" = ["E402"]
+
+[lint.isort]
+known-first-party = ["app"]

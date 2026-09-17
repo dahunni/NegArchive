@@ -18,9 +18,10 @@ build/
 *.egg-info/
 .eggs/
 
-# Env files and local configs
+# Env files and local configs. .env.example IS checked in.
 .env
 .env.*
+!.env.example
 
 # Databases
 *.sqlite3
@@ -46,3 +47,8 @@ frontend/tsconfig.tsbuildinfo
 
 # Preview thumbnail cache (regenerated on demand)
 static/cache/
+
+# M3: one bind-mounted data directory holds the whole archive — the Postgres
+# cluster, the uploads, the catalog art, the preview cache and the backups.
+# Never commit any of it; `DATA_DIR` can point somewhere else entirely.
+/data/

@@ -10,14 +10,14 @@ from typing import Dict, Iterable, List, Optional, Tuple
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from PIL import Image as PILImage
 from PIL import ImageFile as PILImageFile
 from sqlalchemy import func, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from .. import schemas
+from .. import paths, schemas
 from ..db import get_db
 from ..errors import (
     ApiError,
@@ -39,16 +39,28 @@ from ..models import (
     Lens,
 )
 from ..seed import seed_catalog
+from ..services.hashing import safe_content_hash
 
 router = APIRouter(prefix="/api", tags=["api"])
 
 # Disk thumbnail cache for /preview (pulled forward from roadmap M3 because the new
-# roll list and frame grid request a preview per frame). Git-ignored.
-CACHE_DIR = os.path.join("static", "cache")
+# roll list and frame grid request a preview per frame). Git-ignored, and safe to
+# delete at any time.
+#
+# M3 moved all of this under DATA_DIR (see app/paths.py). The *stored* paths are
+# unchanged — `static/uploads/scans/ab12.jpg` is still both the /static URL and the
+# value in the database — only the directory behind them left the source tree, so
+# `_abs()` below is now the single place that maps one to the other.
 
-#: Everything NegArchive itself stores lives under here. The sweep walks it and the
-#: delete path refuses to touch a file outside it.
-UPLOAD_ROOT = os.path.join("static", "uploads")
+
+def cache_dir() -> str:
+    return str(paths.cache_dir())
+
+
+def uploads_root() -> str:
+    """Everything NegArchive itself stores lives under here. The sweep walks it and
+    the delete path refuses to touch a file outside it."""
+    return str(paths.uploads_dir())
 
 COVER_STRIP = 4  # thumbnails shown per row in the roll list
 
@@ -190,9 +202,14 @@ def frames_in_order(query):
 
 
 def image_to_dict(i: ImageAsset) -> dict:
-    # R#13: the public URL follows the file, not the record's current type — changing
-    # a scan into a contact sheet does not move the file.
-    public_url = "/" + i.path.replace(os.sep, "/").lstrip("/")
+    storage_mode = i.storage_mode or "managed"
+    if storage_mode == "linked":
+        # M3: a linked file lives outside /static on purpose, so the API serves it.
+        public_url = f"/api/images/{i.id}/download"
+    else:
+        # R#13: the public URL follows the file, not the record's current type —
+        # changing a scan into a contact sheet does not move the file.
+        public_url = "/" + i.path.replace(os.sep, "/").lstrip("/")
     return {
         "id": i.id,
         "film_roll_id": i.film_roll_id,
@@ -200,7 +217,11 @@ def image_to_dict(i: ImageAsset) -> dict:
         "path": i.path,
         "url": public_url,
         "original_filename": i.original_filename,
-        "storage_mode": i.storage_mode or "managed",
+        "storage_mode": storage_mode,
+        # M3, import by reference: where a linked original really is, and the
+        # sampled hash that identifies it across a move or a copy.
+        "source_path": i.source_path,
+        "content_hash": i.content_hash,
         "frame_number": i.frame_number,
         "notes": i.notes,
         "capture_date": i.capture_date.isoformat() if i.capture_date else None,
@@ -355,12 +376,23 @@ def _rolls_using(db: Session, prefix: str, entry) -> int:
 
 
 def _abs(path: str) -> str:
-    return path if os.path.isabs(path) else os.path.join(os.getcwd(), path)
+    """Absolute location of a stored path.
+
+    M3: `static/...` resolves under DATA_DIR, an absolute path (a linked original,
+    import-by-reference) is returned untouched, and a file still sitting in the
+    pre-M3 in-tree location is found there — so an archive from M0/M1 keeps
+    rendering without a migration step. See app/paths.py.
+    """
+    return str(paths.resolve(path))
 
 
 def _inside_uploads(abs_path: str) -> bool:
-    root = os.path.abspath(_abs(UPLOAD_ROOT))
-    return os.path.commonpath([os.path.abspath(abs_path), root]) == root
+    root = os.path.abspath(uploads_root())
+    try:
+        return os.path.commonpath([os.path.abspath(abs_path), root]) == root
+    except ValueError:
+        # Different drives on Windows, or a relative/absolute mix: not ours.
+        return False
 
 
 def delete_asset_file(image: ImageAsset) -> bool:
@@ -424,7 +456,8 @@ def store_upload(file: UploadFile, subdir: str) -> Tuple[str, str]:
             "file",
         )
 
-    os.makedirs(os.path.join("static", subdir), exist_ok=True)
+    # The stored value keeps its `static/` prefix; the bytes go under DATA_DIR.
+    os.makedirs(os.path.join(str(paths.data_dir()), subdir), exist_ok=True)
     rel_path = os.path.join("static", subdir, f"{uuid4().hex}{ext}")
     abs_path = _abs(rel_path)
     limit = max_upload_bytes()
@@ -472,7 +505,11 @@ def _new_image(
     capture_date=None,
 ) -> ImageAsset:
     """One place builds an ImageAsset, so every path keeps the filename and the
-    frame number parsed from it (R#7, R#24)."""
+    frame number parsed from it (R#7, R#24), and every file gets its content hash.
+
+    The hash is M3's: it is what lets an import skip a file the archive already
+    has, and what ties a NegArchive frame to a NegPy edit of the same scan. It
+    samples ~6 MiB however large the file is (app/services/hashing.py)."""
     if frame_number is None and image_type == ImageType.scan:
         frame_number = frame_number_from_filename(original_filename)
     return ImageAsset(
@@ -481,6 +518,7 @@ def _new_image(
         path=rel_path,
         original_filename=original_filename,
         storage_mode="managed",
+        content_hash=safe_content_hash(_abs(rel_path)),
         frame_number=frame_number,
         notes=notes,
         capture_date=capture_date,
@@ -492,11 +530,143 @@ def _new_image(
 # ---------------------------
 
 
-@router.get("/films", response_model=List[schemas.FilmRollOut])
-def list_films(db: Session = Depends(get_db)):
-    films = db.query(FilmRoll).order_by(FilmRoll.created_at.desc()).all()
-    summaries = roll_summaries(db)
-    return [film_to_dict(f, *summaries.get(f.id, (0, []))) for f in films]
+# ---------------------------------------------------------------------------
+# Pagination and server-side search (roadmap M3, R#20)
+#
+# A 500-roll archive used to ship every roll and every frame to the browser and
+# filter them in React. These endpoints do it in Postgres instead.
+#
+# The response shape is backwards compatible on purpose: **without** `limit` the
+# endpoints still answer with a bare JSON array, so every existing caller (and
+# the M0/M1/M2 tests) keeps working. **With** `limit` they answer an envelope
+# carrying the total, which is what a "load more" button needs:
+#
+#     {"items": [...], "total": 412, "limit": 50, "offset": 100, "has_more": true}
+#
+# `X-Total-Count` carries the total in both shapes.
+# ---------------------------------------------------------------------------
+
+#: Refuse to serve more than this in one page, whatever the client asks for.
+MAX_PAGE = 500
+
+
+def _page_bounds(limit: Optional[int], offset: Optional[int]) -> Tuple[Optional[int], int]:
+    if limit is None:
+        return None, max(0, int(offset or 0))
+    return max(1, min(int(limit), MAX_PAGE)), max(0, int(offset or 0))
+
+
+def _respond_page(items: List[dict], total: int, limit: Optional[int], offset: int):
+    headers = {"X-Total-Count": str(total)}
+    if limit is None:
+        return JSONResponse(items, headers=headers)
+    return JSONResponse(
+        {
+            "items": items,
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+            "has_more": offset + len(items) < total,
+        },
+        headers=headers,
+    )
+
+
+@router.get("/films", response_model=None)
+def list_films(
+    q: Optional[str] = None,
+    camera_id: Optional[int] = None,
+    film_stock_id: Optional[int] = None,
+    camera: Optional[str] = None,
+    film_type: Optional[str] = None,
+    from_: Optional[str] = Query(None, alias="from"),
+    to: Optional[str] = None,
+    limit: Optional[int] = None,
+    offset: Optional[int] = None,
+    db: Session = Depends(get_db),
+):
+    """The roll list, filtered and paginated in the database.
+
+    * ``q``      — words that must all appear somewhere in the roll (title, notes,
+                   serial, folder, building, camera, lens, film). Case-insensitive.
+    * ``camera_id`` / ``film_stock_id`` — catalog ids (R#14). The deprecated
+      ``camera`` / ``film_type`` name filters still work for older clients, and
+      match a roll by either its id's catalog name or its legacy name column.
+    * ``from`` / ``to`` — ISO dates. A roll matches when its shooting range
+      *overlaps* the filter range, which is what "shot in August" means for a roll
+      that ran from July to September.
+    """
+    try:
+        start = parse_date(from_, "from")
+        end = parse_date(to, "to")
+    except ApiError as exc:
+        return from_exc(exc)
+
+    query = db.query(FilmRoll)
+
+    for term in (q or "").split():
+        pattern = f"%{term.lower()}%"
+        query = query.filter(
+            or_(
+                func.lower(func.coalesce(FilmRoll.title, "")).like(pattern),
+                func.lower(func.coalesce(FilmRoll.notes, "")).like(pattern),
+                func.lower(func.coalesce(FilmRoll.archive_serial, "")).like(pattern),
+                func.lower(func.coalesce(FilmRoll.folder, "")).like(pattern),
+                func.lower(func.coalesce(FilmRoll.building, "")).like(pattern),
+                func.lower(func.coalesce(FilmRoll.camera, "")).like(pattern),
+                func.lower(func.coalesce(FilmRoll.lens, "")).like(pattern),
+                func.lower(func.coalesce(FilmRoll.film_type, "")).like(pattern),
+                FilmRoll.camera_id.in_(
+                    db.query(Camera.id).filter(func.lower(Camera.name).like(pattern))
+                ),
+                FilmRoll.lens_id.in_(
+                    db.query(Lens.id).filter(func.lower(Lens.name).like(pattern))
+                ),
+                FilmRoll.film_stock_id.in_(
+                    db.query(FilmStock.id).filter(func.lower(FilmStock.name).like(pattern))
+                ),
+            )
+        )
+
+    if camera_id is not None:
+        query = query.filter(FilmRoll.camera_id == camera_id)
+    if film_stock_id is not None:
+        query = query.filter(FilmRoll.film_stock_id == film_stock_id)
+    # The by-name filters are the pre-M2 spelling: match the catalog entry the roll
+    # points at, or the legacy name column for a roll that has no id yet.
+    if camera:
+        query = query.filter(
+            or_(
+                FilmRoll.camera == camera,
+                FilmRoll.camera_id.in_(db.query(Camera.id).filter(Camera.name == camera)),
+            )
+        )
+    if film_type:
+        query = query.filter(
+            or_(
+                FilmRoll.film_type == film_type,
+                FilmRoll.film_stock_id.in_(
+                    db.query(FilmStock.id).filter(FilmStock.name == film_type)
+                ),
+            )
+        )
+
+    # Overlap: the roll ended on or after `from`, and started on or before `to`.
+    if start is not None:
+        query = query.filter(func.coalesce(FilmRoll.end_date, FilmRoll.start_date) >= start)
+    if end is not None:
+        query = query.filter(func.coalesce(FilmRoll.start_date, FilmRoll.end_date) <= end)
+
+    page_limit, page_offset = _page_bounds(limit, offset)
+    total = query.order_by(None).count()
+    query = query.order_by(FilmRoll.created_at.desc(), FilmRoll.id.desc()).offset(page_offset)
+    if page_limit is not None:
+        query = query.limit(page_limit)
+    films = query.all()
+
+    summaries = roll_summaries(db, [f.id for f in films])
+    items = [film_to_dict(f, *summaries.get(f.id, (0, []))) for f in films]
+    return _respond_page(items, total, page_limit, page_offset)
 
 
 @router.get("/films/{film_id}", response_model=schemas.FilmDetailOut, responses={404: {"model": schemas.ErrorOut}})
@@ -613,25 +783,54 @@ def delete_film(
 # ---------------------------
 
 
-@router.get("/images", response_model=List[schemas.ImageOut])
+@router.get("/images", response_model=None)
 def list_images(
     film_id: Optional[int] = None,
     type: Optional[str] = None,
+    q: Optional[str] = None,
+    unassigned: Optional[bool] = None,
+    storage_mode: Optional[str] = None,
+    limit: Optional[int] = None,
+    offset: Optional[int] = None,
     db: Session = Depends(get_db),
 ):
-    q = db.query(ImageAsset)
+    """Every frame, filtered and paginated (roadmap M3, R#20).
+
+    ``unassigned=true`` is the "not in a roll yet" pile the frames page shows;
+    ``q`` searches the note and the original filename.
+    """
+    query = db.query(ImageAsset)
     if film_id:
-        q = q.filter(ImageAsset.film_roll_id == film_id)
+        query = query.filter(ImageAsset.film_roll_id == film_id)
+    if unassigned:
+        query = query.filter(ImageAsset.film_roll_id.is_(None))
     if type:
         t = type.lower().strip()
         if t == "scan":
-            q = q.filter(ImageAsset.type == ImageType.scan)
+            query = query.filter(ImageAsset.type == ImageType.scan)
         elif t in {"contact", "contact_sheet", "contact-sheet"}:
-            q = q.filter(ImageAsset.type == ImageType.contact_sheet)
+            query = query.filter(ImageAsset.type == ImageType.contact_sheet)
         # else: ignore invalid type filter, return all
-    # R#24: frame order everywhere, not insertion order.
-    items = frames_in_order(q).all()
-    return [image_to_dict(i) for i in items]
+    if storage_mode in {"managed", "linked"}:
+        query = query.filter(ImageAsset.storage_mode == storage_mode)
+    for term in (q or "").split():
+        pattern = f"%{term.lower()}%"
+        query = query.filter(
+            or_(
+                func.lower(func.coalesce(ImageAsset.notes, "")).like(pattern),
+                func.lower(func.coalesce(ImageAsset.original_filename, "")).like(pattern),
+            )
+        )
+
+    page_limit, page_offset = _page_bounds(limit, offset)
+    total = query.order_by(None).count()
+    # R#24: frame order everywhere, not insertion order. Across rolls, group by
+    # roll first so a page is not a shuffle of every roll's frame 1.
+    ordered = frames_in_order(query.order_by(ImageAsset.film_roll_id.asc().nulls_first()))
+    ordered = ordered.offset(page_offset)
+    if page_limit is not None:
+        ordered = ordered.limit(page_limit)
+    return _respond_page([image_to_dict(i) for i in ordered.all()], total, page_limit, page_offset)
 
 
 @router.get(
@@ -648,19 +847,19 @@ def get_image(image_id: int, db: Session = Depends(get_db)):
 
 def _cache_file(image_id: int, width: int, mtime_ns: int) -> str:
     """Cache file for one rendered preview, keyed by image id + width + source mtime."""
-    return os.path.join(CACHE_DIR, f"{image_id}_{width}_{mtime_ns}.jpg")
+    return os.path.join(cache_dir(), f"{image_id}_{width}_{mtime_ns}.jpg")
 
 
 def _write_cache(cache_path: str, payload: bytes) -> None:
     try:
-        os.makedirs(CACHE_DIR, exist_ok=True)
+        os.makedirs(cache_dir(), exist_ok=True)
         tmp = f"{cache_path}.{uuid4().hex}.tmp"
         with open(tmp, "wb") as out:
             out.write(payload)
         os.replace(tmp, cache_path)  # atomic: readers never see a half-written file
         # Drop older renderings of the same image at the same width.
         stem = os.path.basename(cache_path).rsplit("_", 1)[0]
-        for stale in glob.glob(os.path.join(CACHE_DIR, f"{stem}_*.jpg")):
+        for stale in glob.glob(os.path.join(cache_dir(), f"{stem}_*.jpg")):
             if os.path.abspath(stale) != os.path.abspath(cache_path):
                 try:
                     os.remove(stale)
@@ -672,7 +871,7 @@ def _write_cache(cache_path: str, payload: bytes) -> None:
 
 
 def drop_cached_previews(image_id: int) -> None:
-    for stale in glob.glob(os.path.join(CACHE_DIR, f"{image_id}_*.jpg")):
+    for stale in glob.glob(os.path.join(cache_dir(), f"{image_id}_*.jpg")):
         try:
             os.remove(stale)
         except OSError:
@@ -1077,7 +1276,7 @@ def create_contact_sheet(
     for idx, t in enumerate(thumbs):
         sheet.paste(t, ((idx % columns) * thumb_size, (idx // columns) * thumb_size))
 
-    os.makedirs(os.path.join("static", "uploads", "contact_sheets"), exist_ok=True)
+    os.makedirs(os.path.join(uploads_root(), "contact_sheets"), exist_ok=True)
     rel_path = os.path.join("static", "uploads", "contact_sheets", f"{uuid4().hex}.jpg")
     sheet.save(_abs(rel_path), format="JPEG", quality=90)
 
@@ -1157,7 +1356,7 @@ def bulk_upload_zip(film_id: int, file: UploadFile = File(...), db: Session = De
         except Exception:
             return error_response("invalid_zip", "That file is not a readable ZIP archive.", 400, "file")
 
-        os.makedirs(os.path.join("static", "uploads", "scans"), exist_ok=True)
+        os.makedirs(os.path.join(uploads_root(), "scans"), exist_ok=True)
         created: List[ImageAsset] = []
         skipped: List[str] = []
 
@@ -1561,14 +1760,18 @@ def sweep_orphans(
             known.add(os.path.abspath(_abs(path)))
 
     orphans: List[str] = []
-    root = _abs(UPLOAD_ROOT)
-    for folder, _, names in os.walk(root):
+    data_root = os.path.abspath(str(paths.data_dir()))
+    for folder, _, names in os.walk(uploads_root()):
         for name in names:
             if name.startswith("."):
                 continue
             absolute = os.path.abspath(os.path.join(folder, name))
             if absolute not in known:
-                orphans.append(os.path.relpath(absolute, os.getcwd()))
+                # Report the *stored* form (`static/uploads/...`), so an orphan
+                # reads the same as the `path` of any frame beside it — DATA_DIR
+                # may be anywhere, and a path relative to the process's working
+                # directory would be meaningless to whoever reads the report.
+                orphans.append(paths.public_path(os.path.relpath(absolute, data_root)))
 
     missing = [
         {

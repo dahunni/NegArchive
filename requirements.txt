@@ -10,3 +10,6 @@ Pillow==11.0.0
 numpy==2.1.3
 opencv-python-headless==4.10.0.84
 python-dotenv==1.0.1
+# M3: the LAN QR code, rendered server-side as SVG. Pure Python, no C extension,
+# no network access, ~60 kB.
+segno==1.6.1
