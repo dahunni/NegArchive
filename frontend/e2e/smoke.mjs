@@ -21,6 +21,8 @@ const BASE_URL = process.env.BASE_URL || "http://localhost:3010"
 const SHOT_DIR = process.env.SCREENSHOT_DIR || ""
 const DESKTOP = { width: 1440, height: 900 }
 const MOBILE = { width: 375, height: 812 }
+/** Debounce (250 ms) plus a round trip to the API, with room to spare. */
+const FILTER_MS = 900
 
 const failures = []
 const notes = []
@@ -151,14 +153,15 @@ async function main() {
   )
   await shot(page, 1, "roll list")
 
-  // filters
+  // filters. M3 moved the filtering into Postgres, so this is a debounced round
+  // trip to the API rather than an array filter: give it time to come back.
   await page.getByTestId("roll-search").fill("harbour")
-  await page.waitForTimeout(150)
-  check(
-    "the search filter narrows the list",
-    (await page.getByTestId("roll-row").count()) < rollsBefore,
-  )
+  await page.waitForTimeout(FILTER_MS)
+  const narrowed = await page.getByTestId("roll-row").count()
+  check("the search filter narrows the list", narrowed < rollsBefore, `${narrowed} of ${rollsBefore}`)
+  check("the search is server-side", narrowed > 0, "seeded archive has 'harbour' rolls")
   await page.getByTestId("roll-search").fill("")
+  await page.waitForTimeout(FILTER_MS)
 
   // /films renders the same page
   await page.goto(`${BASE_URL}/films`, { waitUntil: "load" })
@@ -204,6 +207,10 @@ async function main() {
   await page.getByRole("button", { name: "Open roll" }).click()
   await page.waitForLoadState("load")
   check("the wizard lands on the new roll", await visible(page.getByText(title).first()))
+  // Wait for the first cell rather than counting straight after `load`: the grid
+  // is rendered from a server round trip, and on a cold service worker the
+  // navigation can paint before it comes back.
+  await visible(page.getByTestId("frame-cell"))
   check(
     "the uploaded frames are in the grid",
     (await page.getByTestId("frame-cell").count()) === 2,
@@ -355,6 +362,92 @@ async function main() {
   await page.goto(`${BASE_URL}/images`, { waitUntil: "load" })
   check("the frames page lists frames", await visible(page.getByTestId("frame-grid")))
 
+  // ---------------------------------------------------------------- M3: paging
+  await page.goto(BASE_URL, { waitUntil: "load" })
+  const pagedRolls = await page.evaluate(async () => {
+    const res = await fetch("/api/films?limit=2")
+    return res.json()
+  })
+  check("the roll list is paginated", typeof pagedRolls.total === "number", JSON.stringify(pagedRolls).slice(0, 120))
+  check("a page is capped at the limit", (pagedRolls.items || []).length <= 2)
+  check(
+    "an unpaged request is still a bare array",
+    Array.isArray(await page.evaluate(() => fetch("/api/films").then((r) => r.json()))),
+  )
+
+  // ---------------------------------------------------------------- M3: LAN footer
+  check("the footer shows the LAN address", await visible(page.getByTestId("lan-footer")))
+  const lanUrl = await page.getByTestId("lan-url").textContent()
+  check("the LAN address looks like a URL", /^https?:\/\/.+:\d+$/.test((lanUrl || "").trim()), lanUrl ?? "none")
+  await page.getByTestId("lan-qr-toggle").click()
+  check("the QR code appears", await visible(page.getByTestId("lan-qr")))
+  const qrOk = await page.evaluate(async () => {
+    const res = await fetch("/api/system/qr.svg")
+    const body = await res.text()
+    return res.ok && body.includes("<svg") && body.includes("currentColor")
+  })
+  check("the QR code is a themed SVG from the backend", qrOk)
+
+  // ---------------------------------------------------------------- M3: settings
+  await page.goto(`${BASE_URL}/settings`, { waitUntil: "load" })
+  check("the settings page renders", await visible(page.getByTestId("settings")))
+  check("the watch folder toggle is there", await visible(page.getByTestId("watch-toggle")))
+  check("the watch readout is there", await visible(page.getByTestId("watch-readout")))
+  check("the export links are there", await visible(page.getByTestId("export-zip")))
+  const csvOk = await page.evaluate(async () => {
+    const res = await fetch("/api/export/rolls.csv")
+    const body = await res.text()
+    return res.ok && body.startsWith("id,archive_serial,title,camera")
+  })
+  check("the roll CSV downloads", csvOk)
+  await shot(page, 9, "settings")
+
+  // ---------------------------------------------------------------- M3: PWA
+  await page.goto(BASE_URL, { waitUntil: "load" })
+  const manifestHref = await page.getAttribute('link[rel="manifest"]', "href")
+  check("the page links a manifest", manifestHref === "/manifest.webmanifest", manifestHref ?? "none")
+
+  const manifest = await page.evaluate(async () => {
+    const res = await fetch("/manifest.webmanifest")
+    return res.ok ? res.json() : null
+  })
+  check("the manifest is served and parses", manifest !== null)
+  check("the manifest is installable", manifest?.display === "standalone" && Boolean(manifest?.start_url))
+  check(
+    "the manifest has a 512px and a maskable icon",
+    (manifest?.icons || []).some((i) => i.sizes === "512x512") &&
+      (manifest?.icons || []).some((i) => (i.purpose || "").includes("maskable")),
+  )
+  const iconsOk = await page.evaluate(async (icons) => {
+    for (const icon of icons) {
+      const res = await fetch(icon.src)
+      if (!res.ok) return false
+    }
+    return true
+  }, manifest?.icons || [])
+  check("every manifest icon is served", iconsOk)
+
+  const swRegistered = await page.evaluate(async () => {
+    if (!("serviceWorker" in navigator)) return "unsupported"
+    const registration = await navigator.serviceWorker.getRegistration("/")
+    return registration ? registration.scope : "none"
+  })
+  check("the service worker registers at the root scope", String(swRegistered).endsWith("/"), String(swRegistered))
+
+  const swCached = await page.evaluate(async () => {
+    // Give the worker a moment to finish installing and populating the shell.
+    await new Promise((resolve) => setTimeout(resolve, 1500))
+    const names = await caches.keys()
+    if (names.length === 0) return { names, shell: false }
+    let shell = false
+    for (const name of names) {
+      const cache = await caches.open(name)
+      if (await cache.match("/")) shell = true
+    }
+    return { names, shell }
+  })
+  check("the service worker caches the app shell", swCached.shell, JSON.stringify(swCached.names))
+
   // ---------------------------------------------------------------- dark mode
   await page.getByTestId("theme-toggle").click()
   await page.waitForTimeout(400)
@@ -378,7 +471,7 @@ async function main() {
   // screenshot run does not show this script's leftovers.
   await page.goto(BASE_URL, { waitUntil: "load" })
   await page.getByTestId("roll-search").fill(title)
-  await page.waitForTimeout(300)
+  await page.waitForTimeout(FILTER_MS)
   check(
     "deleting a roll asks first",
     await clickUntil(page.getByLabel(`Delete ${title}`), page.getByRole("alertdialog")),
