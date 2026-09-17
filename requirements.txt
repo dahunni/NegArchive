@@ -13,3 +13,5 @@ python-dotenv==1.0.1
 # M3: the LAN QR code, rendered server-side as SVG. Pure Python, no C extension,
 # no network access, ~60 kB.
 segno==1.6.1
+# M4: Code128 barcodes for labels, rendered server-side as SVG. Pure Python.
+python-barcode==0.15.1

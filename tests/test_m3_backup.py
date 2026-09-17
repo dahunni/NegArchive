@@ -87,6 +87,10 @@ def test_every_table_is_in_the_export(client):
         "image_assets",
         "library_roots",
         "settings",
+        # M4
+        "sleeve_layouts",
+        "locations",
+        "location_moves",
     }
 
 

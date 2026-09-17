@@ -17,7 +17,7 @@ from alembic import command
 from . import auth, paths
 from .db import SessionLocal, engine
 from .errors import ApiError, from_exc, validation_error_response
-from .routers import api, backup, library, system
+from .routers import api, backup, library, locations, scan, system
 from .seed import seed_catalog
 from .services import network, watcher
 
@@ -197,3 +197,5 @@ app.include_router(api.router)
 app.include_router(library.router)
 app.include_router(backup.router)
 app.include_router(system.router)
+app.include_router(locations.router)
+app.include_router(scan.router)

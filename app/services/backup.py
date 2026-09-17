@@ -44,7 +44,10 @@ from ..models import (
     ImageType,
     Lens,
     LibraryRoot,
+    Location,
+    LocationMove,
     Setting,
+    SleeveLayout,
 )
 
 #: Bumped when the shape of ``export.json`` changes incompatibly.
@@ -89,6 +92,10 @@ def table_payload(db: Session) -> Dict[str, Any]:
             "image_assets": _rows(db, ImageAsset),
             "library_roots": _rows(db, LibraryRoot),
             "settings": _rows(db, Setting),
+            # M4
+            "sleeve_layouts": _rows(db, SleeveLayout),
+            "locations": _rows(db, Location),
+            "location_moves": _rows(db, LocationMove),
         },
     }
 
@@ -211,12 +218,17 @@ CSV_COLUMNS = [
     "frame_count",
     "notes",
     "created_at",
+    # M4 (appended, so older column positions do not shift)
+    "location",
+    "status",
 ]
 
 
 def rolls_csv(db: Session) -> str:
     """One line per roll, the columns you would actually put in a binder index."""
     from sqlalchemy import func
+
+    from . import locations as loc_svc
 
     counts = dict(
         db.query(ImageAsset.film_roll_id, func.count(ImageAsset.id))
@@ -240,6 +252,8 @@ def rolls_csv(db: Session) -> str:
                 "end_date": roll.end_date.isoformat() if roll.end_date else "",
                 "building": roll.building or "",
                 "folder": roll.folder or "",
+                "location": loc_svc.path_string(roll.location_ref) or "",
+                "status": roll.status or "",
                 "frame_count": counts.get(roll.id, 0),
                 "notes": (roll.notes or "").replace("\n", " "),
                 "created_at": roll.created_at.isoformat() if roll.created_at else "",

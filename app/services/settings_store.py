@@ -26,6 +26,14 @@ KNOWN_SETTINGS: Dict[str, tuple[str, Any]] = {
     # WATCH_INTERVAL_SECONDS, because how often a machine may hit the disk is a
     # deployment decision, not a user preference.
     "watch_enabled": ("bool", True),
+    # M4: the serial prefix (NEG-2024-0011) and where printed QR codes point. The
+    # base URL is a setting rather than an env var because the QR on a binder has to
+    # outlive whatever the LAN happens to hand this box today.
+    "serial_prefix": ("text", "NEG"),
+    "public_base_url": ("text", ""),
+    # Label sizes in millimetres, "width x height". Plain-paper cut-outs (M4_PAPER.md).
+    "label_spine_mm": ("text", "50x200"),
+    "label_sticker_mm": ("text", "50x25"),
 }
 
 
