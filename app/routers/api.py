@@ -45,6 +45,9 @@ from ..services import lifecycle, serials
 from ..services import locations as loc_svc
 from ..services import strips as strips_svc
 from ..services.hashing import safe_content_hash
+from ..services.negpy import metadata as negpy_metadata
+from ..services.negpy import naming as negpy_naming
+from ..services.negpy import sidecar as negpy_sidecar
 
 router = APIRouter(prefix="/api", tags=["api"])
 
@@ -112,15 +115,22 @@ def frame_number_from_filename(filename: Optional[str]) -> Optional[int]:
 
     Handles the shapes this archive actually sees::
 
-        Roll12_007.tif          -> 7      (NegPy's {roll}_{frame})
-        NEG-2024-011_007.jpg    -> 7
-        scan_Frame007.tif       -> 7
-        007.jpg                 -> 7
-        img_0007.png            -> 7
+        Roll12_007.tif                        -> 7   (NegPy's {roll}_{frame})
+        NEG-2024-011_007.jpg                  -> 7
+        NEG-2026-0007_013_Kodak Gold 200.jpg  -> 13  (M5: the export preset)
+        scan_Frame007.tif                     -> 7
+        007.jpg                               -> 7
+        img_0007.png                          -> 7
 
-    The rule is: an explicit ``frame<n>`` wins, otherwise the **last** purely numeric
-    group of one to four digits wins. ``Roll12.tif`` deliberately yields nothing —
-    a number glued to a word is part of the word, not a frame number.
+    Three rules, in order: an explicit ``frame<n>`` wins; then the **whole name**
+    read as NegPy's recommended export preset ``{{roll}}_{{frame}}_{{film}}``
+    (:mod:`app.services.negpy.naming`); then the **last** purely numeric group of
+    one to four digits. ``Roll12.tif`` deliberately yields nothing — a number glued
+    to a word is part of the word, not a frame number.
+
+    The preset has to come before the last-number rule, and M5 learned that the
+    hard way: ``NEG-2026-0007_013_Kodak Gold 200.jpg`` ends in the film's ISO, so
+    the loose rule filed every frame of the roll as frame 200.
     """
     if not filename:
         return None
@@ -128,6 +138,9 @@ def frame_number_from_filename(filename: Optional[str]) -> Optional[int]:
     explicit = _EXPLICIT_FRAME.search(stem)
     if explicit:
         return int(explicit.group(1))
+    preset = negpy_naming.parse(stem)
+    if preset.frame_number is not None:
+        return preset.frame_number
     tokens = [token for token in re.split(r"[^0-9A-Za-z]+", stem) if token]
     for token in reversed(tokens):
         if _NUMERIC_TOKEN.match(token):
@@ -265,6 +278,14 @@ def image_to_dict(i: ImageAsset) -> dict:
         "frame_number": i.frame_number,
         "notes": i.notes,
         "capture_date": i.capture_date.isoformat() if i.capture_date else None,
+        # M5, NegPy: what the file itself said on ingest, and whether it has been
+        # edited in NegPy. `negpy_recipe` carries the parsed sidecar; the viewer
+        # only shows its summary, because NegArchive does not interpret a recipe.
+        "capture_metadata": i.capture_metadata or None,
+        "sidecar_path": i.sidecar_path,
+        "negpy_edited_at": i.negpy_edited_at.isoformat() if i.negpy_edited_at else None,
+        "negpy_recipe": i.negpy_recipe or None,
+        "negpy_summary": (i.negpy_recipe or {}).get("summary") if i.negpy_recipe else None,
         "created_at": i.created_at.isoformat(),
     }
 
@@ -449,6 +470,9 @@ def delete_asset_file(image: ImageAsset) -> bool:
     target = _abs(image.path)
     if not _inside_uploads(target):
         return False
+    # M5: the `.negpy` sidecar we stored beside the file goes with it. It describes
+    # this file and nothing else, so leaving it behind would only produce an orphan.
+    _remove_quietly(target + negpy_sidecar.SUFFIX)
     try:
         os.remove(target)
         return True
@@ -534,6 +558,45 @@ def _remove_quietly(path: str) -> None:
         os.remove(path)
     except OSError:
         pass
+
+
+# --- NegPy sidecars on upload (M5) --------------------------------------------
+#
+# A `.negpy` file is not an image and never goes through `store_upload`: it is not
+# in the allowlist, it has no magic bytes, and it belongs *next to* a scan rather
+# than being one. The bulk and ZIP upload paths therefore pull sidecars out of the
+# incoming files first, and hand each one to the frame whose name it shares — a
+# managed file is stored under a UUID, so the sidecar is stored as
+# `<uuid>.<ext>.negpy` beside it and the link is the record, not the name.
+
+
+def store_sidecar_bytes(rel_path: str, payload: bytes) -> Optional[str]:
+    """Write a ``.negpy`` sidecar next to an already-stored managed file."""
+    if not payload or len(payload) > negpy_sidecar.MAX_SIDECAR_BYTES:
+        return None
+    target = _abs(rel_path) + negpy_sidecar.SUFFIX
+    try:
+        with open(target, "wb") as out:
+            out.write(payload)
+    except OSError:
+        return None
+    return target
+
+
+def _pull_sidecars(files: List[UploadFile]) -> Tuple[List[UploadFile], Dict[str, bytes]]:
+    """Split an upload into images and ``{stem: sidecar bytes}``."""
+    images: List[UploadFile] = []
+    sidecars: Dict[str, bytes] = {}
+    for item in files:
+        name = os.path.basename(item.filename or "")
+        if negpy_sidecar.is_sidecar_name(name):
+            item.file.seek(0)
+            payload = item.file.read(negpy_sidecar.MAX_SIDECAR_BYTES + 1)
+            if len(payload) <= negpy_sidecar.MAX_SIDECAR_BYTES:
+                sidecars[negpy_sidecar.image_stem(name).lower()] = payload
+            continue
+        images.append(item)
+    return images, sidecars
 
 
 def _new_image(
@@ -1385,8 +1448,13 @@ def upload_image(
         capture_date=captured,
     )
     db.add(img)
-    if roll_id and image_type == ImageType.scan:
-        lifecycle.touch_scanned(db.get(FilmRoll, roll_id))
+    roll = db.get(FilmRoll, roll_id) if roll_id else None
+    # M5: read the file's own EXIF/XMP and fill what the client did not send. It
+    # can also file an unassigned upload into the roll its `negpy:CaptureRoll`
+    # names, which is what makes "drop a NegPy export on the archive" work.
+    negpy_metadata.ingest_image(db, img, roll=roll)
+    if img.film_roll_id and image_type == ImageType.scan:
+        lifecycle.touch_scanned(roll or db.get(FilmRoll, img.film_roll_id))
     db.commit()
     return {"ok": True, "image": image_to_dict(img)}
 
@@ -1480,9 +1548,11 @@ def bulk_upload_images(
     f = db.get(FilmRoll, film_id)
     if not f:
         return not_found("Roll")
+    images, sidecars = _pull_sidecars(files)
+    ingest_on, create_gear = negpy_metadata.ingest_settings(db)
     created: List[ImageAsset] = []
     try:
-        for file in files:
+        for file in images:
             rel_path, original = store_upload(file, "uploads/scans")
             img = _new_image(
                 film_roll_id=film_id,
@@ -1492,11 +1562,25 @@ def bulk_upload_images(
             )
             db.add(img)
             created.append(img)
+            # M5: a `.negpy` uploaded alongside its scan is stored next to the
+            # managed file, so "edited in NegPy" survives the upload.
+            payload = sidecars.get(os.path.splitext(original)[0].lower())
+            stored_sidecar = store_sidecar_bytes(rel_path, payload) if payload else None
+            negpy_metadata.ingest_image(
+                db,
+                img,
+                roll=f,
+                match_unassigned=False,
+                enabled=ingest_on,
+                create_gear=create_gear,
+                sidecar_path=stored_sidecar,
+            )
     except ApiError as exc:
         # Everything or nothing: a rejected file must not leave half a roll behind.
         db.rollback()
         for image in created:
             _remove_quietly(_abs(image.path))
+            _remove_quietly(_abs(image.path) + negpy_sidecar.SUFFIX)
         return from_exc(exc)
 
     if created:
@@ -1529,13 +1613,22 @@ def bulk_upload_zip(film_id: int, file: UploadFile = File(...), db: Session = De
         os.makedirs(os.path.join(uploads_root(), "scans"), exist_ok=True)
         created: List[ImageAsset] = []
         skipped: List[str] = []
+        ingest_on, create_gear = negpy_metadata.ingest_settings(db)
+
+        # M5: a ZIP straight out of NegPy carries the `.negpy` sidecars too. Collect
+        # them first, by stem, so every scan can be matched with its own.
+        sidecar_files: Dict[str, str] = {}
+        for root, _, names in os.walk(tmpdir):
+            for name in names:
+                if negpy_sidecar.is_sidecar_name(name):
+                    sidecar_files[negpy_sidecar.image_stem(name).lower()] = os.path.join(root, name)
 
         # Walk extracted files in name order, so a roll keeps its scanner order even
         # when the filenames carry no frame number.
         for root, _, names in os.walk(tmpdir):
             for name in sorted(names):
                 src = os.path.join(root, name)
-                if src == zip_path or name.startswith("."):
+                if src == zip_path or name.startswith(".") or negpy_sidecar.is_sidecar_name(name):
                     continue
                 ext = os.path.splitext(name)[1].lower()
                 if ext not in ALLOWED_EXTENSIONS:
@@ -1559,6 +1652,25 @@ def bulk_upload_zip(film_id: int, file: UploadFile = File(...), db: Session = De
                     )
                     db.add(img)
                     created.append(img)
+                    sidecar_src = sidecar_files.get(os.path.splitext(name)[0].lower())
+                    stored_sidecar = None
+                    if sidecar_src:
+                        try:
+                            with open(sidecar_src, "rb") as handle:
+                                stored_sidecar = store_sidecar_bytes(
+                                    rel_path, handle.read(negpy_sidecar.MAX_SIDECAR_BYTES + 1)
+                                )
+                        except OSError:
+                            stored_sidecar = None
+                    negpy_metadata.ingest_image(
+                        db,
+                        img,
+                        roll=f,
+                        match_unassigned=False,
+                        enabled=ingest_on,
+                        create_gear=create_gear,
+                        sidecar_path=stored_sidecar,
+                    )
                 except OSError:
                     skipped.append(name)
                     continue
@@ -1996,7 +2108,10 @@ def sweep_orphans(
     known = set()
     for (path,) in db.query(ImageAsset.path).all():
         if path:
-            known.add(os.path.abspath(_abs(path)))
+            absolute = os.path.abspath(_abs(path))
+            known.add(absolute)
+            # M5: a `.negpy` sidecar belongs to the frame beside it, not to nobody.
+            known.add(absolute + negpy_sidecar.SUFFIX)
 
     orphans: List[str] = []
     data_root = os.path.abspath(str(paths.data_dir()))

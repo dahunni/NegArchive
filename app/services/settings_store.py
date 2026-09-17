@@ -34,6 +34,23 @@ KNOWN_SETTINGS: Dict[str, tuple[str, Any]] = {
     # Label sizes in millimetres, "width x height". Plain-paper cut-outs (M4_PAPER.md).
     "label_spine_mm": ("text", "50x200"),
     "label_sticker_mm": ("text", "50x25"),
+    # M5, NegPy. Reading a file's own metadata on upload is on by default: it only
+    # ever fills a field that is empty, and a scan that already knows its roll and
+    # frame number is the whole reason the integration exists.
+    "negpy_ingest": ("bool", True),
+    # Creating catalog entries for gear a scan names but the archive does not have
+    # is off by default: the Gear page is a catalog somebody curated, and filling it
+    # from EXIF strings produces "NIKON CORPORATION NIKON F5" next to "Nikon F5".
+    "negpy_create_gear": ("bool", False),
+    # Where NegPy's user directory is, and where prepared roll folders go. Empty
+    # means "NEGPY_USER_DIR / NEGPY_EXPORT_DIR, else inside DATA_DIR"; a value has
+    # to sit inside an allowed base (app/services/negpy/dirs.py).
+    "negpy_user_dir": ("text", ""),
+    "negpy_handoff_dir": ("text", ""),
+    # "link" (hard links, no disk cost) or "copy".
+    "negpy_handoff_mode": ("text", "link"),
+    # Set by the last successful gear sync, so Settings can say when it last ran.
+    "negpy_gear_synced_at": ("text", ""),
 }
 
 

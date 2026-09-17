@@ -178,6 +178,13 @@ class ImageOut(Model):
     frame_number: Optional[int] = None
     notes: Optional[str] = None
     capture_date: Optional[date] = None
+    #: M5, NegPy: what the file said about itself when it was ingested, and the
+    #: ``.negpy`` sidecar next to it, if any.
+    capture_metadata: Optional[Dict[str, Any]] = None
+    sidecar_path: Optional[str] = None
+    negpy_edited_at: Optional[datetime] = None
+    negpy_recipe: Optional[Dict[str, Any]] = None
+    negpy_summary: Optional[str] = None
     created_at: datetime
 
 

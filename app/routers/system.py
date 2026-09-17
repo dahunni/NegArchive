@@ -32,6 +32,8 @@ from ..db import get_db
 from ..errors import ApiError, error_response, from_exc, read_json
 from ..models import FilmRoll, ImageAsset, LibraryRoot
 from ..services import network, settings_store
+from ..services.negpy import dirs as negpy_dirs
+from ..services.negpy import handoff as negpy_handoff
 
 router = APIRouter(prefix="/api", tags=["system"])
 
@@ -191,6 +193,24 @@ def get_settings(db: Session = Depends(get_db)):
     return {"settings": settings_store.get_all(db), "watch": _watch_state(db)}
 
 
+def _validate_setting(key: str, value) -> None:
+    """The two settings that are more than a string: a writable folder and a mode.
+
+    They are checked here rather than in the store, because the store's job is to
+    keep values and the answer to "may NegArchive write there" belongs to M5's
+    :mod:`app.services.negpy.dirs` (roadmap M5).
+    """
+    if key in {"negpy_user_dir", "negpy_handoff_dir"} and str(value or "").strip():
+        negpy_dirs.validate(value, key)
+    if key == "negpy_handoff_mode" and str(value or "").strip() not in negpy_handoff.MODES:
+        raise ApiError(
+            "invalid_mode",
+            f"The handoff mode must be one of: {', '.join(negpy_handoff.MODES)}.",
+            400,
+            key,
+        )
+
+
 @router.put("/system/settings")
 async def put_settings(request: Request, db: Session = Depends(get_db)):
     """Body: any subset of the allowlisted keys, e.g. ``{"watch_enabled": false}``."""
@@ -200,6 +220,7 @@ async def put_settings(request: Request, db: Session = Depends(get_db)):
         if unknown:
             raise ApiError("unknown_setting", f"Unknown setting(s): {', '.join(unknown)}.")
         for key, value in payload.items():
+            _validate_setting(key, value)
             settings_store.set_value(db, key, value)
     except ApiError as exc:
         db.rollback()
