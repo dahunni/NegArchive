@@ -3,7 +3,7 @@
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { Film as FilmIcon, Images, Pencil, Plus, Search, Trash2, X } from "lucide-react"
+import { Film as FilmIcon, Images, MapPin, Pencil, Plus, Printer, Search, Trash2, X } from "lucide-react"
 
 import {
   type Camera,
@@ -11,7 +11,11 @@ import {
   type FilmQuery,
   type Filmstock,
   type Lens,
+  type Location,
   type Page,
+  ROLL_STATUSES,
+  WORK_BUCKETS,
+  type WorkLists,
   deleteFilm,
   errorMessage,
   getFilmsPage,
@@ -27,8 +31,10 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog"
 import { EmptyState } from "@/components/empty-state"
 import { ErrorState } from "@/components/error-state"
+import { MoveRollDialog } from "@/components/move-roll-dialog"
 import { RollEditSheet } from "@/components/roll-edit-sheet"
 import { RollWizard } from "@/components/roll-wizard"
+import { StatusBadge } from "@/components/status-stepper"
 import { useToast } from "@/hooks/use-toast"
 
 const ANY = "__any__"
@@ -64,17 +70,26 @@ export function RollBrowser({
   initial,
   initialQuery,
   openWizard = false,
+  focusSearch = false,
   cameras,
   lenses,
   filmstocks,
+  locations = [],
+  work = null,
 }: {
   initial: Page<Film>
   initialQuery: FilmQuery
   /** `/?new=1` and the `/films/new` redirect open the wizard straight away. */
   openWizard?: boolean
+  /** `/?focus=search`: land with the search box focused (the `/` shortcut, M4). */
+  focusSearch?: boolean
   cameras: Camera[]
   lenses: Lens[]
   filmstocks: Filmstock[]
+  /** M4: the storage tree, for the forms and the move dialog. */
+  locations?: Location[]
+  /** M4: the four work lists with counts, shown as chips above the filters. */
+  work?: WorkLists | null
 }) {
   const router = useRouter()
   const { toast } = useToast()
@@ -88,6 +103,14 @@ export function RollBrowser({
   )
   const [from, setFrom] = useState(initialQuery.from ?? "")
   const [to, setTo] = useState(initialQuery.to ?? "")
+  const [status, setStatus] = useState(initialQuery.status ?? "")
+  const [bucket, setBucket] = useState(initialQuery.bucket ?? "")
+  const [moving, setMoving] = useState<Film | null>(null)
+  const searchRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    if (focusSearch) searchRef.current?.focus()
+  }, [focusSearch])
 
   const [items, setItems] = useState<Film[]>(initial.items)
   const [total, setTotal] = useState(initial.total)
@@ -99,7 +122,7 @@ export function RollBrowser({
   const [editing, setEditing] = useState<Film | null>(null)
   const [pendingDelete, setPendingDelete] = useState<Film | null>(null)
 
-  const filtersActive = Boolean(query || from || to || camera !== ANY || film !== ANY)
+  const filtersActive = Boolean(query || from || to || camera !== ANY || film !== ANY || status || bucket)
 
   const filters: FilmQuery = useMemo(
     () => ({
@@ -110,8 +133,10 @@ export function RollBrowser({
       film_stock_id: film === ANY ? undefined : Number(film),
       from: from || undefined,
       to: to || undefined,
+      status: status || undefined,
+      bucket: bucket || undefined,
     }),
-    [query, camera, film, from, to],
+    [query, camera, film, from, to, status, bucket],
   )
 
   const fetchPage = useCallback(
@@ -149,6 +174,8 @@ export function RollBrowser({
     setFilm(ANY)
     setFrom("")
     setTo("")
+    setStatus("")
+    setBucket("")
   }
 
   const confirmDelete = async ({ keepFiles }: { keepFiles: boolean }) => {
@@ -187,6 +214,48 @@ export function RollBrowser({
         </Button>
       </div>
 
+      {work ? (
+        <div className="flex flex-wrap gap-2" data-testid="work-lists">
+          {WORK_BUCKETS.map((entry) => {
+            const total = work[entry.value].total
+            const active = bucket === entry.value
+            return (
+              <button
+                key={entry.value}
+                type="button"
+                onClick={() => {
+                  setStatus("")
+                  setBucket(active ? "" : entry.value)
+                }}
+                aria-pressed={active}
+                data-testid={`work-${entry.value}`}
+                className={cn(
+                  "flex min-h-10 items-center gap-2 rounded-full border px-4 text-sm font-medium transition-colors",
+                  active
+                    ? "border-primary bg-primary text-primary-foreground"
+                    : total > 0
+                      ? "border-border bg-card hover:bg-secondary/60"
+                      : "border-border text-muted-foreground",
+                )}
+              >
+                {entry.label}
+                <span className="type-numeric rounded-full bg-background/70 px-1.5 text-foreground">{total}</span>
+              </button>
+            )
+          })}
+          {work.needs_label > 0 ? (
+            <Link
+              href="/print/queue"
+              className="flex min-h-10 items-center gap-2 rounded-full border border-dashed border-border px-4 text-sm font-medium text-muted-foreground hover:bg-secondary/60"
+              data-testid="work-print-queue"
+            >
+              <Printer className="h-4 w-4" />
+              {pluralize(work.needs_label, "label")} to print
+            </Link>
+          ) : null}
+        </div>
+      ) : null}
+
       <div className="rounded-lg border border-border bg-card p-3 sm:p-4">
         <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-4">
           <div className="space-y-1.5 lg:col-span-2">
@@ -194,10 +263,11 @@ export function RollBrowser({
             <div className="relative">
               <Search className="pointer-events-none absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
               <Input
+                ref={searchRef}
                 id="roll-search"
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
-                placeholder="Title, notes, serial, folder…"
+                placeholder="Title, notes, serial… or scan a code"
                 className="h-11 pl-9"
                 data-testid="roll-search"
               />
@@ -258,6 +328,29 @@ export function RollBrowser({
               onChange={(event) => setTo(event.target.value)}
               className="h-11"
             />
+          </div>
+
+          <div className="space-y-1.5">
+            <Label htmlFor="roll-status">Status</Label>
+            <Select
+              value={status || ANY}
+              onValueChange={(value) => {
+                setBucket("")
+                setStatus(value === ANY ? "" : value)
+              }}
+            >
+              <SelectTrigger id="roll-status" className="h-11 w-full">
+                <SelectValue placeholder="Any status" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={ANY}>Any status</SelectItem>
+                {ROLL_STATUSES.map((step) => (
+                  <SelectItem key={step.value} value={step.value}>
+                    {step.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
 
           {filtersActive ? (
@@ -329,6 +422,7 @@ export function RollBrowser({
                           {roll.archive_serial}
                         </Badge>
                       ) : null}
+                      <StatusBadge status={roll.status} />
                     </div>
 
                     <dl className="mt-2 grid gap-x-6 gap-y-1 sm:grid-cols-2 lg:grid-cols-4">
@@ -345,6 +439,15 @@ export function RollBrowser({
                       {pluralize(roll.image_count, "frame")}
                     </Badge>
                     <div className="ml-auto flex gap-1 sm:ml-0">
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-10 w-10"
+                        aria-label={`Move ${roll.title}`}
+                        onClick={() => setMoving(roll)}
+                      >
+                        <MapPin className="h-4 w-4" />
+                      </Button>
                       <Button
                         variant="ghost"
                         size="icon"
@@ -392,6 +495,7 @@ export function RollBrowser({
         cameras={cameras}
         lenses={lenses}
         filmstocks={filmstocks}
+        locations={locations}
       />
       <RollEditSheet
         film={editing}
@@ -400,6 +504,17 @@ export function RollBrowser({
         cameras={cameras}
         lenses={lenses}
         filmstocks={filmstocks}
+        locations={locations}
+      />
+      <MoveRollDialog
+        open={moving !== null}
+        onOpenChange={(open) => !open && setMoving(null)}
+        rolls={moving ? [moving] : []}
+        locations={locations}
+        onMoved={() => {
+          void fetchPage(0, false)
+          router.refresh()
+        }}
       />
       <DeleteConfirmationDialog
         open={pendingDelete !== null}

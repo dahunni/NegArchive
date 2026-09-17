@@ -82,6 +82,11 @@ class FilmRollWrite(Model):
     building: Optional[str] = None
     folder: Optional[str] = None
     archive_serial: Optional[str] = None
+    # --- M4 ---
+    location_id: Optional[Any] = None
+    strips: Optional[Any] = None
+    status: Optional[str] = None
+    loaded_camera_id: Optional[Any] = None
 
 
 class FilmRollCreate(FilmRollWrite):
@@ -112,6 +117,23 @@ class FilmRollOut(Model):
     image_count: int = 0
     cover_image_id: Optional[int] = None
     cover_image_ids: List[int] = Field(default_factory=list)
+    # --- M4: where it is, and where it is in its life ---
+    location_id: Optional[int] = None
+    location_path: Optional[str] = None
+    location_kind: Optional[str] = None
+    strips: Optional[List[int]] = None
+    effective_strips: List[int] = Field(default_factory=list)
+    status: str = "back"
+    status_label: Optional[str] = None
+    loaded_at: Optional[datetime] = None
+    shot_at: Optional[datetime] = None
+    lab_sent_at: Optional[datetime] = None
+    lab_back_at: Optional[datetime] = None
+    scanned_at: Optional[datetime] = None
+    sleeved_at: Optional[datetime] = None
+    loaded_camera_id: Optional[int] = None
+    label_printed_at: Optional[datetime] = None
+    needs_label: bool = False
 
 
 class FilmRollEnvelope(Model):
@@ -320,3 +342,71 @@ class SweepResult(Model):
     missing_files: List[MissingFile] = Field(default_factory=list)
     deleted_files: int = 0
     bytes_reclaimed: int = 0
+
+
+# --- M4: locations, scanning, printing -----------------------------------------
+
+
+class SleeveLayoutWrite(Model):
+    name: Optional[str] = None
+    rows: Optional[Any] = None
+    frames_per_row: Optional[Any] = None
+    film_format: Optional[str] = None
+    is_default: Optional[bool] = False
+
+
+class LocationWrite(Model):
+    parent_id: Optional[Any] = None
+    kind: Optional[str] = None
+    name: Optional[str] = None
+    code: Optional[str] = None
+    sort_order: Optional[Any] = None
+    notes: Optional[str] = None
+    capacity: Optional[Any] = None
+    sleeve_layout_id: Optional[Any] = None
+
+
+class LocationCreate(LocationWrite):
+    pass
+
+
+class LocationUpdate(LocationWrite, Update):
+    pass
+
+
+class AddPages(Model):
+    count: Any = 1
+    sleeve_layout_id: Optional[int] = None
+
+
+class MoveRoll(Model):
+    location_id: Optional[Any] = None
+    note: Optional[str] = None
+
+
+class BulkMove(Model):
+    ids: List[Any] = Field(default_factory=list)
+    location_id: Optional[Any] = None
+    note: Optional[str] = None
+
+
+class ScanToken(Model):
+    code: str
+
+
+class MarkPrinted(Model):
+    roll_ids: List[Any] = Field(default_factory=list)
+
+
+class StatusChange(Model):
+    status: str
+    at: Optional[str] = None
+
+
+class LoadFilm(Model):
+    title: Optional[str] = None
+    film_stock_id: Optional[Any] = None
+    lens_id: Optional[Any] = None
+    format: Optional[FilmFormat] = None
+    notes: Optional[str] = None
+    force: Optional[bool] = False

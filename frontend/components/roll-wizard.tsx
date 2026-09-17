@@ -10,6 +10,7 @@ import {
   type Film,
   type Filmstock,
   type Lens,
+  type Location,
   createFilm,
   errorMessage,
   fieldFor,
@@ -93,12 +94,14 @@ export function RollWizard({
   cameras,
   lenses,
   filmstocks,
+  locations = [],
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
   cameras: Camera[]
   lenses: Lens[]
   filmstocks: Filmstock[]
+  locations?: Location[]
 }) {
   const router = useRouter()
   const { toast } = useToast()
@@ -191,7 +194,9 @@ export function RollWizard({
                 idPrefix="wizard"
               />
             ) : null}
-            {step === 2 ? <StorageFields values={values} onChange={change} idPrefix="wizard" /> : null}
+            {step === 2 ? (
+              <StorageFields values={values} errors={errors} onChange={change} idPrefix="wizard" locations={locations} />
+            ) : null}
           </div>
         ) : (
           <div className="space-y-4 py-2">

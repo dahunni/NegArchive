@@ -5,6 +5,7 @@ import re
 import shutil
 import tempfile
 import zipfile
+from datetime import datetime
 from math import ceil
 from typing import Dict, Iterable, List, Optional, Tuple
 from uuid import uuid4
@@ -37,8 +38,12 @@ from ..models import (
     ImageAsset,
     ImageType,
     Lens,
+    Location,
 )
 from ..seed import seed_catalog
+from ..services import lifecycle, serials
+from ..services import locations as loc_svc
+from ..services import strips as strips_svc
 from ..services.hashing import safe_content_hash
 
 router = APIRouter(prefix="/api", tags=["api"])
@@ -160,7 +165,42 @@ def film_to_dict(
         "image_count": int(image_count or 0),
         "cover_image_id": (cover_image_ids or [None])[0],
         "cover_image_ids": list(cover_image_ids or []),
+        # M4: the physical side. `effective_strips` is the roll's own list or the
+        # sleeve layout's default, so the UI can place frame 14 on strip 3 without a
+        # second request.
+        "location_id": f.location_id,
+        "location_path": loc_svc.path_string(f.location_ref),
+        "location_kind": f.location_ref.kind if f.location_ref else None,
+        "strips": list(f.strips) if f.strips else None,
+        "effective_strips": _effective_strips(f),
+        "status": f.status or "back",
+        "status_label": lifecycle.STATUS_LABELS.get(f.status or "back"),
+        "loaded_at": f.loaded_at.isoformat() if f.loaded_at else None,
+        "shot_at": f.shot_at.isoformat() if f.shot_at else None,
+        "lab_sent_at": f.lab_sent_at.isoformat() if f.lab_sent_at else None,
+        "lab_back_at": f.lab_back_at.isoformat() if f.lab_back_at else None,
+        "scanned_at": f.scanned_at.isoformat() if f.scanned_at else None,
+        "sleeved_at": f.sleeved_at.isoformat() if f.sleeved_at else None,
+        "loaded_camera_id": f.loaded_camera_id,
+        "label_printed_at": f.label_printed_at.isoformat() if f.label_printed_at else None,
+        "needs_label": f.label_printed_at is None,
     }
+
+
+def _effective_strips(f: FilmRoll) -> List[int]:
+    """The roll's strips, its sleeve's layout, an ancestor's layout, or PrintFile."""
+    if f.strips:
+        return [int(n) for n in f.strips]
+    node = f.location_ref
+    rows = per_row = None
+    guard = 0
+    while node is not None and guard < 64:
+        if node.sleeve_layout is not None:
+            rows, per_row = node.sleeve_layout.rows, node.sleeve_layout.frames_per_row
+            break
+        node = node.parent
+        guard += 1
+    return strips_svc.effective_strips(None, rows, per_row)
 
 
 def roll_summaries(
@@ -583,11 +623,18 @@ def list_films(
     film_type: Optional[str] = None,
     from_: Optional[str] = Query(None, alias="from"),
     to: Optional[str] = None,
+    status: Optional[str] = None,
+    location_id: Optional[int] = None,
+    bucket: Optional[str] = None,
     limit: Optional[int] = None,
     offset: Optional[int] = None,
     db: Session = Depends(get_db),
 ):
     """The roll list, filtered and paginated in the database.
+
+    M4 adds ``status`` (one of the lifecycle steps), ``location_id`` (the node or
+    anything under it) and ``bucket`` (``in_cameras`` / ``at_lab`` / ``to_scan`` /
+    ``to_sleeve``, the home page work lists).
 
     * ``q``      — words that must all appear somewhere in the roll (title, notes,
                    serial, folder, building, camera, lens, film). Case-insensitive.
@@ -659,6 +706,24 @@ def list_films(
     if end is not None:
         query = query.filter(func.coalesce(FilmRoll.start_date, FilmRoll.end_date) <= end)
 
+    # M4: lifecycle and location
+    if status:
+        try:
+            query = query.filter(FilmRoll.status == lifecycle.parse_status(status))
+        except ApiError as exc:
+            return from_exc(exc)
+    if bucket:
+        statuses = {"in_cameras": ("loaded", "shot"), "at_lab": ("at_lab",), "to_scan": ("back",), "to_sleeve": ("scanned",)}.get(bucket)
+        if statuses is None:
+            return error_response("invalid_bucket", "Bucket must be in_cameras, at_lab, to_scan or to_sleeve.", 400, "bucket")
+        query = query.filter(FilmRoll.status.in_(statuses))
+    if location_id is not None:
+        node = db.get(Location, location_id)
+        if node is None:
+            return not_found("Location", "location_id")
+        under = [n.id for n in db.query(Location).all() if node.id in loc_svc.path_ids(n)]
+        query = query.filter(FilmRoll.location_id.in_(under))
+
     page_limit, page_offset = _page_bounds(limit, offset)
     total = query.order_by(None).count()
     query = query.order_by(FilmRoll.created_at.desc(), FilmRoll.id.desc()).offset(page_offset)
@@ -712,16 +777,35 @@ def create_film(body: schemas.FilmRollCreate, db: Session = Depends(get_db)):
             format=body.format,
             building=body.building,
             folder=body.folder,
-            archive_serial=body.archive_serial,
             start_date=start,
             end_date=end,
         )
         _resolve_gear(db, body, f, creating=True)
+        # M4: a serial is allocated when none is given; the status defaults by whether
+        # the roll is being created "loaded" (from a camera) or as an archived roll.
+        serials.assign(db, f, body.archive_serial)
+        f.strips = strips_svc.parse_strips(body.strips)
+        if body.location_id not in (None, ""):
+            target = db.get(Location, parse_int(body.location_id, "location_id", minimum=1))
+            if target is None:
+                raise ApiError("unknown_location", "That location does not exist.", 404, "location_id")
+        else:
+            target = None
+        lifecycle.set_status(f, body.status or "back")
+        db.add(f)
+        db.flush()
+        if target is not None:
+            loc_svc.move_roll(db, f, target)
+        if body.loaded_camera_id not in (None, ""):
+            camera = db.get(Camera, parse_int(body.loaded_camera_id, "loaded_camera_id", minimum=1))
+            if camera is None:
+                raise ApiError("unknown_camera", "That camera does not exist.", 404, "loaded_camera_id")
+            lifecycle.load_into_camera(db, camera, f)
+        db.commit()
     except ApiError as exc:
         db.rollback()
         return from_exc(exc)
-    db.add(f)
-    db.commit()
+    db.refresh(f)
     return {"ok": True, "film": film_to_dict(f)}
 
 
@@ -730,7 +814,12 @@ def create_film(body: schemas.FilmRollCreate, db: Session = Depends(get_db)):
     response_model=schemas.FilmRollEnvelope,
     responses={400: {"model": schemas.ErrorOut}, 404: {"model": schemas.ErrorOut}},
 )
-def update_film(film_id: int, body: schemas.FilmRollUpdate, db: Session = Depends(get_db)):
+def update_film(
+    film_id: int,
+    body: schemas.FilmRollUpdate,
+    force: bool = Query(False, description="Allow changing a serial that is already printed (M4)."),
+    db: Session = Depends(get_db),
+):
     f = db.get(FilmRoll, film_id)
     if not f:
         return not_found("Roll")
@@ -741,17 +830,88 @@ def update_film(film_id: int, body: schemas.FilmRollUpdate, db: Session = Depend
         end = parse_date(body.end_date, "end_date") if body.given("end_date") else f.end_date
         _check_date_order(start, end)
         _resolve_gear(db, body, f, creating=False)
+        for key in ["notes", "format", "building", "folder"]:
+            if body.given(key):
+                setattr(f, key, clean_name(getattr(body, key)))
+        f.start_date = start
+        f.end_date = end
+        # M4
+        if body.given("archive_serial"):
+            serials.assign(db, f, body.archive_serial, force=force)
+        if body.given("strips"):
+            f.strips = strips_svc.parse_strips(body.strips)
+        if body.given("status") and body.status:
+            lifecycle.set_status(f, body.status)
+        if body.given("loaded_camera_id"):
+            if body.loaded_camera_id in (None, ""):
+                f.loaded_camera_id = None
+            else:
+                camera = db.get(Camera, parse_int(body.loaded_camera_id, "loaded_camera_id", minimum=1))
+                if camera is None:
+                    raise ApiError("unknown_camera", "That camera does not exist.", 404, "loaded_camera_id")
+                lifecycle.load_into_camera(db, camera, f, force=force)
+        if body.given("location_id"):
+            target = None
+            if body.location_id not in (None, "", "none"):
+                target = db.get(Location, parse_int(body.location_id, "location_id", minimum=1))
+                if target is None:
+                    raise ApiError("unknown_location", "That location does not exist.", 404, "location_id")
+            loc_svc.move_roll(db, f, target)
+        db.commit()
     except ApiError as exc:
         db.rollback()
         return from_exc(exc)
-    for key in ["notes", "format", "building", "folder", "archive_serial"]:
-        if body.given(key):
-            setattr(f, key, clean_name(getattr(body, key)))
-    f.start_date = start
-    f.end_date = end
-    db.commit()
+    db.refresh(f)
     count, strip = roll_summaries(db, [f.id]).get(f.id, (0, []))
     return {"ok": True, "film": film_to_dict(f, count, strip)}
+
+
+@router.post(
+    "/films/{film_id}/status",
+    response_model=schemas.FilmRollEnvelope,
+    responses={400: {"model": schemas.ErrorOut}, 404: {"model": schemas.ErrorOut}},
+)
+def set_roll_status(film_id: int, body: schemas.StatusChange, db: Session = Depends(get_db)):
+    """Advance (or rewind) a roll in its lifecycle; ``at`` overrides the timestamp."""
+    f = db.get(FilmRoll, film_id)
+    if not f:
+        return not_found("Roll")
+    try:
+        when = None
+        if body.at:
+            parsed_date = parse_date(body.at, "at")
+            when = datetime.combine(parsed_date, datetime.min.time()) if parsed_date else None
+        lifecycle.set_status(f, body.status, when)
+        db.commit()
+    except ApiError as exc:
+        db.rollback()
+        return from_exc(exc)
+    db.refresh(f)
+    count, strip = roll_summaries(db, [f.id]).get(f.id, (0, []))
+    return {"ok": True, "film": film_to_dict(f, count, strip)}
+
+
+@router.get("/work")
+def work_lists(db: Session = Depends(get_db)):
+    """The home page's four work lists with counts (M4 lifecycle)."""
+    buckets = {"in_cameras": ("loaded", "shot"), "at_lab": ("at_lab",), "to_scan": ("back",), "to_sleeve": ("scanned",)}
+    out = {}
+    for key, statuses in buckets.items():
+        rolls = (
+            db.query(FilmRoll)
+            .filter(FilmRoll.status.in_(statuses))
+            .order_by(FilmRoll.created_at.desc())
+            .limit(50)
+            .all()
+        )
+        total = db.query(func.count(FilmRoll.id)).filter(FilmRoll.status.in_(statuses)).scalar() or 0
+        summaries = roll_summaries(db, [r.id for r in rolls])
+        out[key] = {"total": int(total), "items": [film_to_dict(r, *summaries.get(r.id, (0, []))) for r in rolls]}
+    unfiled = db.query(func.count(FilmRoll.id)).filter(FilmRoll.location_id.is_(None)).scalar() or 0
+    needs_label = db.query(func.count(FilmRoll.id)).filter(FilmRoll.label_printed_at.is_(None)).scalar() or 0
+    out["unfiled"] = int(unfiled)
+    out["needs_label"] = int(needs_label)
+    return out
 
 
 @router.delete(
@@ -1153,6 +1313,8 @@ def bulk_update_images(body: schemas.BulkImageUpdate, db: Session = Depends(get_
     for image in images:
         for key, value in fields.items():
             setattr(image, key, value)
+    if fields.get("film_roll_id"):
+        lifecycle.touch_scanned(db.get(FilmRoll, fields["film_roll_id"]))
     db.commit()
     return {"ok": True, "updated": len(images), "images": [image_to_dict(i) for i in images]}
 
@@ -1223,6 +1385,8 @@ def upload_image(
         capture_date=captured,
     )
     db.add(img)
+    if roll_id and image_type == ImageType.scan:
+        lifecycle.touch_scanned(db.get(FilmRoll, roll_id))
     db.commit()
     return {"ok": True, "image": image_to_dict(img)}
 
@@ -1335,6 +1499,8 @@ def bulk_upload_images(
             _remove_quietly(_abs(image.path))
         return from_exc(exc)
 
+    if created:
+        lifecycle.touch_scanned(f)
     db.commit()
     return {"ok": True, "images": [image_to_dict(i) for i in created]}
 
@@ -1397,6 +1563,8 @@ def bulk_upload_zip(film_id: int, file: UploadFile = File(...), db: Session = De
                     skipped.append(name)
                     continue
 
+        if created:
+            lifecycle.touch_scanned(f)
         db.commit()
         return {"ok": True, "images": [image_to_dict(i) for i in created]}
 
@@ -1516,6 +1684,71 @@ def upload_camera_image(camera_id: int, file: UploadFile = File(...), db: Sessio
     c.image_path = rel_path
     db.commit()
     return {"ok": True, "camera": camera_to_dict(c)}
+
+
+@router.post(
+    "/cameras/{camera_id}/load",
+    response_model=schemas.FilmRollEnvelope,
+    responses={404: {"model": schemas.ErrorOut}, 409: {"model": schemas.ErrorOut}},
+)
+def load_film(camera_id: int, body: schemas.LoadFilm, db: Session = Depends(get_db)):
+    """Create a roll in status ``loaded`` for this camera (M4 lifecycle).
+
+    Refuses with 409 ``camera_occupied`` while another roll is still loaded or shot
+    in the camera, unless ``force`` is set.
+    """
+    c = db.get(Camera, camera_id)
+    if not c:
+        return not_found("Camera")
+    try:
+        stock = None
+        if body.film_stock_id not in (None, ""):
+            stock = db.get(FilmStock, parse_int(body.film_stock_id, "film_stock_id", minimum=1))
+            if stock is None:
+                raise ApiError("unknown_film_stock", "That film stock does not exist.", 404, "film_stock_id")
+        lens = None
+        if body.lens_id not in (None, ""):
+            lens = db.get(Lens, parse_int(body.lens_id, "lens_id", minimum=1))
+            if lens is None:
+                raise ApiError("unknown_lens", "That lens does not exist.", 404, "lens_id")
+        today = datetime.utcnow().date()
+        title = (body.title or "").strip() or f"{stock.name if stock else 'Roll'} in {c.name}, {today.isoformat()}"
+        f = FilmRoll(
+            title=title,
+            notes=body.notes,
+            format=body.format or (stock.format if stock else None),
+            start_date=today,
+            camera_id=c.id,
+            camera=c.name,
+            lens_id=lens.id if lens else None,
+            lens=lens.name if lens else None,
+            film_stock_id=stock.id if stock else None,
+            film_type=stock.name if stock else None,
+        )
+        serials.assign(db, f, None)
+        db.add(f)
+        db.flush()
+        lifecycle.load_into_camera(db, c, f, force=bool(body.force))
+        db.commit()
+    except ApiError as exc:
+        db.rollback()
+        return from_exc(exc)
+    db.refresh(f)
+    return {"ok": True, "film": film_to_dict(f)}
+
+
+@router.get("/cameras/{camera_id}/loaded")
+def loaded_roll(camera_id: int, db: Session = Depends(get_db)):
+    c = db.get(Camera, camera_id)
+    if not c:
+        return not_found("Camera")
+    roll = (
+        db.query(FilmRoll)
+        .filter(FilmRoll.loaded_camera_id == c.id, FilmRoll.status.in_(("loaded", "shot")))
+        .order_by(FilmRoll.loaded_at.desc().nulls_last())
+        .first()
+    )
+    return {"roll": film_to_dict(roll) if roll else None}
 
 
 # ---------------------------

@@ -48,6 +48,7 @@ from ..models import FilmRoll, ImageAsset, ImageType, LibraryRoot
 # direction; `routers.api` does not import this module, so it is a straight edge,
 # not a cycle. If it ever needs to, both belong in a service of their own.)
 from ..routers.api import ALLOWED_EXTENSIONS, frame_number_from_filename
+from . import lifecycle, serials
 from .hashing import safe_content_hash
 
 #: The same allowlist the upload endpoints use (roadmap M2, R#18).
@@ -210,7 +211,12 @@ def _roll_for_folder(db: Session, folder: Path, result: ScanResult) -> FilmRoll:
     if roll:
         return roll
     title, serial = parse_folder_name(folder.name)
-    roll = FilmRoll(title=title, archive_serial=serial, source_dir=key)
+    roll = FilmRoll(title=title, source_dir=key)
+    # M4: the folder's serial if it carries one and it is free, else a fresh one.
+    if serial and not serials.is_taken(db, serial):
+        roll.archive_serial = serials.normalize(serial)
+    else:
+        serials.assign(db, roll, None)
     db.add(roll)
     db.flush()  # we need the id for the frames below
     result.rolls_created += 1
@@ -271,6 +277,7 @@ def _link_file(db: Session, file_path: Path, roll: FilmRoll, result: ScanResult)
         )
     )
     result.frames_added += 1
+    lifecycle.touch_scanned(roll)
 
 
 def scan_root(db: Session, root: LibraryRoot, commit: bool = True) -> ScanResult:

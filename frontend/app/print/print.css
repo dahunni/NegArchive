@@ -1,0 +1,119 @@
+/*
+ * Print-optimised pages (roadmap M4). Every printout is plain A4 on a normal
+ * printer, cut by hand: the browser's Print dialog (or Save as PDF) is the export.
+ * Sizes are millimetres so what is on screen is what comes off the printer.
+ */
+.print-root {
+  --paper-w: 210mm;
+  --paper-h: 297mm;
+  --paper-margin: 10mm;
+  --ink: #111;
+  --ink-muted: #555;
+  --rule: #999;
+  --cut: #bbb;
+  color: var(--ink);
+  background: #e5e5e5;
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  font-size: 10pt;
+  line-height: 1.3;
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+}
+.print-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  padding: 10px 16px;
+  background: #fff;
+  border-bottom: 1px solid #ccc;
+  color: #111;
+}
+.print-toolbar .spacer { flex: 1; }
+.sheet {
+  position: relative;
+  width: var(--paper-w);
+  min-height: var(--paper-h);
+  margin: 12px auto;
+  padding: var(--paper-margin);
+  background: #fff;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.15);
+  box-sizing: border-box;
+  page-break-after: always;
+  break-after: page;
+  overflow: hidden;
+}
+.sheet.landscape { width: var(--paper-h); min-height: var(--paper-w); }
+.sheet:last-child { page-break-after: auto; break-after: auto; }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-variant-numeric: tabular-nums; }
+.serial { font-size: 22pt; font-weight: 700; letter-spacing: 0.02em; }
+.title { font-size: 15pt; font-weight: 600; }
+.meta { font-size: 9pt; color: var(--ink-muted); }
+.meta b { color: var(--ink); font-weight: 600; }
+.codes { display: flex; align-items: flex-end; gap: 6mm; }
+.codes img { display: block; }
+.codes .qr { width: 26mm; height: 26mm; }
+.codes .barcode { height: 14mm; }
+.hr { border: 0; border-top: 0.4pt solid var(--rule); margin: 4mm 0; }
+
+/* The sleeve grid: rows are strips, cells are frames, the same geometry as the page behind it. */
+.strip-grid { display: grid; gap: 1.5mm; margin-top: 3mm; }
+.strip-row { display: grid; gap: 1.5mm; }
+.frame-box {
+  aspect-ratio: 3 / 2;
+  border: 0.4pt solid var(--rule);
+  border-radius: 1mm;
+  position: relative;
+  background: #f4f4f4;
+  overflow: hidden;
+}
+.frame-box.empty { border-style: dashed; background: #fff; }
+.frame-box img { width: 100%; height: 100%; object-fit: contain; display: block; background: #222; }
+.frame-box .num {
+  position: absolute; left: 1mm; bottom: 0.6mm;
+  font-size: 7.5pt; font-weight: 600; font-family: ui-monospace, Menlo, monospace;
+  background: rgba(255,255,255,0.85); padding: 0 1mm; border-radius: 0.6mm;
+}
+.frame-box .note {
+  position: absolute; right: 1mm; bottom: 0.6mm; max-width: 60%;
+  font-size: 6.5pt; color: var(--ink-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  background: rgba(255,255,255,0.85); padding: 0 1mm; border-radius: 0.6mm;
+}
+.strip-label { font-size: 7pt; color: var(--ink-muted); writing-mode: vertical-rl; transform: rotate(180deg); text-align: center; }
+
+/* Labels cut by hand: a grid of fixed-size boxes with cut marks. */
+.label-sheet { display: grid; gap: 0; }
+.label {
+  box-sizing: border-box;
+  border: 0.3pt dashed var(--cut);
+  padding: 2.5mm;
+  overflow: hidden;
+  position: relative;
+  background: #fff;
+}
+.label.sticker { width: 50mm; height: 25mm; }
+.label.spine { width: 50mm; height: 200mm; }
+.label.spine.rot { writing-mode: vertical-rl; }
+.label.card { width: 105mm; height: 148mm; padding: 6mm; }
+.label.loc { width: 90mm; height: 40mm; }
+.cutmark { position: absolute; width: 4mm; height: 4mm; border-color: var(--cut); border-style: solid; border-width: 0; }
+
+table.index { width: 100%; border-collapse: collapse; font-size: 8.5pt; }
+table.index th, table.index td { border-bottom: 0.3pt solid var(--rule); padding: 1.2mm 1.5mm; text-align: left; vertical-align: top; }
+table.index th { font-size: 7.5pt; text-transform: uppercase; letter-spacing: 0.04em; color: var(--ink-muted); }
+table.index td.num { font-family: ui-monospace, Menlo, monospace; white-space: nowrap; }
+.tree { list-style: none; padding-left: 0; margin: 0; }
+.tree ul { list-style: none; padding-left: 6mm; margin: 0; border-left: 0.3pt solid var(--rule); }
+.tree li { padding: 0.8mm 0 0.8mm 2mm; }
+.footer { position: absolute; bottom: 5mm; left: var(--paper-margin); right: var(--paper-margin); font-size: 7pt; color: var(--ink-muted); display: flex; justify-content: space-between; }
+
+@page { size: A4 portrait; margin: 0; }
+@media print {
+  .print-root { background: #fff; }
+  .print-toolbar { display: none !important; }
+  .sheet { margin: 0; box-shadow: none; width: 210mm; height: 297mm; }
+  .sheet.landscape { width: 297mm; height: 210mm; }
+}

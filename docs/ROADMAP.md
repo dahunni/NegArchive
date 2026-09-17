@@ -196,33 +196,40 @@ Left for later, deliberately:
   lands hours later is a good way to lose the link between paper and record.
 - `GET /api/images/{id}/preview` still does blocking file IO on the event loop (**R#19**).
 
-## M4 — Paper ↔ virtual (physical archive features)
+## M4 — Paper ↔ virtual (physical archive features) *(done)*
 
-Specification with the owner's decisions: [M4_PAPER.md](M4_PAPER.md). Depends on M2 and M3.
+Specification with the owner's decisions: [M4_PAPER.md](M4_PAPER.md).
 
-- [ ] **Serial** `NEG-YYYY-NNN`: auto-assigned, unique, immutable once printed, backfill for
-      existing rolls, `/s/{serial}` route, `serial:` search prefix, `/` focuses search.
-- [ ] **Location tree**: `locations` (building/room/shelf/row/box/binder/envelope/sleeve),
+- [x] **Serial** `NEG-YYYY-NNNN`: auto-assigned, unique, immutable once printed (`?force=true`
+      overrides), backfilled for existing rolls, `/s/{serial}` route, `/` focuses search,
+      prefix is a setting.
+- [x] **Location tree**: `locations` (building/room/shelf/row/box/binder/envelope/sleeve),
       `sleeve_layouts` (PrintFile 7×6 default, 7×5, 120 variants), `film_rolls.location_id` +
-      `strips` override, `location_moves` history; migrate `building`/`folder` into nodes and drop
-      them. Binder extras (capacity, page order, missing pages), sleeve holds exactly one roll.
-- [ ] **Strip / position** from the roll's strips: on frame cards, in the viewer, and as the
-      contact sheet grid.
-- [ ] **Roll lifecycle** loaded → shot → at lab → back → scanned → sleeved with timestamps,
-      "Load film" on a camera, automatic `scanned`/`sleeved`, home page work lists (in cameras, at
-      the lab, to scan, to sleeve), status filter.
-- [ ] **Codes**: `GET /api/codes/qr` and `/api/codes/code128` as SVG; QR = `{PUBLIC_BASE_URL}/s/{serial}`,
-      Code128 = bare serial.
-- [ ] **Printouts** as print-optimised pages with cut marks (browser "Save as PDF"): sleeve cover
-      sheet (A4, grid mirrors the sleeve, frame numbers, header with all metadata + QR + Code128),
-      binder spine label (50×200, 4/A4), small roll sticker (50×25, 20/A4), binder index, roll
-      index card (A6, 4/A4), location tree sheet. One `print.css`; label sizes are settings.
-- [ ] **Print queue**: rolls never printed or moved since last print; batch print; `label_printed_at`.
-- [ ] **Scan page** in the PWA (QR + Code128 via `BarcodeDetector`, `jsQR` fallback) and a
-      **location browser** with counts, page order, discrepancies and per-node QR.
-- [ ] **Move roll** action (single and bulk) with next-free-page suggestion.
-- [ ] Tests for serial allocation, strip math, location constraints, lifecycle transitions; a
-      Playwright check that each printout renders at its paper size.
+      `strips` override, `location_moves` history; `building`/`folder` migrated into nodes
+      (columns kept read-only for one release). Binder pages with next-free-page, capacity,
+      discrepancies; a sleeve holds exactly one roll.
+- [x] **Strip / position** from the roll's strips on frame cards; the cover sheet grid mirrors
+      the sleeve; `GET /api/films/{id}/layout`.
+- [x] **Roll lifecycle** loaded → shot → at lab → back → scanned → sleeved with timestamps,
+      "Load film" on a camera (refuses a second roll), automatic `scanned`/`sleeved`, home page
+      work lists (in cameras, at the lab, to scan, to sleeve), status filter, `GET /api/work`.
+- [x] **Codes**: `GET /api/codes/qr.svg` and `/api/codes/code128.svg`; QR = `{public base}/s/{serial}`
+      or `/l/{id}`, Code128 = bare serial or `LOC-<id>`; `public_base_url` setting.
+- [x] **Printouts** as print-optimised pages with cut marks (browser "Save as PDF"): sleeve cover
+      sheet (A4, grid mirrors the strips), stickers (50×25, 20/A4), index cards (A6, 4/A4), binder
+      spine label (50×200), location label (90×40), binder index, storage tree, scanner command
+      cards. One `print.css`.
+- [x] **Print queue**: never printed or moved since the last print; "mark printed" freezes the serial.
+- [x] **Scanner console** (`/scan`): look up / move (rolls…, then destination) / set status / mark
+      printed, driven by a barcode scanner, the phone camera (`BarcodeDetector`, jsQR fallback) or
+      typing; printable `CMD-*` command cards switch modes; a keyboard-wedge listener opens any
+      scanned roll or location from any page.
+- [x] **Location browser** with counts, page order, discrepancies and per-node QR; **Move** on the
+      roll page and in the roll list with next-free-page resolution; move history.
+- [x] Tests: `tests/test_m4_paper.py` (serials, locations, lifecycle, scan grammar, strips, codes,
+      print queue); the Playwright smoke test walks the wizard, a binder with pages, the scanner
+      move sequence, `/s/{serial}`, the wedge scanner, and checks the printouts at paper size.
+- [ ] TLS for the LAN so the phone camera scanner works away from localhost (also M3's PWA).
 
 ## M5 — NegPy integration (file-based, no NegPy code in NegArchive)
 

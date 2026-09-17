@@ -640,6 +640,27 @@ container does not sign anyone out, and changing the password revokes every sess
 What it is not: rate limiting, lockouts, per-user sessions, or anything you should expose to the
 internet. It is a door latch for a network you mostly trust. Empty by default.
 
+## The paper side (M4)
+
+Every roll has a serial (`NEG-2024-0011`), a place in a storage tree (building → shelf → row →
+binder → sleeve page, any depth) and a lifecycle (in camera → shot → at the lab → back → scanned →
+sleeved). The tree lives under **Locations**; a binder gets numbered sleeve pages and files a roll
+on its next free page.
+
+**Codes.** Each roll and each location has a QR code (opens `/s/{serial}` or `/l/{id}` on a phone)
+and a Code128 barcode (types the serial or `LOC-<id>` on a USB/Bluetooth scanner). Set
+`public_base_url` under Settings so printed QR codes point at a stable address.
+
+**Scanning.** A barcode scanner works from any page: scan a roll and it opens. The **Scan** page
+is the console for sequences: choose *Move*, scan one or more rolls, scan the destination, done.
+*Set status* and *Mark printed* work the same way. Print the command cards (`/print/commands`) and
+the whole workflow is scans only. The phone camera scans QR codes too (needs HTTPS or localhost).
+
+**Printouts** are plain A4 pages you print or save as PDF from the browser: the sleeve cover sheet
+(its grid mirrors the strips on the page behind it), stickers (50 × 25 mm, 20 per sheet), index
+cards (A6), binder spine labels, location labels, binder indexes and the whole tree. The **Print**
+page lists rolls that never had a label or moved since the last one.
+
 ## Known issues
 
 The full list with evidence and file references is [docs/REVIEW.md](docs/REVIEW.md). M2 closed
@@ -716,3 +737,14 @@ Settings: where the files are, which folders are linked, the watch folder, and g
 out again.
 
 ![Settings](screenshots/screenshot-09.png)
+
+The paper side (M4): the storage tree, a binder with its pages, the scanner console mid-move, a
+roll with its lifecycle and location, the print queue, and a sleeve cover sheet as the browser
+prints it.
+
+![Locations](screenshots/screenshot-11.png)
+![A binder and its pages](screenshots/screenshot-12.png)
+![The scanner console holding a roll for a move](screenshots/screenshot-13.png)
+![A roll with its lifecycle and location](screenshots/screenshot-15.png)
+![The print queue](screenshots/screenshot-10.png)
+![A sleeve cover sheet](screenshots/screenshot-14.png)

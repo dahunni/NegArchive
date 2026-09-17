@@ -10,7 +10,8 @@ anywhere any more. Change a model *and* write a revision.
 import enum
 from datetime import date, datetime
 
-from sqlalchemy import Boolean, Date, DateTime, Enum, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, Date, DateTime, Enum, ForeignKey, Index, Integer, String, Text, text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .db import Base
@@ -36,6 +37,16 @@ FILM_FORMATS = ("35mm", "120", "4x5", "8x10", "other")
 #: ``static/uploads`` and are deleted with their row; ``linked`` files belong to
 #: someone else (M3's import-by-reference) and are never touched.
 STORAGE_MODES = ("managed", "linked")
+
+#: M4: the kinds a node of the location tree can be. Any depth is allowed; two
+#: kinds carry behaviour: a ``binder`` orders its ``sleeve`` children as pages and a
+#: ``sleeve`` holds exactly one roll and has a layout (rows x frames per row).
+LOCATION_KINDS = ("building", "room", "shelf", "row", "box", "binder", "envelope", "sleeve", "other")
+
+#: M4: the roll lifecycle, in order. ``scanned`` is set by the first scan, ``sleeved``
+#: by the first move into a sleeve; everything else is set by hand or by a scanner
+#: command card.
+ROLL_STATUSES = ("loaded", "shot", "at_lab", "back", "scanned", "sleeved")
 
 
 class Camera(Base):
@@ -77,6 +88,15 @@ class Lens(Base):
 
 class FilmRoll(Base):
     __tablename__ = "film_rolls"
+    __table_args__ = (
+        # M4: serials are unique, case-insensitively; rolls without one are not compared.
+        Index(
+            "ux_film_rolls_archive_serial",
+            text("upper(archive_serial)"),
+            unique=True,
+            postgresql_where=text("archive_serial IS NOT NULL"),
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     title: Mapped[str] = mapped_column(String(200), nullable=False)
@@ -111,6 +131,30 @@ class FilmRoll(Base):
     folder: Mapped[str | None] = mapped_column(String(200))
     archive_serial: Mapped[str | None] = mapped_column(String(200))
 
+    # --- M4: where the negatives are, and where the roll is in its life ----------
+    #: The sleeve, envelope or box the strips are in. NULL = not filed yet.
+    location_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("locations.id", ondelete="SET NULL"), index=True
+    )
+    #: Strip lengths overriding the sleeve layout, e.g. ``[5,5,5,5,5,5,6]`` for a roll
+    #: doubled up on an old 5-per-row page. NULL = the layout's default.
+    strips: Mapped[list | None] = mapped_column(JSONB)
+    #: One of ROLL_STATUSES.
+    status: Mapped[str] = mapped_column(String(20), nullable=False, server_default="back", default="back")
+    loaded_at: Mapped[datetime | None] = mapped_column(DateTime)
+    shot_at: Mapped[datetime | None] = mapped_column(DateTime)
+    lab_sent_at: Mapped[datetime | None] = mapped_column(DateTime)
+    lab_back_at: Mapped[datetime | None] = mapped_column(DateTime)
+    scanned_at: Mapped[datetime | None] = mapped_column(DateTime)
+    sleeved_at: Mapped[datetime | None] = mapped_column(DateTime)
+    #: The camera this roll is (or was) loaded in; blocks a second roll in the same camera.
+    loaded_camera_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("cameras.id", ondelete="SET NULL"), index=True
+    )
+    #: When a label or cover sheet was last printed; the serial is frozen after that,
+    #: and a move after it puts the roll back into the print queue.
+    label_printed_at: Mapped[datetime | None] = mapped_column(DateTime)
+
     #: M3: the folder this roll was imported from by reference, so a rescan knows
     #: which roll a directory already maps to. NULL for rolls created in the UI.
     source_dir: Mapped[str | None] = mapped_column(String(1000), unique=True, index=True)
@@ -123,9 +167,11 @@ class FilmRoll(Base):
 
     # Loaded with the roll: the API answers with the catalog entry's *current* name,
     # so renaming a camera updates every roll that points at it.
-    camera_ref: Mapped["Camera | None"] = relationship("Camera", lazy="joined")
+    camera_ref: Mapped["Camera | None"] = relationship("Camera", lazy="joined", foreign_keys=[camera_id])
     lens_ref: Mapped["Lens | None"] = relationship("Lens", lazy="joined")
     film_stock_ref: Mapped["FilmStock | None"] = relationship("FilmStock", lazy="joined")
+    location_ref: Mapped["Location | None"] = relationship("Location", lazy="joined", foreign_keys=[location_id])
+    loaded_camera_ref: Mapped["Camera | None"] = relationship("Camera", foreign_keys=[loaded_camera_id])
 
     @property
     def camera_name(self) -> str | None:
@@ -204,3 +250,74 @@ class Setting(Base):
     key: Mapped[str] = mapped_column(String(100), primary_key=True)
     value: Mapped[str | None] = mapped_column(Text)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+# ---------------------------------------------------------------------------
+# M4: the physical archive
+# ---------------------------------------------------------------------------
+
+
+class SleeveLayout(Base):
+    """How a sleeve page is cut: rows of strips, frames per strip (M4).
+
+    PrintFile 35-7B is 7 rows of 6; the owner's older pages take 5 per row. A roll
+    can override the layout with its own ``strips`` list.
+    """
+
+    __tablename__ = "sleeve_layouts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    name: Mapped[str] = mapped_column(String(100), unique=True)
+    rows: Mapped[int] = mapped_column(Integer, nullable=False)
+    frames_per_row: Mapped[int] = mapped_column(Integer, nullable=False)
+    film_format: Mapped[str | None] = mapped_column(String(20))
+    is_default: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false", default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class Location(Base):
+    """One node of the storage tree: building, shelf, row, binder, sleeve… (M4).
+
+    ``code`` is the short printable identifier (``A``, ``S2``, ``B03``, ``P12``); the
+    full path (``Archive A / Shelf 2 / Binder 03 / Page 12``) is derived. A sleeve
+    holds exactly one roll; a binder orders its sleeves by ``sort_order`` as pages.
+    """
+
+    __tablename__ = "locations"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    parent_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("locations.id", ondelete="CASCADE"), index=True
+    )
+    kind: Mapped[str] = mapped_column(String(20), nullable=False)  # one of LOCATION_KINDS
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    code: Mapped[str | None] = mapped_column(String(50))
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0", default=0)
+    notes: Mapped[str | None] = mapped_column(Text)
+    #: Sleeves: the page geometry. Binders: the default for pages created inside.
+    sleeve_layout_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("sleeve_layouts.id", ondelete="SET NULL")
+    )
+    #: Binders: how many pages fit. Boxes: how many rolls. NULL = unlimited.
+    capacity: Mapped[int | None] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    parent: Mapped["Location | None"] = relationship("Location", remote_side=[id], back_populates="children")
+    children: Mapped[list["Location"]] = relationship(
+        "Location", back_populates="parent", cascade="all, delete-orphan", order_by="Location.sort_order"
+    )
+    sleeve_layout: Mapped["SleeveLayout | None"] = relationship("SleeveLayout", lazy="joined")
+    rolls: Mapped[list["FilmRoll"]] = relationship("FilmRoll", foreign_keys=[FilmRoll.location_id], viewonly=True)
+
+
+class LocationMove(Base):
+    """Every move of a roll, so the roll page can say where it has been (M4)."""
+
+    __tablename__ = "location_moves"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    roll_id: Mapped[int] = mapped_column(Integer, ForeignKey("film_rolls.id", ondelete="CASCADE"), index=True)
+    from_location_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("locations.id", ondelete="SET NULL"))
+    to_location_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("locations.id", ondelete="SET NULL"))
+    moved_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    note: Mapped[str | None] = mapped_column(Text)

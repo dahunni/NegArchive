@@ -10,6 +10,7 @@ import {
   type Film,
   type Filmstock,
   type Lens,
+  type Location,
   errorMessage,
   fieldFor,
   updateFilm,
@@ -37,6 +38,7 @@ export function RollEditSheet({
   cameras,
   lenses,
   filmstocks,
+  locations = [],
 }: {
   film: Film | null
   open: boolean
@@ -44,6 +46,7 @@ export function RollEditSheet({
   cameras: Camera[]
   lenses: Lens[]
   filmstocks: Filmstock[]
+  locations?: Location[]
 }) {
   const router = useRouter()
   const { toast } = useToast()
@@ -108,7 +111,14 @@ export function RollEditSheet({
               filmstocks={filmstocks}
               idPrefix="edit"
             />
-            <StorageFields values={values} onChange={change} idPrefix="edit" />
+            <StorageFields
+              values={values}
+              errors={errors}
+              onChange={change}
+              idPrefix="edit"
+              locations={locations}
+              serialLocked={Boolean(film.label_printed_at)}
+            />
           </div>
         ) : null}
 

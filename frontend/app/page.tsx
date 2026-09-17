@@ -1,6 +1,6 @@
 import { Suspense } from "react"
 
-import { getCameras, getFilmsPage, getFilmstocks, getLenses } from "@/lib/api"
+import { getCameras, getFilmsPage, getFilmstocks, getLenses, getLocations, getWork } from "@/lib/api"
 import { type RollSearchParams, queryFromSearchParams } from "@/lib/roll-query"
 import { RollBrowser } from "@/components/roll-browser"
 import { RollListSkeleton } from "@/components/skeletons"
@@ -22,11 +22,13 @@ export default async function RollsHomePage({
   const params = await searchParams
   const query = queryFromSearchParams(params)
 
-  const [films, cameras, lenses, filmstocks] = await Promise.all([
+  const [films, cameras, lenses, filmstocks, locations, work] = await Promise.all([
     getFilmsPage(query),
     getCameras(),
     getLenses(),
     getFilmstocks(),
+    getLocations().catch(() => []),
+    getWork().catch(() => null),
   ])
 
   return (
@@ -35,9 +37,12 @@ export default async function RollsHomePage({
         initial={films}
         initialQuery={query}
         openWizard={params.new === "1"}
+        focusSearch={params.focus === "search"}
         cameras={cameras}
         lenses={lenses}
         filmstocks={filmstocks}
+        locations={locations}
+        work={work}
       />
     </Suspense>
   )
