@@ -40,6 +40,11 @@ for every form, icon-only actions, no thumbnails on the roll list, no lightbox, 
 navigation that overflows on phones). Rework it around the real workflow: **a roll is the unit of
 work**, and most sessions are "new roll → dump scans → number and annotate frames → find it later".
 
+**Stack constraint: the rework stays on Next.js.** App router, React 19, TypeScript, Tailwind 4
+and shadcn/ui as today; no framework switch, no separate SPA. Server components keep fetching
+through `lib/api.ts`, interactive parts are client components, and the `/api` and `/static`
+rewrites remain the only way the browser reaches the backend.
+
 - [ ] **Information architecture**: Rolls as the home page with thumbnail strip, film, camera,
       date range, frame count and storage location per row; catalog (cameras, lenses, film stocks)
       demoted to a single "Gear" section; Search folded into the roll list as filters, not a page.
