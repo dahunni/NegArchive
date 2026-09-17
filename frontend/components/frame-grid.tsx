@@ -351,13 +351,16 @@ export function FrameGrid({
       <DeleteConfirmationDialog
         open={confirmDelete}
         onOpenChange={setConfirmDelete}
+        offerKeepFiles
         title={`Delete ${selected.size} frame${selected.size === 1 ? "" : "s"}?`}
-        description="The frame records are removed from the archive. The scan files stay on disk."
-        onConfirm={() => {
+        description="The frame records are removed from the archive, and their scan files are deleted with them."
+        onConfirm={({ keepFiles }) => {
           setConfirmDelete(false)
           void runBulk(async () => {
-            const count = await bulkDeleteImages(selectedIds, false)
-            return `${count} frame${count === 1 ? "" : "s"} deleted`
+            const count = await bulkDeleteImages(selectedIds, keepFiles)
+            return `${count} frame${count === 1 ? "" : "s"} deleted${
+              keepFiles ? ", files kept on disk" : ""
+            }`
           })
         }}
       />

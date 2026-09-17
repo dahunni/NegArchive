@@ -79,34 +79,53 @@ rewrites remain the only way the browser reaches the backend.
 - [x] Removed 42 unused shadcn components from `components/ui` (15 left) and the 31 dependencies
       that only they imported, including `@vercel/analytics` and the Google font loaders.
 
-## M2 — Archive integrity (data model)
+## M2 — Archive integrity (data model) *(done)*
 
-- [ ] **Postgres only.** Make `DATABASE_URL` required (no SQLite fallback), remove the SQLite
-      branches (`check_same_thread`, the `Text` variant on `Face.embedding`), use native
-      `JSONB`/`Boolean`/`Date` types, and run every migration and test against Postgres 16.
-      Local dev = `docker compose up db` plus uvicorn on the host. Ship a one-off
-      `scripts/migrate_sqlite_to_pg.py` for existing `negarchive.db` files.
-- [ ] Store `original_filename` on every upload; parse `frame_number` from it
-      (`Roll12_007.tif`, `_Frame007`, `007.jpg`, NegPy's `{roll}_{frame}` pattern). Sort by
-      frame everywhere. **R#7, R#24**
-- [ ] Replace name-based references with foreign keys: `film_rolls.camera_id`, `lens_id`,
-      `film_stock_id` (keep the string columns during migration, backfill by name). **R#14**
-- [ ] Introduce Alembic (Postgres dialect, autogenerate checked in CI); move the startup
-      `ALTER TABLE` hacks into migrations; drop the seed-on-startup (seed only when the table is
-      empty, or via `POST /api/seed`). **R#11, R#23**
-- [ ] Pydantic request/response models for every endpoint (the unused `schemas.py` is the start);
-      proper 404/400/409 status codes; structured error body `{ "error": { code, message } }`.
-      *(M1 added that body and real 4xx codes for the cases its forms hit — see `app/errors.py`.
-      Every other endpoint, and "not found", still answers the old way.)* **R#16, R#17**
-- [ ] File lifecycle: delete files with records (with a "keep files" option), an orphan sweep
-      endpoint, and a `delete_file` checkbox in the UI. **R#9**
-- [ ] Extension + MIME allowlist (`jpg jpeg png tif tiff webp dng`), size limit, never serve
-      uploads as `text/html`. **R#18**
-- [ ] Faces: delete `services/face.py`, the `Face` and `Person` models and the `deepface`,
-      `scikit-learn` and `opencv` requirements if nothing else needs them. People detection comes
-      from Immich (M6), not from this codebase. **R#10, R#15**
-- [ ] Filmstock `kind` select lists the enum, not "kinds already used". Add `manufacturer`,
-      `format` (35mm/120/4x5…) to filmstocks; add `format` to rolls. **R#21** (also needed for NegPy gear sync)
+The data model is the archive's memory, and it was leaking: filenames were thrown away on
+upload, gear was referenced by a string that a rename silently broke, deleting a roll left its
+files on disk forever, the schema was maintained by guarded `ALTER TABLE`s in a startup hook,
+and "not found" was an HTTP 200. All of that is fixed here.
+
+- [x] **Postgres only.** `DATABASE_URL` is required and must be a Postgres URL — the backend
+      stops at startup with an explanation otherwise. The SQLite branches
+      (`check_same_thread`, the `Text` variant on the JSON column) are gone, the columns are
+      native `Boolean`/`Date`, and the tests refuse a non-Postgres URL. Local dev is
+      `docker compose up -d db` plus uvicorn on the host.
+      `scripts/migrate_sqlite_to_pg.py` copies an existing `negarchive.db` across, keeping ids
+      and resolving gear names to the new foreign keys.
+- [x] `original_filename` is stored on every upload path (single, bulk, ZIP) and `frame_number`
+      is parsed from it when the client sends none (`Roll12_007.tif`, `NEG-2024-011_007.jpg`,
+      `_Frame007`, `007.jpg`, `img_0007`, NegPy's `{roll}_{frame}`). Frames sort by
+      `frame_number NULLS LAST, id` everywhere, including the contact sheet's input, and the
+      filename is in the API, in the viewer's panel and on the download. **R#7, R#24**
+- [x] Gear is referenced by id: `film_rolls.camera_id`, `lens_id`, `film_stock_id`, nullable,
+      `ON DELETE SET NULL`, backfilled from the name columns in the migration. The string
+      columns stay for one release and now mirror the catalog entry's current name, so a
+      rename reaches every roll. The API takes ids or names; deleting gear that is still in
+      use is a 409 with the count unless `?force=true`. **R#14**
+- [x] Alembic owns the schema: `0001_baseline` reproduces the pre-M2 schema (and no-ops on a
+      database that already has it), `0002_m2_archive_integrity` carries the changes above.
+      `app/main.py` runs `alembic upgrade head` at startup instead of the `ALTER TABLE` hook,
+      and `create_all` is gone. Seeding only happens while a catalog table is empty, or on
+      `POST /api/seed`, so a deleted Nikon F5 stays deleted. **R#11, R#23**
+- [x] Pydantic request and response models for every endpoint, real status codes
+      (404 missing, 400/422 invalid, 409 duplicate or in use, 413 too large, 415 wrong type)
+      and one error body everywhere: `{"error": {"code", "message", "field"}}`. `lib/api.ts`
+      puts the message on the field the API named. **R#16, R#17**
+- [x] File lifecycle: deleting an image or a roll deletes the managed files too, with
+      `?keep_files=true` (and a checkbox in every delete dialog) to opt out;
+      `POST /api/maintenance/sweep_orphans` lists files with no record and records with no
+      file, dry run unless `?apply=true`. A `storage_mode = 'linked'` row is never deleted —
+      the column ships here so M3's import-by-reference can rely on it. **R#9**
+- [x] Uploads are limited to `jpg jpeg png tif tiff webp dng` by extension *and* by a
+      magic-byte sniff, with a configurable `MAX_UPLOAD_MB` (default 512); nothing under
+      `/static/uploads` can come back as `text/html`, and everything is `nosniff`. **R#18**
+- [x] Faces are gone: `services/face.py`, the `Face` and `Person` models and their tables, and
+      the `deepface` and `scikit-learn` requirements. `opencv-python-headless` stays, the
+      preview fallback still decodes 16-bit TIFFs with it. The backend image went from about
+      2 GB to 0.28 GB. People detection comes from Immich (M6). **R#10, R#15**
+- [x] The filmstock `kind` select lists the enum; film stocks gained `manufacturer` and
+      `format`, rolls gained `format` (`35mm`, `120`, `4x5`, `8x10`, `other`). **R#21**
 
 ## M3 — Offline-first and easy local use
 

@@ -1,15 +1,66 @@
+"""The FastAPI application: migrations at startup, static files, one router."""
+
 import os
-from fastapi import FastAPI, Request, Depends
+from contextlib import asynccontextmanager
+from pathlib import Path
+
+from alembic import command
+from alembic.config import Config
+from fastapi import FastAPI
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy.orm import Session
+from starlette.responses import Response
 
-from .db import Base, engine, get_db, SessionLocal
-from sqlalchemy import inspect, text
-from .models import FilmRoll, Camera, FilmStock, FilmKind, ImageAsset
+from .db import SessionLocal, engine
+from .errors import ApiError, from_exc, validation_error_response
 from .routers import api
+from .seed import seed_catalog
 
-app = FastAPI(title="NegArchive")
+REPO_ROOT = Path(__file__).resolve().parent.parent
+
+#: Never served as HTML, whatever the extension says (R#18).
+UNSAFE_MEDIA_TYPES = {
+    "text/html",
+    "application/xhtml+xml",
+    "image/svg+xml",
+    "application/xml",
+    "text/xml",
+    "application/javascript",
+    "text/javascript",
+}
+
+
+def run_migrations() -> None:
+    """``alembic upgrade head`` in process (roadmap M2, replaces the ALTER hooks).
+
+    The config is built in code rather than read from ``alembic.ini`` alone, so the
+    app and the CLI cannot drift apart: both end up on the same script directory and
+    the same ``DATABASE_URL``.
+    """
+    config = Config(str(REPO_ROOT / "alembic.ini"))
+    config.set_main_option("script_location", str(REPO_ROOT / "alembic"))
+    config.set_main_option("sqlalchemy.url", str(engine.url.render_as_string(hide_password=False)))
+    # Reuse the app's engine so a single connection pool does the work.
+    with engine.begin() as connection:
+        config.attributes["connection"] = connection
+        command.upgrade(config, "head")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # A failure here must stop the app: booting against a half-migrated schema is how
+    # the old silent `try/except: pass` migrations produced 500s at runtime (R#23).
+    run_migrations()
+    db = SessionLocal()
+    try:
+        seed_catalog(db)
+    finally:
+        db.close()
+    yield
+
+
+app = FastAPI(title="NegArchive", lifespan=lifespan)
 
 # Enable CORS for Node/Next.js frontends (local dev and hosted)
 app.add_middleware(
@@ -21,115 +72,40 @@ app.add_middleware(
 )
 
 
-def _is_postgres() -> bool:
-    return engine.dialect.name == "postgresql"
+@app.exception_handler(ApiError)
+async def handle_api_error(request, exc: ApiError):
+    """Anything raised below a handler still answers with the structured body."""
+    return from_exc(exc)
 
 
-def _run_migrations() -> None:
-    """Minimal, idempotent schema fixups until Alembic lands (roadmap M2).
+@app.exception_handler(RequestValidationError)
+async def handle_validation_error(request, exc: RequestValidationError):
+    """Pydantic's 422 in the same ``{"error": {code, message, field}}`` shape (R#16)."""
+    return validation_error_response(exc.errors())
 
-    Every statement is guarded so a partially migrated database still boots.
+
+class SafeStaticFiles(StaticFiles):
+    """Static files that can never be interpreted as a page (R#18).
+
+    An uploaded ``evil.html`` used to be served back with ``text/html``, which is
+    stored XSS on the LAN. Uploads are now served as a download with a neutral media
+    type, and everything under ``/static`` is marked ``nosniff``.
     """
-    inspector = inspect(engine)
 
-    def columns(table: str) -> dict:
-        try:
-            return {c["name"]: c for c in inspector.get_columns(table)}
-        except Exception:
-            return {}
-
-    def execute(sql: str) -> None:
-        try:
-            with engine.begin() as conn:
-                conn.execute(text(sql))
-        except Exception:
-            # Non-fatal: the column/constraint is probably already in the target state
-            pass
-
-    fs_cols = columns("film_stocks")
-    if fs_cols and "expiration_date" not in fs_cols:
-        execute("ALTER TABLE film_stocks ADD COLUMN expiration_date DATE")
-
-    cam_cols = columns("cameras")
-    if cam_cols and "mount" not in cam_cols:
-        execute("ALTER TABLE cameras ADD COLUMN mount VARCHAR(100)")
-    if cam_cols and "notes" not in cam_cols:
-        execute("ALTER TABLE cameras ADD COLUMN notes TEXT")
-
-    fr_cols = columns("film_rolls")
-    if fr_cols and "start_date" not in fr_cols:
-        execute("ALTER TABLE film_rolls ADD COLUMN start_date DATE")
-    if fr_cols and "end_date" not in fr_cols:
-        execute("ALTER TABLE film_rolls ADD COLUMN end_date DATE")
-
-    ia_cols = columns("image_assets")
-    if ia_cols and "capture_date" not in ia_cols:
-        execute("ALTER TABLE image_assets ADD COLUMN capture_date DATE")
-
-    if _is_postgres():
-        # R#1: film_stocks.expired used to be INTEGER; the API and the UI speak booleans.
-        expired = fs_cols.get("expired")
-        if expired is not None and "INT" in str(expired["type"]).upper():
-            execute(
-                "ALTER TABLE film_stocks ALTER COLUMN expired TYPE BOOLEAN "
-                "USING (expired <> 0)"
-            )
-        # R#5: an image may exist before it is assigned to a film roll.
-        film_roll_id = ia_cols.get("film_roll_id")
-        if film_roll_id is not None and not film_roll_id.get("nullable", True):
-            execute("ALTER TABLE image_assets ALTER COLUMN film_roll_id DROP NOT NULL")
-
-    # R#8: one-off data fix for rolls that stored the literal string "None".
-    if fr_cols:
-        for column in ("camera", "lens", "film_type"):
-            if column in fr_cols:
-                execute(
-                    f"UPDATE film_rolls SET {column} = NULL "
-                    f"WHERE {column} IN ('None', '')"
-                )
+    def file_response(self, full_path, stat_result, scope, status_code=200) -> Response:
+        response = super().file_response(full_path, stat_result, scope, status_code=status_code)
+        path = scope.get("path", "")
+        media_type = (response.headers.get("content-type") or "").split(";")[0].strip().lower()
+        if media_type in UNSAFE_MEDIA_TYPES and not path.startswith("/catalog/"):
+            response.headers["content-type"] = "application/octet-stream"
+            response.headers["content-disposition"] = "attachment"
+        response.headers["x-content-type-options"] = "nosniff"
+        return response
 
 
-def _seed_catalog() -> None:
-    from pathlib import Path
-
-    Path("static/catalog/cameras").mkdir(parents=True, exist_ok=True)
-    Path("static/catalog/films").mkdir(parents=True, exist_ok=True)
-    Path("static/catalog/lenses").mkdir(parents=True, exist_ok=True)
-    db = SessionLocal()
-    try:
-        def ensure_camera(name: str, image_rel: str | None, mount: str | None = None):
-            if not db.query(Camera).filter(Camera.name == name).first():
-                db.add(Camera(name=name, image_path=image_rel, mount=mount))
-
-        def ensure_film(name: str, kind: FilmKind, iso: int | None, expired: bool, image_rel: str | None):
-            if not db.query(FilmStock).filter(FilmStock.name == name).first():
-                db.add(FilmStock(name=name, kind=kind, iso=iso, expired=expired, image_path=image_rel))
-
-        ensure_camera("Nikon F5", "static/catalog/cameras/nikon-f5.svg", mount="Nikon F")
-        ensure_camera("Minolta XG9", "static/catalog/cameras/minolta-xg9.svg", mount="Minolta SR")
-        ensure_film("Kodak Gold 200", FilmKind.color, 200, False, "static/catalog/films/kodak-gold-200.svg")
-        ensure_film("Fomapan 100", FilmKind.black_and_white, 100, False, "static/catalog/films/fomapan-100.svg")
-        ensure_film("Fomapan 200", FilmKind.black_and_white, 200, False, "static/catalog/films/fomapan-200.svg")
-        ensure_film("Fomapan 400", FilmKind.black_and_white, 400, False, "static/catalog/films/fomapan-400.svg")
-        db.commit()
-    finally:
-        db.close()
-
-
-# Ensure tables
-@app.on_event("startup")
-def on_startup():
-    Base.metadata.create_all(bind=engine)
-    try:
-        _run_migrations()
-    except Exception:
-        # Non-fatal: continue
-        pass
-    _seed_catalog()
-
-
-# Mount static
-app.mount("/static", StaticFiles(directory="static"), name="static")
+# Mount static. `check_dir=False` keeps a fresh checkout (no uploads yet) bootable.
+os.makedirs("static", exist_ok=True)
+app.mount("/static", SafeStaticFiles(directory="static", check_dir=False), name="static")
 
 
 @app.get("/")

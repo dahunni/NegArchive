@@ -22,9 +22,12 @@ services:
       db:
         condition: service_healthy
     environment:
+      # Required: the backend refuses to start without it (M2, Postgres only).
+      # Migrations run at startup (`alembic upgrade head`), so a fresh volume and an
+      # archive from M0 both come up on the current schema.
       DATABASE_URL: postgresql+psycopg2://negarchive:negarchive@db:5432/negarchive
-      DEEPFACE_ENABLED: "false"
-      FACE_MATCH_THRESHOLD: "0.7"
+      # Largest accepted upload, in megabytes (R#18).
+      MAX_UPLOAD_MB: "512"
     volumes:
       # Persist only user-generated images, not the entire codebase
       - ./static/uploads:/app/static/uploads

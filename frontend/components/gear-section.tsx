@@ -5,6 +5,7 @@ import { useState } from "react"
 import { Camera as CameraIcon, Package, Pencil, Plus, Trash2 } from "lucide-react"
 
 import {
+  ApiError,
   type Camera,
   type Filmstock,
   type Lens,
@@ -55,18 +56,26 @@ export function GearSection({
   const [tab, setTab] = useState<GearKind>(tabFromParam(params.get("tab")))
   const [dialog, setDialog] = useState<{ kind: GearKind; item: GearItem | null } | null>(null)
   const [pendingDelete, setPendingDelete] = useState<{ kind: GearKind; item: GearItem } | null>(null)
+  /** Set when the API refused because rolls still use this entry (409, R#14). */
+  const [inUse, setInUse] = useState<string | null>(null)
 
-  const remove = async () => {
+  const remove = async (force = false) => {
     if (!pendingDelete) return
     const { kind, item } = pendingDelete
     try {
-      if (kind === "camera") await deleteCamera(item.id)
-      else if (kind === "lens") await deleteLens(item.id)
-      else await deleteFilmstock(item.id)
+      if (kind === "camera") await deleteCamera(item.id, force)
+      else if (kind === "lens") await deleteLens(item.id, force)
+      else await deleteFilmstock(item.id, force)
       toast({ title: "Deleted", description: `“${item.name}” is no longer in the catalog.` })
       setPendingDelete(null)
+      setInUse(null)
       router.refresh()
     } catch (error) {
+      // M2 refuses to orphan rolls silently; it says how many use this entry.
+      if (error instanceof ApiError && error.code === "gear_in_use") {
+        setInUse(error.message)
+        return
+      }
       toast({ title: "Could not delete", description: errorMessage(error), variant: "destructive" })
     }
   }
@@ -169,10 +178,19 @@ export function GearSection({
 
       <DeleteConfirmationDialog
         open={pendingDelete !== null}
-        onOpenChange={(open) => !open && setPendingDelete(null)}
-        onConfirm={remove}
+        onOpenChange={(open) => {
+          if (!open) {
+            setPendingDelete(null)
+            setInUse(null)
+          }
+        }}
+        onConfirm={() => void remove(inUse !== null)}
+        confirmLabel={inUse ? "Delete anyway" : "Delete"}
         title="Remove from the catalog?"
-        description={`“${pendingDelete?.item.name}” is deleted. Rolls that name it keep the name as plain text.`}
+        description={
+          inUse ??
+          `“${pendingDelete?.item.name}” is deleted. Rolls that name it keep the name as plain text.`
+        }
       />
     </div>
   )
@@ -193,16 +211,26 @@ function GearMeta({ kind, item }: { kind: GearKind; item: GearItem }) {
   if (kind === "filmstock") {
     const stock = item as Filmstock
     return (
-      <div className="flex flex-wrap gap-2">
-        {stock.iso ? (
-          <Badge variant="secondary" className="type-numeric">
-            ISO {stock.iso}
+      <div className="space-y-1">
+        {stock.manufacturer ? <p className="type-meta">{stock.manufacturer}</p> : null}
+        <div className="flex flex-wrap items-center gap-2">
+          {stock.iso ? (
+            <Badge variant="secondary" className="type-numeric">
+              ISO {stock.iso}
+            </Badge>
+          ) : null}
+          <Badge variant="outline" className="text-xs">
+            {stock.kind?.replace(/_/g, " ")}
           </Badge>
-        ) : null}
-        <Badge variant="outline" className="text-xs">
-          {stock.kind?.replace(/_/g, " ")}
-        </Badge>
-        {stock.expiration_date ? <span className="type-meta">Exp {formatDate(stock.expiration_date)}</span> : null}
+          {stock.format ? (
+            <Badge variant="outline" className="text-xs">
+              {stock.format}
+            </Badge>
+          ) : null}
+          {stock.expiration_date ? (
+            <span className="type-meta">Exp {formatDate(stock.expiration_date)}</span>
+          ) : null}
+        </div>
       </div>
     )
   }

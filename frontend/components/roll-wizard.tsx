@@ -6,13 +6,13 @@ import { ArrowLeft, ArrowRight, Loader2, Plus } from "lucide-react"
 
 import {
   ApiError,
-  ERROR_FIELDS,
   type Camera,
   type Film,
   type Filmstock,
   type Lens,
   createFilm,
   errorMessage,
+  fieldFor,
   uploadRollFile,
 } from "@/lib/api"
 import { Button } from "@/components/ui/button"
@@ -35,8 +35,13 @@ import {
   toRollPayload,
 } from "@/components/roll-fields"
 
-/** Last used gear, so the next roll off the same camera is two clicks. */
-const REMEMBERED = "negarchive.lastGear"
+/**
+ * Last used gear, so the next roll off the same camera is two clicks.
+ *
+ * M2 stores the catalog **ids** (R#14). An entry remembered by a pre-M2 build held
+ * names, which no longer select anything, so the old key is simply ignored.
+ */
+const REMEMBERED = "negarchive.lastGear.v2"
 
 function readRemembered(): Partial<RollFormValues> {
   if (typeof window === "undefined") return {}
@@ -44,10 +49,12 @@ function readRemembered(): Partial<RollFormValues> {
     const raw = window.localStorage.getItem(REMEMBERED)
     if (!raw) return {}
     const parsed = JSON.parse(raw) as Record<string, unknown>
+    const id = (value: unknown) => (typeof value === "string" ? value : "")
     return {
-      camera: typeof parsed.camera === "string" ? parsed.camera : "",
-      lens: typeof parsed.lens === "string" ? parsed.lens : "",
-      film_type: typeof parsed.film_type === "string" ? parsed.film_type : "",
+      camera_id: id(parsed.camera_id),
+      lens_id: id(parsed.lens_id),
+      film_stock_id: id(parsed.film_stock_id),
+      format: id(parsed.format),
     }
   } catch {
     return {}
@@ -59,7 +66,12 @@ function remember(values: RollFormValues) {
   try {
     window.localStorage.setItem(
       REMEMBERED,
-      JSON.stringify({ camera: values.camera, lens: values.lens, film_type: values.film_type }),
+      JSON.stringify({
+        camera_id: values.camera_id,
+        lens_id: values.lens_id,
+        film_stock_id: values.film_stock_id,
+        format: values.format,
+      }),
     )
   } catch {
     // private mode or storage disabled: remembering gear is a convenience, not a feature
@@ -67,6 +79,13 @@ function remember(values: RollFormValues) {
 }
 
 const STEPS = ["Roll", "Gear & film", "Storage"] as const
+
+/** Which step owns an input, so a rejected field is shown where it is edited. */
+function stepForField(field: string): number {
+  if (field === "title" || field.endsWith("_date")) return 0
+  if (["camera_id", "lens_id", "film_stock_id", "format"].includes(field)) return 1
+  return 2
+}
 
 export function RollWizard({
   open,
@@ -120,11 +139,11 @@ export function RollWizard({
       router.refresh()
     } catch (error) {
       if (error instanceof ApiError) {
-        const field = ERROR_FIELDS[error.code]
+        // M2 names the offending field in the error body; show it on that input.
+        const field = fieldFor(error)
         if (field) {
           setErrors({ [field]: error.message })
-          // send the user back to the step that owns the field
-          setStep(field === "title" || field.endsWith("_date") ? 0 : 2)
+          setStep(stepForField(field)) // back to the step that owns it
           setSaving(false)
           return
         }
@@ -164,6 +183,7 @@ export function RollWizard({
             {step === 1 ? (
               <GearFields
                 values={values}
+                errors={errors}
                 onChange={change}
                 cameras={cameras}
                 lenses={lenses}

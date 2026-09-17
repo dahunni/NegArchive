@@ -29,6 +29,17 @@ import { useToast } from "@/hooks/use-toast"
 
 const ANY = "__any__"
 
+/**
+ * The gear filters work on ids now (M2, R#14). A `?camera=` from an older bookmark
+ * still carries a name, so it is resolved against the catalog once on load.
+ */
+function initialGearFilter(raw: string | null, catalog: { id: number; name: string }[]): string {
+  if (!raw) return ANY
+  if (/^\d+$/.test(raw)) return raw
+  const match = catalog.find((item) => item.name.toLowerCase() === raw.toLowerCase())
+  return match ? String(match.id) : ANY
+}
+
 /** Overlap test between the roll's shooting dates and the filter range. */
 function withinRange(film: Film, from: string, to: string): boolean {
   if (!from && !to) return true
@@ -83,8 +94,8 @@ export function RollBrowser({
   const { toast } = useToast()
 
   const [query, setQuery] = useState(params.get("q") ?? "")
-  const [camera, setCamera] = useState(params.get("camera") ?? ANY)
-  const [film, setFilm] = useState(params.get("film") ?? ANY)
+  const [camera, setCamera] = useState(() => initialGearFilter(params.get("camera"), cameras))
+  const [film, setFilm] = useState(() => initialGearFilter(params.get("film"), filmstocks))
   const [from, setFrom] = useState(params.get("from") ?? "")
   const [to, setTo] = useState(params.get("to") ?? "")
 
@@ -99,8 +110,8 @@ export function RollBrowser({
       films.filter(
         (roll) =>
           matchesText(roll, query) &&
-          (camera === ANY || roll.camera === camera) &&
-          (film === ANY || roll.film_type === film) &&
+          (camera === ANY || roll.camera_id === Number(camera)) &&
+          (film === ANY || roll.film_stock_id === Number(film)) &&
           withinRange(roll, from, to),
       ),
     [films, query, camera, film, from, to],
@@ -114,11 +125,16 @@ export function RollBrowser({
     setTo("")
   }
 
-  const confirmDelete = async () => {
+  const confirmDelete = async ({ keepFiles }: { keepFiles: boolean }) => {
     if (!pendingDelete) return
     try {
-      await deleteFilm(pendingDelete.id)
-      toast({ title: "Roll deleted", description: `“${pendingDelete.title}” is gone from the archive.` })
+      await deleteFilm(pendingDelete.id, keepFiles)
+      toast({
+        title: "Roll deleted",
+        description: keepFiles
+          ? `“${pendingDelete.title}” is gone from the archive; its files are still on disk.`
+          : `“${pendingDelete.title}” and its scans are gone.`,
+      })
       setPendingDelete(null)
       router.refresh()
     } catch (error) {
@@ -168,7 +184,7 @@ export function RollBrowser({
               <SelectContent>
                 <SelectItem value={ANY}>Any camera</SelectItem>
                 {cameras.map((item) => (
-                  <SelectItem key={item.id} value={item.name}>
+                  <SelectItem key={item.id} value={String(item.id)}>
                     {item.name}
                   </SelectItem>
                 ))}
@@ -185,7 +201,7 @@ export function RollBrowser({
               <SelectContent>
                 <SelectItem value={ANY}>Any film</SelectItem>
                 {filmstocks.map((item) => (
-                  <SelectItem key={item.id} value={item.name}>
+                  <SelectItem key={item.id} value={String(item.id)}>
                     {item.name}
                   </SelectItem>
                 ))}
@@ -336,11 +352,12 @@ export function RollBrowser({
         open={pendingDelete !== null}
         onOpenChange={(open) => !open && setPendingDelete(null)}
         onConfirm={confirmDelete}
+        offerKeepFiles
         title="Delete this roll?"
         description={`“${pendingDelete?.title}” and its ${pluralize(
           pendingDelete?.image_count ?? 0,
           "frame record",
-        )} are removed from the archive. The scan files stay on disk.`}
+        )} are removed from the archive, and the scan files are deleted with them.`}
       />
     </div>
   )

@@ -6,12 +6,12 @@ import { Loader2 } from "lucide-react"
 
 import {
   ApiError,
-  ERROR_FIELDS,
   type Camera,
   type Film,
   type Filmstock,
   type Lens,
   errorMessage,
+  fieldFor,
   updateFilm,
 } from "@/lib/api"
 import { Button } from "@/components/ui/button"
@@ -22,23 +22,9 @@ import {
   type RollFormValues,
   StorageFields,
   TitleAndDates,
+  fromFilm,
   toRollPayload,
 } from "@/components/roll-fields"
-
-function fromFilm(film: Film): RollFormValues {
-  return {
-    title: film.title ?? "",
-    camera: film.camera ?? "",
-    lens: film.lens ?? "",
-    film_type: film.film_type ?? "",
-    start_date: film.start_date ?? "",
-    end_date: film.end_date ?? "",
-    building: film.building ?? "",
-    folder: film.folder ?? "",
-    archive_serial: film.archive_serial ?? "",
-    notes: film.notes ?? "",
-  }
-}
 
 /**
  * Editing a roll is a side panel, not a page: the list or the workspace stays visible
@@ -91,8 +77,9 @@ export function RollEditSheet({
       router.refresh()
       onOpenChange(false)
     } catch (error) {
-      if (error instanceof ApiError && ERROR_FIELDS[error.code]) {
-        setErrors({ [ERROR_FIELDS[error.code]]: error.message })
+      const field = error instanceof ApiError ? fieldFor(error) : null
+      if (field) {
+        setErrors({ [field]: (error as ApiError).message })
       } else {
         toast({ title: "Could not save", description: errorMessage(error), variant: "destructive" })
       }
@@ -114,6 +101,7 @@ export function RollEditSheet({
             <TitleAndDates values={values} errors={errors} onChange={change} idPrefix="edit" />
             <GearFields
               values={values}
+              errors={errors}
               onChange={change}
               cameras={cameras}
               lenses={lenses}

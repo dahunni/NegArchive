@@ -1,11 +1,12 @@
 fastapi==0.115.4
 uvicorn[standard]==0.32.0
 SQLAlchemy==2.0.36
+alembic==1.14.0
 psycopg2-binary==2.9.10
 python-multipart==0.0.9
 Pillow==11.0.0
+# numpy and opencv-python-headless are still needed: the /preview fallback decodes
+# 16-bit and unusual TIFFs that Pillow refuses (app/routers/api.py).
 numpy==2.1.3
 opencv-python-headless==4.10.0.84
-deepface==0.0.93
-scikit-learn==1.5.2
 python-dotenv==1.0.1

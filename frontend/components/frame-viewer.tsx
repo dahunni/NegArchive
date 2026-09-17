@@ -350,12 +350,30 @@ export function FrameViewer({
                   <dt className="type-meta">Type</dt>
                   <dd className="type-body">{frame.type === "scan" ? "Scan" : "Contact sheet"}</dd>
                 </div>
+                {/* R#7: the scanner's filename is the link to the physical frame, so
+                    it is what the panel leads with; the stored name is a UUID. */}
                 <div className="flex justify-between gap-4">
-                  <dt className="type-meta">File</dt>
+                  <dt className="type-meta">Original file</dt>
+                  <dd
+                    className="truncate type-numeric"
+                    title={frame.original_filename ?? undefined}
+                    data-testid="viewer-original-filename"
+                  >
+                    {frame.original_filename ?? "Not recorded"}
+                  </dd>
+                </div>
+                <div className="flex justify-between gap-4">
+                  <dt className="type-meta">Stored as</dt>
                   <dd className="truncate type-numeric" title={frame.path}>
                     {frame.path.split("/").pop()}
                   </dd>
                 </div>
+                {frame.storage_mode === "linked" ? (
+                  <div className="flex justify-between gap-4">
+                    <dt className="type-meta">Storage</dt>
+                    <dd className="type-body">Linked — the file is not managed here</dd>
+                  </div>
+                ) : null}
               </dl>
             </div>
           </aside>

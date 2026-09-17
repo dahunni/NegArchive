@@ -1,8 +1,17 @@
-from datetime import datetime, date
-from sqlalchemy import Column, Integer, String, DateTime, Date, ForeignKey, Enum, Text, Boolean
-from sqlalchemy.orm import relationship, Mapped, mapped_column
-from sqlalchemy.dialects.postgresql import JSON
+"""SQLAlchemy models.
+
+Postgres only: native ``Boolean``, ``Date`` and ``JSONB`` where needed, no
+``with_variant`` branches for a second dialect (M2, roadmap decision 2).
+
+The schema is owned by Alembic (``alembic/versions``); ``create_all`` is not called
+anywhere any more. Change a model *and* write a revision.
+"""
+
+from datetime import date, datetime
 import enum
+
+from sqlalchemy import Boolean, Date, DateTime, Enum, ForeignKey, Integer, String, Text
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .db import Base
 
@@ -17,6 +26,16 @@ class FilmKind(enum.Enum):
     color = "color"
     slide = "slide"
     motion_picture = "motion_picture"
+
+
+#: Film formats a roll or a stock can have (R#21). Plain strings rather than a
+#: Postgres enum, so adding "110" or "127" later is a column-free migration.
+FILM_FORMATS = ("35mm", "120", "4x5", "8x10", "other")
+
+#: How the file behind an image asset is owned. ``managed`` files live under
+#: ``static/uploads`` and are deleted with their row; ``linked`` files belong to
+#: someone else (M3's import-by-reference) and are never touched.
+STORAGE_MODES = ("managed", "linked")
 
 
 class Camera(Base):
@@ -35,6 +54,8 @@ class FilmStock(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     name: Mapped[str] = mapped_column(String(200), unique=True, index=True)
+    manufacturer: Mapped[str | None] = mapped_column(String(200))
+    format: Mapped[str | None] = mapped_column(String(20))
     iso: Mapped[int | None] = mapped_column(Integer)
     kind: Mapped[FilmKind] = mapped_column(Enum(FilmKind))
     expired: Mapped[bool | None] = mapped_column(Boolean)  # True expired, False not, None unknown
@@ -59,10 +80,26 @@ class FilmRoll(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     title: Mapped[str] = mapped_column(String(200), nullable=False)
-    # Camera and film stock managed via catalogs; stored by name for compatibility
+
+    # R#14: gear is referenced by id. The name columns below are kept for one release
+    # (older clients still send and read them) and are written from the catalog entry
+    # whenever an id is set, so they never go stale on their own.
+    camera_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("cameras.id", ondelete="SET NULL"), index=True
+    )
+    lens_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("lenses.id", ondelete="SET NULL"), index=True
+    )
+    film_stock_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("film_stocks.id", ondelete="SET NULL"), index=True
+    )
+
+    #: Deprecated free-text gear names, superseded by the three ids above.
     camera: Mapped[str | None] = mapped_column(String(200))
     lens: Mapped[str | None] = mapped_column(String(200))
     film_type: Mapped[str | None] = mapped_column(String(200))
+
+    format: Mapped[str | None] = mapped_column(String(20))  # one of FILM_FORMATS
     notes: Mapped[str | None] = mapped_column(Text)
 
     # Shoot date range (optional)
@@ -76,7 +113,27 @@ class FilmRoll(Base):
 
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
-    images: Mapped[list["ImageAsset"]] = relationship("ImageAsset", back_populates="film_roll", cascade="all, delete-orphan")
+    images: Mapped[list["ImageAsset"]] = relationship(
+        "ImageAsset", back_populates="film_roll", cascade="all, delete-orphan"
+    )
+
+    # Loaded with the roll: the API answers with the catalog entry's *current* name,
+    # so renaming a camera updates every roll that points at it.
+    camera_ref: Mapped["Camera | None"] = relationship("Camera", lazy="joined")
+    lens_ref: Mapped["Lens | None"] = relationship("Lens", lazy="joined")
+    film_stock_ref: Mapped["FilmStock | None"] = relationship("FilmStock", lazy="joined")
+
+    @property
+    def camera_name(self) -> str | None:
+        return self.camera_ref.name if self.camera_ref else self.camera
+
+    @property
+    def lens_name(self) -> str | None:
+        return self.lens_ref.name if self.lens_ref else self.lens
+
+    @property
+    def film_type_name(self) -> str | None:
+        return self.film_stock_ref.name if self.film_stock_ref else self.film_type
 
 
 class ImageAsset(Base):
@@ -89,40 +146,16 @@ class ImageAsset(Base):
     )
     type: Mapped[ImageType] = mapped_column(Enum(ImageType), index=True)
     path: Mapped[str] = mapped_column(String(500))
-    frame_number: Mapped[int | None] = mapped_column(Integer)
+    #: R#7/R#24: the name the scanner gave the file. The only link between a physical
+    #: frame and its file once the upload renames it to a UUID.
+    original_filename: Mapped[str | None] = mapped_column(String(500))
+    #: 'managed' (NegArchive owns the file) or 'linked' (M3's import-by-reference).
+    storage_mode: Mapped[str] = mapped_column(
+        String(20), nullable=False, server_default="managed", default="managed"
+    )
+    frame_number: Mapped[int | None] = mapped_column(Integer, index=True)
     notes: Mapped[str | None] = mapped_column(Text)
     capture_date: Mapped[date | None] = mapped_column(Date)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     film_roll: Mapped["FilmRoll | None"] = relationship("FilmRoll", back_populates="images")
-    faces: Mapped[list["Face"]] = relationship("Face", back_populates="image", cascade="all, delete-orphan")
-
-
-class Person(Base):
-    __tablename__ = "persons"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
-    name: Mapped[str] = mapped_column(String(200), unique=True, index=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-
-    faces: Mapped[list["Face"]] = relationship("Face", back_populates="person")
-
-
-class Face(Base):
-    __tablename__ = "faces"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
-    image_id: Mapped[int] = mapped_column(Integer, ForeignKey("image_assets.id"), index=True)
-    bbox_x: Mapped[int] = mapped_column(Integer)
-    bbox_y: Mapped[int] = mapped_column(Integer)
-    bbox_w: Mapped[int] = mapped_column(Integer)
-    bbox_h: Mapped[int] = mapped_column(Integer)
-
-    # Store embedding as JSON for portability across DBs
-    embedding: Mapped[dict | None] = mapped_column(JSON().with_variant(Text(), "sqlite"))
-
-    person_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("persons.id"), index=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-
-    image: Mapped[ImageAsset] = relationship("ImageAsset", back_populates="faces")
-    person: Mapped[Person | None] = relationship("Person", back_populates="faces")
