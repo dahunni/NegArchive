@@ -1,0 +1,40 @@
+# Build context for the backend image (Dockerfile at the repo root).
+# Keep it to the Python app and the seeded catalog assets.
+
+# Frontend has its own image and its own build context
+frontend/
+
+# VCS, docs and screenshots
+.git/
+.github/
+.gitignore
+docs/
+screenshots/
+README.md
+*.md
+
+# Python caches and local environments
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+.mypy_cache/
+.pytest_cache/
+.coverage
+
+# Local databases (Postgres is the target database)
+*.db
+*.sqlite3
+negarchive.db
+
+# User uploads are bind-mounted at runtime, never baked into the image
+static/uploads/
+
+# Tooling and local config
+.env
+.env.*
+.DS_Store
+.claude/
+.vscode/
+.idea/

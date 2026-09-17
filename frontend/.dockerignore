@@ -1,0 +1,19 @@
+# Build context for the frontend image (frontend/Dockerfile).
+# node_modules is installed inside the image; .next is built there.
+
+node_modules/
+.next/
+.turbo/
+.vercel/
+out/
+
+# Local environment files; the container gets its config from Compose
+.env
+.env.*
+
+# Caches and editor noise
+.DS_Store
+*.log
+tsconfig.tsbuildinfo
+.vscode/
+.idea/
