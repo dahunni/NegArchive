@@ -168,6 +168,35 @@ docker compose up          # or: make up
 That is the whole installation. Open `http://localhost:8021`. The backend prints the address to
 use from another machine, and the footer in the UI shows it with a QR code.
 
+### Published images (no local build)
+
+Both images are published to the GitHub Container Registry for **amd64 and arm64**, so the machine
+that runs the archive — a NAS, a mini PC, an Apple Silicon Mac — does not need a toolchain or the
+several gigabytes a build wants:
+
+```bash
+docker compose pull        # ghcr.io/dahunni/negarchive-web and -frontend
+docker compose up -d
+```
+
+Updating is the same two commands. `NEGARCHIVE_TAG` picks what you get — `latest` (the newest
+release, the default), a version like `v1.2.3`, or `main` for the newest commit that passed CI —
+and `NEGARCHIVE_IMAGE_OWNER` points at a fork's images. `docker compose up --build -d` still builds
+locally and replaces whatever a pull would have fetched, which is what you want while developing.
+
+The images are built by [`.github/workflows/publish.yml`](.github/workflows/publish.yml): a `v*` tag
+publishes `latest` and the version, and a commit on main publishes `main` and its SHA **after CI has
+passed on it**, so a red build never becomes an image somebody pulls. No secrets are involved; the
+workflow's own `GITHUB_TOKEN` can write its repository's packages. GitHub creates the first package
+as private even for a public repository, so make it public once under
+*Packages → negarchive-web → Package settings → Change visibility* (and the same for the frontend)
+if you want anyone else to be able to pull it.
+
+The frontend image bakes the backend address `http://web:8000` into its `/api` and `/static`
+rewrites at build time, which is the compose network's service name. Running the published frontend
+image against a backend that is *not* called `web` on the same network needs a rebuild with
+`API_BASE` set, not just an environment variable.
+
 To change anything — the port, the database password, where the data lives — copy the example
 first. Every variable has a working default, so this is optional:
 

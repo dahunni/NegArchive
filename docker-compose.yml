@@ -43,6 +43,15 @@ services:
     #   - "5432:5432"
 
   web:
+    # Published by .github/workflows/publish.yml for amd64 and arm64.
+    #
+    #   docker compose pull && docker compose up -d     use the published image
+    #   docker compose up --build -d                    build it here instead
+    #
+    # `image:` names the same thing either way, so a local build simply replaces
+    # what a pull would have fetched. NEGARCHIVE_IMAGE_OWNER points the pull at a
+    # fork; NEGARCHIVE_TAG picks a version instead of latest.
+    image: ghcr.io/${NEGARCHIVE_IMAGE_OWNER:-dahunni}/negarchive-web:${NEGARCHIVE_TAG:-latest}
     build: .
     restart: unless-stopped
     depends_on:
@@ -90,6 +99,7 @@ services:
     command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
 
   frontend:
+    image: ghcr.io/${NEGARCHIVE_IMAGE_OWNER:-dahunni}/negarchive-frontend:${NEGARCHIVE_TAG:-latest}
     build:
       context: ./frontend
     restart: unless-stopped

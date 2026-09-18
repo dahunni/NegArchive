@@ -1,0 +1,111 @@
+# Publish the two container images to the GitHub Container Registry.
+#
+# Why this exists: installing or updating NegArchive should not require building
+# two images on the machine it runs on. A build needs several gigabytes of disk
+# and a working toolchain, and the machine that most wants to run this is a NAS or
+# a mini PC that has neither. With published images, `docker compose pull` is the
+# whole update.
+#
+#   ghcr.io/<owner>/negarchive-web        the FastAPI backend
+#   ghcr.io/<owner>/negarchive-frontend   the Next.js frontend
+#
+# Tags: `latest` and the version for a `v*` tag, `main` and the short SHA for a
+# commit on main. Both images are built for **linux/amd64 and linux/arm64**, so
+# the same compose file runs on an Apple Silicon Mac, an Intel NAS and a Pi.
+#
+# A commit on main is published only **after CI passes on it** (`workflow_run`),
+# so a red build never becomes an image somebody pulls. A `v*` tag publishes
+# straight away: it points at a commit main has already tested.
+#
+# Nothing here needs a secret: GITHUB_TOKEN can write packages for its own
+# repository. The first published package is **private** until you make it public
+# in the package settings (Packages → negarchive-web → Package settings →
+# Change visibility) — GitHub defaults it that way even for a public repository.
+
+name: Publish images
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: publish-${{ github.event.workflow_run.head_sha || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  images:
+    name: ${{ matrix.image }}
+    runs-on: ubuntu-latest
+    # A push to main publishes only what CI has just passed on.
+    if: >-
+      github.event_name != 'workflow_run' ||
+      github.event.workflow_run.conclusion == 'success'
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: negarchive-web
+            context: .
+            dockerfile: Dockerfile
+          - image: negarchive-frontend
+            context: ./frontend
+            dockerfile: frontend/Dockerfile
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # On a workflow_run the event's ref is the default branch, not the
+          # commit that was tested; check out the tested commit instead.
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
+
+      # arm64 is emulated on the amd64 runner. The slow part is the frontend's
+      # `next build`; the backend installs wheels for both architectures.
+      - uses: docker/setup-qemu-action@v4
+        with:
+          platforms: arm64
+
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            type=raw,value=main,enable=${{ github.event_name == 'workflow_run' }}
+            type=raw,value=${{ github.event.workflow_run.head_sha }},enable=${{ github.event_name == 'workflow_run' }}
+            type=sha,format=short
+          labels: |
+            org.opencontainers.image.title=${{ matrix.image }}
+            org.opencontainers.image.description=NegArchive — a self-hosted archive for film photography
+            org.opencontainers.image.licenses=MIT
+
+      - uses: docker/build-push-action@v7
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+          provenance: false
