@@ -61,6 +61,7 @@ export function OfflineBanner() {
     <div
       role="status"
       data-testid="offline-banner"
+      data-print-hide
       className="flex items-center justify-center gap-2 border-b border-border bg-secondary px-4 py-2 text-center type-meta text-secondary-foreground"
     >
       <CloudOff className="h-4 w-4 shrink-0" aria-hidden />

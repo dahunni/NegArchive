@@ -96,7 +96,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       {/* M3: the PWA says plainly when it is showing a cached archive. */}
       <OfflineBanner />
 
-      <header className="sticky top-0 z-40 border-b border-border bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80">
+      {/* Screen chrome: hidden on paper, so ⌘P on any page prints the page. */}
+      <header
+        data-print-hide
+        className="sticky top-0 z-40 border-b border-border bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80"
+      >
         <div className="mx-auto flex h-14 max-w-7xl items-center gap-2 px-4 sm:h-16 sm:px-6 lg:px-8">
           <Sheet open={mobileOpen} onOpenChange={setMobileOpen}>
             <SheetTrigger asChild>
