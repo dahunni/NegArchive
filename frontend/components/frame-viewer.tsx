@@ -6,6 +6,7 @@ import {
   ChevronRight,
   Download,
   Loader2,
+  Contrast,
   Maximize2,
   Trash2,
   ZoomIn,
@@ -15,6 +16,7 @@ import {
 import {
   type Film,
   type Image as Frame,
+  type PreviewRender,
   errorMessage,
   getImageDownloadUrl,
   getPreviewUrl,
@@ -61,6 +63,27 @@ export function FrameViewer({
   const [zoom, setZoom] = useState(1)
   const [offset, setOffset] = useState({ x: 0, y: 0 })
   const drag = useRef<{ x: number; y: number } | null>(null)
+
+  // M5: the scan on disk is a negative; this is how it is printed on screen.
+  // "auto" follows the archive's setting, and the toggle overrides it for this
+  // browser only — it is a way of looking, not a property of the frame.
+  const [render, setRender] = useState<PreviewRender>("auto")
+  useEffect(() => {
+    try {
+      const stored = window.localStorage.getItem("negarchive.viewerRender")
+      if (stored === "raw" || stored === "positive" || stored === "auto") setRender(stored)
+    } catch {
+      // a browser with storage switched off still gets the default
+    }
+  }, [])
+  const chooseRender = (value: PreviewRender) => {
+    setRender(value)
+    try {
+      window.localStorage.setItem("negarchive.viewerRender", value)
+    } catch {
+      // see above
+    }
+  }
 
   const [draft, setDraft] = useState({ frame_number: "", capture_date: "", notes: "", film_roll_id: NO_ROLL })
   const [saving, setSaving] = useState(false)
@@ -153,8 +176,8 @@ export function FrameViewer({
           <div className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden bg-neutral-950">
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img
-              key={frame.id}
-              src={getPreviewUrl(frame.id, 1600)}
+              key={`${frame.id}-${render}`}
+              src={getPreviewUrl(frame.id, 1600, render)}
               alt={frameLabel(frame)}
               data-testid="viewer-image"
               className="max-h-full max-w-full object-contain select-none"
@@ -232,6 +255,18 @@ export function FrameViewer({
                 disabled={zoom >= MAX_ZOOM}
               >
                 <ZoomIn className="h-4 w-4" />
+              </Button>
+              {/* M5: print the negative, or show the scan as it was stored. */}
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-10 w-10"
+                aria-label={render === "raw" ? "Show the positive preview" : "Show the scan as stored"}
+                title={render === "raw" ? "Show the positive preview" : "Show the scan as stored"}
+                data-testid="viewer-render-toggle"
+                onClick={() => chooseRender(render === "raw" ? "positive" : "raw")}
+              >
+                <Contrast className="h-4 w-4" />
               </Button>
               <Button
                 variant="ghost"
@@ -392,6 +427,19 @@ export function FrameViewer({
                         {frame.negpy_recipe?.source === "edits.db" ? " · from edits.db" : ""}
                       </span>
                     </div>
+                  ) : null}
+                  {/* What the preview could and could not render. NegArchive
+                      approximates NegPy's tone controls; it does not run its
+                      pipeline, and the count is how it says so. */}
+                  {frame.negpy_render && frame.negpy_render.total > 0 ? (
+                    <p className="type-meta" data-testid="viewer-render-report">
+                      Preview: {frame.negpy_render.summary}
+                      {frame.negpy_render.ignored_count > 0
+                        ? ` · not rendered: ${frame.negpy_render.ignored.slice(0, 4).join(", ")}${
+                            frame.negpy_render.ignored_count > 4 ? "…" : ""
+                          }`
+                        : ""}
+                    </p>
                   ) : null}
                   {frame.capture_metadata ? (
                     <dl className="space-y-1">
