@@ -686,6 +686,35 @@ async function main() {
   )
   await page.keyboard.press("Escape")
 
+  // M5: printing the negative. The scan stays the scan; the preview is derived.
+  const renderModes = {}
+  for (const wanted of ["raw", "positive"]) {
+    const res = await page.request.get(
+      `${BASE_URL}/api/images/${negpyUpload.id}/preview?width=200&render=${wanted}`,
+    )
+    renderModes[wanted] = { status: res.status(), header: res.headers()["x-preview-render"] }
+  }
+  check(
+    "M5: a frame can be served raw or printed as a positive",
+    renderModes.raw.header === "raw" && renderModes.positive.header === "positive",
+    JSON.stringify(renderModes),
+  )
+
+  await page.goto(`${BASE_URL}/films/${rollId}`, { waitUntil: "load" })
+  await visible(page.getByTestId("frame-cell"))
+  await page.getByTestId("frame-cell").last().click()
+  check("M5: the viewer has a render toggle", await visible(page.getByTestId("viewer-render-toggle")))
+  const srcBefore = await page.getByTestId("viewer-image").getAttribute("src")
+  await page.getByTestId("viewer-render-toggle").click()
+  await page.waitForTimeout(600)
+  const srcAfter = await page.getByTestId("viewer-image").getAttribute("src")
+  check(
+    "M5: the toggle asks the backend for the other rendering",
+    srcBefore !== srcAfter && /render=(raw|positive)/.test(srcAfter || ""),
+    `${srcBefore} → ${srcAfter}`,
+  )
+  await page.keyboard.press("Escape")
+
   // Settings: the NegPy section, and writing the gear library NegPy reads.
   await page.goto(`${BASE_URL}/settings`, { waitUntil: "load" })
   check("M5: the settings page has a NegPy section", await visible(page.getByTestId("negpy-settings")))
@@ -698,6 +727,7 @@ async function main() {
     return Boolean(status.gear_synced_at)
   })
   check("M5: writing the gear library records when it ran", gearWritten)
+  check("M5: previews can be switched between raw and printed", await visible(page.getByTestId("preview-render")))
   check(
     "M5: the settings page reports NegPy's edits.db",
     await visible(page.getByTestId("negpy-edits-readout")),

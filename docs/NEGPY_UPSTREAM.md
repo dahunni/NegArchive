@@ -1,4 +1,4 @@
-# Two proposals for NegPy — drafts, not yet filed
+# Three proposals for NegPy — drafts, not yet filed
 
 Roadmap M5's last open item. These are **optional contributions to
 [NegPy](https://github.com/marcinz606/NegPy)** (GPL-3), written here so they can be
@@ -7,10 +7,10 @@ decided if either lands.
 
 **Nothing in NegArchive depends on them.** M5 works today against NegPy 0.59 exactly as
 it ships: XMP and EXIF on export, `.negpy` sidecars, `gear/*.json`, filename templating,
-`edits.db`. If both proposals are declined, nothing here has to change — which is the
-test each of them has to pass before it is worth anybody's time.
+`edits.db`. If all three are declined, nothing here has to change — which is the test
+each of them has to pass before it is worth anybody's time.
 
-Neither has been filed. Filing means opening an issue or a pull request on somebody
+None of them has been filed. Filing means opening an issue or a pull request on somebody
 else's project under their name, so that is the owner's call, not the archive's.
 [docs/NEGPY_INTEGRATION.md](NEGPY_INTEGRATION.md) has the background; NegPy's
 contribution gate (Python 3.13, ruff + ty + pytest, frozen-dataclass configs with
@@ -138,6 +138,54 @@ the handoff's `README.txt`, nothing more.
 
 ---
 
+## Proposal 3 — write a preview beside the sidecar on save
+
+### What
+
+When NegPy saves an edit for a file, it also writes a small rendered JPEG next to the sidecar:
+
+```
+scan_001.tif
+scan_001.tif.negpy          the recipe, already written today
+scan_001.tif.negpy.jpg      1600px, quality 85, the render as NegPy sees it
+```
+
+Optional, off by default, one checkbox in preferences. Roughly: the preview buffer NegPy has
+already computed for its own canvas, encoded and written when the sidecar is.
+
+### Why this is the smallest of the three
+
+It is the only one of the three proposals that hands every *other* program a faithful render, and
+it asks for almost nothing: no new pipeline, no headless entry point, no Qt-free import graph, no
+new metadata model. The image already exists on screen.
+
+For a catalog like this one it closes the exact gap M5 left open. NegArchive can print a negative
+approximately — its own tone reproduction, honest about what it leaves out — but it cannot render
+somebody's *edit*, and it should not try: that is nine stages of somebody else's work. A 1600px
+JPEG next to the sidecar is the faithful thumbnail, and any tool that can read a file can use it.
+
+It also helps NegPy's own users the moment it exists: a file browser, a phone gallery, Immich, a
+backup index or a contact sheet script all suddenly show the converted frame instead of an orange
+rectangle.
+
+### What NegArchive would do with it
+
+Show it. A frame whose sidecar has a preview beside it would use that as the preview, labelled
+"rendered by NegPy" rather than "approximate", and the archive would still store no second file of
+its own — it already links rather than copies (`storage_mode = 'linked'`, M3). The approximation
+stays for everything else.
+
+### The objections worth answering in the issue
+
+* **"That is a cache, and caches go stale."** It is written when the edit is written, from the same
+  buffer, so it is stale only if the sidecar is. Its mtime says which.
+* **"It clutters the folder."** So does the sidecar; it is the same opt-in. A subfolder
+  (`.negpy-previews/`) is an equally good answer if that is preferred.
+* **"Which size?"** Whatever is cheapest from the existing buffer. A thumbnail that is honest about
+  being a thumbnail beats a 60-megapixel export nobody asked for.
+
+---
+
 ## If you want to file these
 
 1. Read them against NegPy's current `main`; this was written against 0.59.0, and both
@@ -146,4 +194,5 @@ the handoff's `README.txt`, nothing more.
    maintainer has already made deliberately, and a PR that argues with a documented
    decision is a worse way to ask than a paragraph that acknowledges it.
 3. Keep them separate. They share nothing but a motivation, and one being declined
-   should not take the other with it.
+   should not take the others with it. If only one is worth the maintainer's time, make it the
+   third: it is the smallest ask and the one whose benefit lands outside NegArchive as well.

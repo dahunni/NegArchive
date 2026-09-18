@@ -8,6 +8,7 @@ import {
   type LibraryRoot,
   type LibraryRoots,
   type NegpyStatus,
+  type PreviewRender,
   type Settings,
   type SystemInfo,
   type WatchState,
@@ -439,6 +440,29 @@ export function SettingsWorkspace() {
               </span>
             </span>
           </label>
+
+          {/* M5: how previews are rendered. The scan on disk is never changed —
+              a rendering lives in the disposable preview cache. */}
+          <div className="space-y-2 border-t border-border pt-3">
+            <Label htmlFor="preview-render">Previews</Label>
+            <select
+              id="preview-render"
+              data-testid="preview-render"
+              className="h-11 w-full rounded-md border border-input bg-background px-3 type-body"
+              value={settings?.preview_render ?? "auto"}
+              onChange={(event) => saveSetting({ preview_render: event.target.value as PreviewRender })}
+            >
+              <option value="auto">Print what is known to be a negative (recommended)</option>
+              <option value="raw">Always show the scan as it was stored</option>
+              <option value="positive">Always print as a positive</option>
+            </select>
+            <p className="type-meta">
+              A positive preview is an <em>approximation</em>: it applies the tone controls and the crop from a
+              NegPy edit — grade, exposure, toe and shoulder, the zone densities — and not dodging, burning,
+              toning, retouching or paper profiles. The frame viewer says how much of each recipe it rendered,
+              and has a toggle back to the scan. Nothing on disk changes either way.
+            </p>
+          </div>
 
           <dl className="grid gap-x-6 gap-y-2 border-t border-border pt-3 sm:grid-cols-2">
             <Fact label="Gear files" value={negpy?.paths.gear_dir ?? "—"} mono />

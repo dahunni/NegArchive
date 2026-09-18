@@ -181,6 +181,15 @@ export interface Image {
   negpy_recipe?: NegpyRecipe | null
   /** One line describing the recipe, e.g. "12 settings · inverted · cropped". */
   negpy_summary?: string | null
+  /** M5: how much of that recipe the positive preview can render, and what it cannot. */
+  negpy_render?: {
+    applied: string[]
+    ignored: string[]
+    applied_count: number
+    ignored_count: number
+    total: number
+    summary: string
+  } | null
   created_at: string
 }
 
@@ -649,8 +658,21 @@ export async function bulkDeleteImages(ids: number[], keepFiles = false): Promis
  * Preview URL at a given width. The backend caches each width on disk, so grids
  * ask for small thumbnails and the viewer for a large one.
  */
-export function getPreviewUrl(imageId: number, width: number): string {
-  return backendUrl(`/api/images/${imageId}/preview?width=${width}`)
+/** How a preview is rendered (M5). See `PreviewRender` in Settings. */
+export type PreviewRender = "auto" | "raw" | "positive"
+
+/**
+ * A rendered preview of a frame.
+ *
+ * `render` chooses what comes back: `auto` (the default) follows the archive's
+ * setting — print a frame it knows is a negative, leave everything else alone —
+ * while `raw` always shows the scan as stored and `positive` always prints it.
+ * Either way the file on disk is untouched: a rendering lives in the disposable
+ * preview cache.
+ */
+export function getPreviewUrl(imageId: number, width: number, render?: PreviewRender): string {
+  const suffix = render && render !== "auto" ? `&render=${render}` : ""
+  return backendUrl(`/api/images/${imageId}/preview?width=${width}${suffix}`)
 }
 
 export function getImageUrl(image: Image): string {
@@ -860,6 +882,8 @@ export interface Settings {
   negpy_handoff_dir?: string
   negpy_handoff_mode?: string
   negpy_gear_synced_at?: string
+  /** M5: "auto" | "raw" | "positive" — how previews are rendered. */
+  preview_render?: PreviewRender
 }
 
 export async function getSettings(): Promise<{ settings: Settings; watch: WatchState }> {

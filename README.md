@@ -108,10 +108,13 @@ app/                    FastAPI backend
   services/strips.py    which strip and position a frame sits at (M4)
   services/lifecycle.py loaded → shot → at the lab → back → scanned → sleeved (M4)
   services/codes.py     QR and Code128 as SVG (M4)
+  services/preview.py   printing a negative as a positive for the preview cache (M5)
   services/negpy/       everything about NegPy, and nothing of NegPy (M5):
                         xmp.py + metadata.py read a scan's EXIF and `negpy:` XMP,
                         naming.py the export filename preset, sidecar.py the `.negpy`
                         files, edits.py NegPy's edits.db (read-only, by content hash),
+                        recipe.py maps an edit onto the renderer and reports what it
+                        could not apply,
                         gear.py writes NegPy's gear/*.json, handoff.py prepares
                         a roll folder and preset, dirs.py where any of that may be written
 alembic/                the schema: versions/<YYYYMMDD_HHMM>_<slug>.py, env.py reads DATABASE_URL
@@ -409,12 +412,14 @@ the original filename), `GET /images/{id}`, `POST /images`,
 `POST /images/bulk_update` (`{ids, film_roll_id?, capture_date?, frame_number?}` — only the keys
 you send are written),
 `POST /images/bulk_delete` (`{ids, keep_files?}`),
-`GET /images/{id}/preview?width=1200` (JPEG; cached on disk under `static/cache/` keyed by image id
-+ width + the source file's mtime, so a re-scan invalidates it — `X-Preview-Cache: hit|miss`),
+`GET /images/{id}/preview?width=1200&render=auto|raw|positive` (JPEG; cached on disk under
+`data/cache/` keyed by image id + width + rendering + the source file's mtime, so a re-scan or an
+edit in NegPy invalidates it — `X-Preview-Cache: hit|miss` and `X-Preview-Render: raw|positive`),
 `GET /images/{id}/download` (the original, named after `original_filename`).
 
 Fields: `id, film_roll_id, type, path, url, original_filename, storage_mode, frame_number, notes,
-capture_date, created_at`.
+capture_date, created_at`, plus M5's `capture_metadata, sidecar_path, negpy_edited_at, negpy_recipe,
+negpy_summary, negpy_render`.
 
 `original_filename` is the name the scanner gave the file; the stored name is a UUID. When the
 client sends no `frame_number`, it is parsed from that name — an explicit `frame<n>` wins,
@@ -765,6 +770,44 @@ the sidecar wins, because it travels with the scan. *Settings → NegPy → Matc
 `negpy:Developer` and friends when a scan says so, editable in the roll form, shown on the roll page
 and in the roll CSV.
 
+### Seeing the positive without storing a second file
+
+A shelf of colour negatives is close to unbrowsable: every thumbnail is a dark orange rectangle.
+NegArchive prints them on screen instead — and **stores nothing extra**. The rendering happens on
+demand and lands in `data/cache/`, the same disposable cache every thumbnail already uses; the
+archive still holds exactly one file per frame, and it is the scan.
+
+What the render does, in the order a darkroom would: apply the recipe's crop and rotation, take the
+log of the scan, normalize each channel between its own bounds (which is what defeats the orange
+mask), meter the frame for an exposure anchor, put it through a paper-like transfer curve — grade,
+midtone gamma, the zone densities, an asymmetric softplus toe and shoulder — and print it with
+`I = 10⁻ᴰ` and black point compensation. The steps and their constants follow the pipeline NegPy
+documents in [`docs/PIPELINE.md`](https://github.com/marcinz606/NegPy/blob/main/docs/PIPELINE.md);
+where they are metered per frame, the calibration is NegArchive's own, because its axis is
+per-frame and NegPy's is not.
+
+If a frame has a NegPy edit, the render uses **its** numbers: the grade, the print exposure, the
+toe and shoulder, the zone densities, the midtone snap, and the crop exactly.
+
+**It is an approximation and says so.** NegPy's pipeline has nine stages; this has one. Dodging and
+burning, contrast masks, paper profiles with their dye-coupling matrices, cast removal, crosstalk
+unmix, flat-field, HDR merge, CLAHE, retouching, toning and ICC soft-proofing are not rendered —
+and the viewer names them: *"Preview: 6 of 11 settings rendered · not rendered: cast_removal_strength,
+lab.clahe_strength, local_masks, paper_profile…"*. For the real thing, export from NegPy into a
+folder you have registered as a library root: those files are linked, not copied, so that costs no
+second copy either.
+
+**When it prints.** By default (`preview_render = auto`) a frame is printed when the archive *knows*
+it is a negative — its roll names a negative film stock, or NegPy has an edit for it. A scan whose
+film is unknown is left alone, because it might be a scan of a print, and turning somebody's
+photograph inside out uninvited is worse than an orange thumbnail. Settings can force either way,
+the frame viewer has a toggle (◑) that remembers your choice in that browser, and a contact sheet is
+never inverted.
+
+```bash
+curl -s -o frame.jpg -D - 'http://localhost:8010/api/images/42/preview?width=1600&render=positive' | grep -i x-preview-render
+```
+
 **Where the files go.** With nothing configured, inside the archive's own data directory
 (`data/negpy/user/gear`, `data/negpy/handoff`), so it works out of the box and is part of a backup.
 Set `NEGPY_USER_DIR` (the same variable NegPy reads) and/or `NEGPY_EXPORT_DIR` to write straight
@@ -882,3 +925,10 @@ is summarised, not interpreted — and the folder and preset "Open in NegPy" pre
 
 ![A frame edited in NegPy](screenshots/screenshot-16.png)
 ![Ready for NegPy](screenshots/screenshot-17.png)
+
+The same frame printed as a positive — with the line saying how much of its NegPy recipe the render
+could apply — and as the scanner handed it over, which is the file the archive stores. One file on
+disk, two ways of looking at it.
+
+![A negative printed as a positive](screenshots/screenshot-18.png)
+![The same frame, as scanned](screenshots/screenshot-19.png)
