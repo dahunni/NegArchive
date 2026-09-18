@@ -26,6 +26,11 @@ export interface RollFormValues {
   folder: string
   archive_serial: string
   notes: string
+  /** M5: how the roll was developed. Free text, as it is written on the envelope. */
+  developer: string
+  development_dilution: string
+  push_pull: string
+  development_time: string
   /** M4: the sleeve/binder/box id as a string, "" for unfiled. */
   location_id: string
   /** M4: "6,6,6,6,6,6" or "" for the sleeve layout's default. */
@@ -46,6 +51,10 @@ export const EMPTY_ROLL: RollFormValues = {
   folder: "",
   archive_serial: "",
   notes: "",
+  developer: "",
+  development_dilution: "",
+  push_pull: "",
+  development_time: "",
   location_id: "",
   strips: "",
   status: "back",
@@ -78,6 +87,10 @@ export function toRollPayload(values: RollFormValues) {
     folder: text(values.folder),
     archive_serial: text(values.archive_serial),
     notes: text(values.notes),
+    developer: text(values.developer),
+    development_dilution: text(values.development_dilution),
+    push_pull: text(values.push_pull),
+    development_time: text(values.development_time),
     location_id: id(values.location_id),
     strips: text(values.strips)
       ? values.strips
@@ -103,6 +116,10 @@ export function fromFilm(film: {
   folder: string | null
   archive_serial: string | null
   notes: string | null
+  developer?: string | null
+  development_dilution?: string | null
+  push_pull?: string | null
+  development_time?: string | null
   location_id?: number | null
   strips?: number[] | null
   status?: string
@@ -120,6 +137,10 @@ export function fromFilm(film: {
     folder: film.folder ?? "",
     archive_serial: film.archive_serial ?? "",
     notes: film.notes ?? "",
+    developer: film.developer ?? "",
+    development_dilution: film.development_dilution ?? "",
+    push_pull: film.push_pull ?? "",
+    development_time: film.development_time ?? "",
     location_id: id(film.location_id ?? null),
     strips: film.strips?.length ? film.strips.join(",") : "",
     status: film.status ?? "back",
@@ -392,6 +413,61 @@ export function StorageFields({
         </div>
       </div>
 
+      {/* M5: what happened in the tank. Four free-text fields rather than a
+          developer catalog: this is what is written on the envelope, and NegPy's
+          XMP fills it in by itself for a scan that came from there. */}
+      <fieldset className="space-y-2" data-testid="development-fields">
+        <legend className="type-meta uppercase tracking-wide">Development</legend>
+        <div className="grid gap-4 sm:grid-cols-2">
+          <div className="space-y-2">
+            <Label htmlFor={`${idPrefix}-developer`}>Developer</Label>
+            <Input
+              id={`${idPrefix}-developer`}
+              name="developer"
+              value={values.developer}
+              onChange={(e) => onChange({ developer: e.target.value })}
+              placeholder="Rodinal, Xtol, the lab…"
+            />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor={`${idPrefix}-dilution`}>Dilution</Label>
+            <Input
+              id={`${idPrefix}-dilution`}
+              name="development_dilution"
+              value={values.development_dilution}
+              onChange={(e) => onChange({ development_dilution: e.target.value })}
+              placeholder="1+50, stock…"
+              className="type-numeric"
+            />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor={`${idPrefix}-push`}>Push / pull</Label>
+            <Input
+              id={`${idPrefix}-push`}
+              name="push_pull"
+              value={values.push_pull}
+              onChange={(e) => onChange({ push_pull: e.target.value })}
+              placeholder="+1, −2, none"
+              className="type-numeric"
+            />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor={`${idPrefix}-devtime`}>Time</Label>
+            <Input
+              id={`${idPrefix}-devtime`}
+              name="development_time"
+              value={values.development_time}
+              onChange={(e) => onChange({ development_time: e.target.value })}
+              placeholder="9:30 at 20 °C"
+              className="type-numeric"
+            />
+          </div>
+        </div>
+        <p className="type-meta">
+          Filled in automatically from a scan exported by NegPy, when it says so.
+        </p>
+      </fieldset>
+
       <div className="space-y-2">
         <Label htmlFor={`${idPrefix}-notes`}>Notes</Label>
         <Textarea
@@ -399,7 +475,7 @@ export function StorageFields({
           name="notes"
           value={values.notes}
           onChange={(e) => onChange({ notes: e.target.value })}
-          placeholder="Developed at home, Rodinal 1+50…"
+          placeholder="Anything else worth remembering about this roll…"
           rows={3}
         />
       </div>

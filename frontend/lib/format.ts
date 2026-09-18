@@ -59,6 +59,21 @@ export function frameLabel(image: Pick<Image, "frame_number">): string {
     : `Frame ${image.frame_number}`
 }
 
+/**
+ * "Rodinal 1+50 · +1 · 9:30" — how the roll was developed, in one line (M5).
+ *
+ * The dilution belongs to the developer, so those two are joined with a space;
+ * the push and the time are separate facts. `null` when nothing is recorded, so
+ * the caller can leave the line out entirely rather than print an empty label.
+ */
+export function developmentLine(
+  film: Partial<Pick<Film, "developer" | "development_dilution" | "push_pull" | "development_time">>,
+): string | null {
+  const developer = [film.developer, film.development_dilution].filter(Boolean).join(" ")
+  const parts = [developer, film.push_pull, film.development_time].filter(Boolean) as string[]
+  return parts.length ? parts.join(" · ") : null
+}
+
 export function pluralize(count: number, one: string, many = `${one}s`): string {
   return `${count} ${count === 1 ? one : many}`
 }
