@@ -140,7 +140,9 @@ tests/                  pytest suite, Postgres only (skipped without DATABASE_UR
                         test_m4_paper.py the physical archive; test_m5_negpy.py the NegPy
                         formats — XMP, sidecars, gear merge, handoff, hash compatibility
 docs/                   REVIEW.md, ROADMAP.md, NEGPY_INTEGRATION.md, M4_PAPER.md,
-                        NEGPY_UPSTREAM.md (two drafts for NegPy itself, not filed)
+                        NEGPY_UPSTREAM.md (three drafts for NegPy itself, not filed),
+                        pull-request-archive.md (the write-ups from the pull requests
+                        of the repository this one replaced)
 static/catalog/         the bundled catalog art, copied into DATA_DIR/catalog on first start
 data/                   everything the archive owns (git-ignored; DATA_DIR)
 Makefile, .env.example, Dockerfile, docker-compose.yml, frontend/Dockerfile
