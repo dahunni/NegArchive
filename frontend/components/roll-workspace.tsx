@@ -21,7 +21,7 @@ import {
   uploadContactSheetFile,
   uploadRollFile,
 } from "@/lib/api"
-import { formatDateRange, formatDateTime, formatStorage, pluralize } from "@/lib/format"
+import { developmentLine, formatDateRange, formatDateTime, formatStorage, pluralize } from "@/lib/format"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog"
@@ -145,6 +145,12 @@ export function RollWorkspace({
             {film.effective_strips.some((n) => n !== film.effective_strips[0]) ? " (mixed)" : ""} · {capacity} frames on the
             sleeve
           </p>
+          {/* M5: how it was developed, when anybody (or a NegPy export) said so. */}
+          {developmentLine(film) ? (
+            <p className="type-meta mt-1" data-testid="roll-development">
+              Developed in {developmentLine(film)}
+            </p>
+          ) : null}
           {film.notes ? <p className="mt-3 max-w-2xl type-body">{film.notes}</p> : null}
         </div>
 

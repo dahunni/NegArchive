@@ -77,6 +77,11 @@ class FilmRollWrite(Model):
     film_type: Optional[str] = None
     format: Optional[FilmFormat] = None
     notes: Optional[str] = None
+    # --- M5: how it was developed (free text; see models.FilmRoll) ---
+    developer: Optional[str] = None
+    development_dilution: Optional[str] = None
+    push_pull: Optional[str] = None
+    development_time: Optional[str] = None
     start_date: Optional[str] = None
     end_date: Optional[str] = None
     building: Optional[str] = None
@@ -108,6 +113,10 @@ class FilmRollOut(Model):
     film_type: Optional[str] = None
     format: Optional[str] = None
     notes: Optional[str] = None
+    developer: Optional[str] = None
+    development_dilution: Optional[str] = None
+    push_pull: Optional[str] = None
+    development_time: Optional[str] = None
     building: Optional[str] = None
     folder: Optional[str] = None
     archive_serial: Optional[str] = None

@@ -111,7 +111,8 @@ app/                    FastAPI backend
   services/negpy/       everything about NegPy, and nothing of NegPy (M5):
                         xmp.py + metadata.py read a scan's EXIF and `negpy:` XMP,
                         naming.py the export filename preset, sidecar.py the `.negpy`
-                        files, gear.py writes NegPy's gear/*.json, handoff.py prepares
+                        files, edits.py NegPy's edits.db (read-only, by content hash),
+                        gear.py writes NegPy's gear/*.json, handoff.py prepares
                         a roll folder and preset, dirs.py where any of that may be written
 alembic/                the schema: versions/<YYYYMMDD_HHMM>_<slug>.py, env.py reads DATABASE_URL
 alembic.ini             `sqlalchemy.url` deliberately empty
@@ -135,7 +136,8 @@ tests/                  pytest suite, Postgres only (skipped without DATABASE_UR
                         test_m3_* cover link mode, backup, pagination, LAN and the password;
                         test_m4_paper.py the physical archive; test_m5_negpy.py the NegPy
                         formats — XMP, sidecars, gear merge, handoff, hash compatibility
-docs/                   REVIEW.md, ROADMAP.md, NEGPY_INTEGRATION.md
+docs/                   REVIEW.md, ROADMAP.md, NEGPY_INTEGRATION.md, M4_PAPER.md,
+                        NEGPY_UPSTREAM.md (two drafts for NegPy itself, not filed)
 static/catalog/         the bundled catalog art, copied into DATA_DIR/catalog on first start
 data/                   everything the archive owns (git-ignored; DATA_DIR)
 Makefile, .env.example, Dockerfile, docker-compose.yml, frontend/Dockerfile
@@ -483,6 +485,8 @@ entries whose id does not start with `na-` are kept untouched.
 with the export preset, plus `presets/metadata/<serial>.json`. Originals are never moved.
 `POST /negpy/ingest` (`{film_id?, image_ids?, all?, limit?}`) → re-reads files already in the
 archive and fills blanks only; with no body it works through frames nothing has ever read.
+`POST /negpy/edits/match` (`{film_id?, image_ids?, all?, limit?}`) → matches frames against NegPy's
+`edits.db` by content hash, read-only; 404 `no_edits_db` when there is none to read.
 `GET /negpy/lookup?hash=…&path=…` → which frame (and roll, and serial) a NegPy content hash is.
 
 ### System
@@ -747,6 +751,20 @@ a ZIP), found next to a linked file, carried into an export and into a handoff, 
 the frame. The viewer then shows an **Edited in NegPy** badge and a one-line summary of the recipe
 — NegArchive stores the whole recipe but deliberately does not interpret it.
 
+**No sidecars? Then `edits.db`.** NegPy keys its own edit database by the same content hash this
+archive stores, so when both live on the same machine every scan that has been worked on can be
+found without a single sidecar. NegArchive opens that database **read-only and immutable** — the
+driver will not write, lock or create anything, a test asserts an `INSERT` fails, and another
+fingerprints the file before and after a full match — and it is never required: no database, or one
+whose tables are not the ones it knows, simply means "no extra information". Where a frame has both,
+the sidecar wins, because it travels with the scan. *Settings → NegPy → Match NegPy's edits*, or
+`POST /api/negpy/edits/match`.
+
+**How it was developed.** A roll has `developer`, `development_dilution`, `push_pull` and
+`development_time` — free text, because that is how it is written on the envelope — filled in from
+`negpy:Developer` and friends when a scan says so, editable in the roll form, shown on the roll page
+and in the roll CSV.
+
 **Where the files go.** With nothing configured, inside the archive's own data directory
 (`data/negpy/user/gear`, `data/negpy/handoff`), so it works out of the box and is part of a backup.
 Set `NEGPY_USER_DIR` (the same variable NegPy reads) and/or `NEGPY_EXPORT_DIR` to write straight
@@ -763,7 +781,12 @@ GPL code). So a row in NegPy's `edits.db` and a frame here can be matched:
 **Endpoints:** `GET /api/negpy/status`, `POST /api/negpy/gear/sync[?dry_run=true]`,
 `POST /api/negpy/rolls/{id}/handoff` (`{"mode": "link" | "copy"}`), `POST /api/negpy/ingest`
 (re-read files already in the archive — the catch-up for everything imported before M5),
-`GET /api/negpy/lookup?hash=…&path=…`.
+`POST /api/negpy/edits/match`, `GET /api/negpy/lookup?hash=…&path=…`.
+
+**Contributing to NegPy** is a separate, optional question: two proposals (a physical-storage field
+group, a headless export entry point) are drafted in
+[docs/NEGPY_UPSTREAM.md](docs/NEGPY_UPSTREAM.md) and have deliberately **not** been filed — nothing
+here depends on either of them.
 
 ## Known issues
 

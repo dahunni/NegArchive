@@ -40,6 +40,7 @@ from sqlalchemy.orm import Session
 
 from ...models import Camera, FilmKind, FilmRoll, FilmStock, ImageAsset, ImageType, Lens
 from .. import serials, settings_store
+from . import edits as edits_mod
 from . import naming
 from . import sidecar as sidecar_mod
 from .xmp import DC_NS, EXIF_NS, NEGPY_NS, PHOTOSHOP_NS, TIFF_NS, XMP_NS, packet, parse_namespace
@@ -71,7 +72,9 @@ class FrameMetadata:
     film_manufacturer: Optional[str] = None
     film_iso: Optional[int] = None
     developer: Optional[str] = None
-    development: Optional[str] = None
+    dilution: Optional[str] = None
+    push_pull: Optional[str] = None
+    development_time: Optional[str] = None
     notes: Optional[str] = None
     #: Which of "xmp", "exif", "filename" contributed anything.
     sources: List[str] = field(default_factory=list)
@@ -92,7 +95,9 @@ class FrameMetadata:
             "film_manufacturer": self.film_manufacturer,
             "film_iso": self.film_iso,
             "developer": self.developer,
-            "development": self.development,
+            "dilution": self.dilution,
+            "push_pull": self.push_pull,
+            "development_time": self.development_time,
             "notes": self.notes,
             "sources": list(self.sources),
             "raw": dict(self.raw),
@@ -225,12 +230,9 @@ def read(path: str | Path, filename: Optional[str] = None) -> FrameMetadata:
         meta.developer = _clean(negpy.get("Developer"))
         meta.notes = _clean(negpy.get("Notes"))
         meta.capture_date = _date(negpy.get("CaptureDate"))
-        development = [
-            _clean(negpy.get("DevelopmentDilution")),
-            _clean(negpy.get("PushPull")),
-            _clean(negpy.get("DevelopmentTime")),
-        ]
-        meta.development = ", ".join(part for part in development if part) or None
+        meta.dilution = _clean(negpy.get("DevelopmentDilution"))
+        meta.push_pull = _clean(negpy.get("PushPull"))
+        meta.development_time = _clean(negpy.get("DevelopmentTime"))
 
     # Other XMP namespaces, for files that went through a converter which kept XMP
     # but not the negpy properties.
@@ -401,10 +403,12 @@ class IngestResult:
     roll_fields: List[str] = field(default_factory=list)
     matched_roll_id: Optional[int] = None
     sidecar: Optional[str] = None
+    #: True when the recipe came from NegPy's edits.db rather than from a sidecar.
+    edits_match: bool = False
     sources: List[str] = field(default_factory=list)
 
     def __bool__(self) -> bool:
-        return bool(self.fields or self.roll_fields or self.sidecar)
+        return bool(self.fields or self.roll_fields or self.sidecar or self.edits_match)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -413,6 +417,7 @@ class IngestResult:
             "roll_fields": list(self.roll_fields),
             "matched_roll_id": self.matched_roll_id,
             "sidecar": self.sidecar,
+            "edits_match": self.edits_match,
             "sources": list(self.sources),
         }
 
@@ -454,12 +459,18 @@ def apply_to_roll(db: Session, roll: FilmRoll, meta: FrameMetadata, *, create_ge
             roll.end_date = meta.capture_date
             changed.append("end_date")
 
-    # The development notes have nowhere better to live yet (M7 gives them fields).
-    if meta.developer or meta.development:
-        line = " · ".join(part for part in ("Developed in " + meta.developer if meta.developer else None, meta.development) if part)
-        if line and (roll.notes or "").find(line) < 0:
-            roll.notes = f"{roll.notes}\n{line}".strip() if roll.notes else line
-            changed.append("notes")
+    # How it was developed. These have their own columns since 0006; before that
+    # ingest appended a line to the roll's notes, which was worse in every way —
+    # you could not search it, print it, or correct it without editing prose.
+    for column, value in (
+        ("developer", meta.developer),
+        ("development_dilution", meta.dilution),
+        ("push_pull", meta.push_pull),
+        ("development_time", meta.development_time),
+    ):
+        if value and not (getattr(roll, column) or "").strip():
+            setattr(roll, column, value)
+            changed.append(column)
 
     return changed
 
@@ -487,6 +498,35 @@ def apply_to_image(image: ImageAsset, meta: FrameMetadata) -> List[str]:
     return changed
 
 
+def attach_recipe(image: ImageAsset, recipe: "sidecar_mod.Sidecar", source: str) -> None:
+    """Record a NegPy recipe on a frame, whatever it was read from.
+
+    One writer for both sources, so a recipe from ``edits.db`` and one from a
+    ``.negpy`` file are stored, summarised and shown identically; ``source`` is the
+    only difference, and it is there so the UI can say where it came from.
+    """
+    payload = recipe.to_dict()
+    payload["source"] = source
+    image.negpy_edited_at = recipe.edited_at
+    image.negpy_recipe = payload
+
+
+def attach_edits(image: ImageAsset, index: Optional["edits_mod.EditsIndex"]) -> bool:
+    """Look this frame's content hash up in NegPy's edits.db (M5, "left for later").
+
+    Only when the frame has no sidecar: a ``.negpy`` file travels with the scan and
+    is authoritative, while edits.db is one machine's private state. Returns whether
+    anything was recorded.
+    """
+    if index is None or not image.content_hash or image.sidecar_path:
+        return False
+    recipe = index.lookup(image.content_hash)
+    if recipe is None:
+        return False
+    attach_recipe(image, recipe, "edits.db")
+    return True
+
+
 def attach_sidecar(image: ImageAsset, path: Optional[str | Path] = None) -> Optional[str]:
     """Record the ``.negpy`` sidecar for this frame, if there is one.
 
@@ -505,8 +545,7 @@ def attach_sidecar(image: ImageAsset, path: Optional[str | Path] = None) -> Opti
     if parsed is None:
         return None
     image.sidecar_path = str(target)
-    image.negpy_edited_at = parsed.edited_at
-    image.negpy_recipe = parsed.to_dict()
+    attach_recipe(image, parsed, "sidecar")
     return str(target)
 
 
@@ -525,6 +564,7 @@ def ingest_image(
     enabled: Optional[bool] = None,
     create_gear: Optional[bool] = None,
     sidecar_path: Optional[str | Path] = None,
+    edits_index: Optional["edits_mod.EditsIndex"] = None,
 ) -> IngestResult:
     """Read one frame's file and fill in what the archive does not know yet.
 
@@ -566,4 +606,6 @@ def ingest_image(
         result.roll_fields.extend(apply_to_roll(db, roll, meta, create_gear=create_gear))
 
     result.sidecar = attach_sidecar(image, sidecar_path)
+    if result.sidecar is None and attach_edits(image, edits_index):
+        result.edits_match = True
     return result

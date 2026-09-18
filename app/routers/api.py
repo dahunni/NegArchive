@@ -45,6 +45,7 @@ from ..services import lifecycle, serials
 from ..services import locations as loc_svc
 from ..services import strips as strips_svc
 from ..services.hashing import safe_content_hash
+from ..services.negpy import edits as negpy_edits
 from ..services.negpy import metadata as negpy_metadata
 from ..services.negpy import naming as negpy_naming
 from ..services.negpy import sidecar as negpy_sidecar
@@ -167,6 +168,11 @@ def film_to_dict(
         "film_type": f.film_type_name,
         "format": f.format,
         "notes": f.notes,
+        # M5: what the roll went through in the tank, from NegPy's XMP or by hand.
+        "developer": f.developer,
+        "development_dilution": f.development_dilution,
+        "push_pull": f.push_pull,
+        "development_time": f.development_time,
         "building": f.building,
         "folder": f.folder,
         "archive_serial": f.archive_serial,
@@ -838,6 +844,10 @@ def create_film(body: schemas.FilmRollCreate, db: Session = Depends(get_db)):
             title=title,
             notes=body.notes,
             format=body.format,
+            developer=clean_name(body.developer),
+            development_dilution=clean_name(body.development_dilution),
+            push_pull=clean_name(body.push_pull),
+            development_time=clean_name(body.development_time),
             building=body.building,
             folder=body.folder,
             start_date=start,
@@ -893,7 +903,17 @@ def update_film(
         end = parse_date(body.end_date, "end_date") if body.given("end_date") else f.end_date
         _check_date_order(start, end)
         _resolve_gear(db, body, f, creating=False)
-        for key in ["notes", "format", "building", "folder"]:
+        for key in [
+            "notes",
+            "format",
+            "building",
+            "folder",
+            # M5
+            "developer",
+            "development_dilution",
+            "push_pull",
+            "development_time",
+        ]:
             if body.given(key):
                 setattr(f, key, clean_name(getattr(body, key)))
         f.start_date = start
@@ -1452,7 +1472,14 @@ def upload_image(
     # M5: read the file's own EXIF/XMP and fill what the client did not send. It
     # can also file an unassigned upload into the roll its `negpy:CaptureRoll`
     # names, which is what makes "drop a NegPy export on the archive" work.
-    negpy_metadata.ingest_image(db, img, roll=roll)
+    # `edits_index` is NegPy's edits.db when there is one — the recipe for a scan
+    # whose owner never turned sidecars on. Opened and closed around the ingest.
+    index = negpy_edits.open_index(db)
+    try:
+        negpy_metadata.ingest_image(db, img, roll=roll, edits_index=index)
+    finally:
+        if index is not None:
+            index.close()
     if img.film_roll_id and image_type == ImageType.scan:
         lifecycle.touch_scanned(roll or db.get(FilmRoll, img.film_roll_id))
     db.commit()
@@ -1550,6 +1577,7 @@ def bulk_upload_images(
         return not_found("Roll")
     images, sidecars = _pull_sidecars(files)
     ingest_on, create_gear = negpy_metadata.ingest_settings(db)
+    edits_index = negpy_edits.open_index(db) if ingest_on else None
     created: List[ImageAsset] = []
     try:
         for file in images:
@@ -1574,6 +1602,7 @@ def bulk_upload_images(
                 enabled=ingest_on,
                 create_gear=create_gear,
                 sidecar_path=stored_sidecar,
+                edits_index=edits_index,
             )
     except ApiError as exc:
         # Everything or nothing: a rejected file must not leave half a roll behind.
@@ -1582,6 +1611,9 @@ def bulk_upload_images(
             _remove_quietly(_abs(image.path))
             _remove_quietly(_abs(image.path) + negpy_sidecar.SUFFIX)
         return from_exc(exc)
+    finally:
+        if edits_index is not None:
+            edits_index.close()
 
     if created:
         lifecycle.touch_scanned(f)
@@ -1614,6 +1646,7 @@ def bulk_upload_zip(film_id: int, file: UploadFile = File(...), db: Session = De
         created: List[ImageAsset] = []
         skipped: List[str] = []
         ingest_on, create_gear = negpy_metadata.ingest_settings(db)
+        edits_index = negpy_edits.open_index(db) if ingest_on else None
 
         # M5: a ZIP straight out of NegPy carries the `.negpy` sidecars too. Collect
         # them first, by stem, so every scan can be matched with its own.
@@ -1670,11 +1703,14 @@ def bulk_upload_zip(film_id: int, file: UploadFile = File(...), db: Session = De
                         enabled=ingest_on,
                         create_gear=create_gear,
                         sidecar_path=stored_sidecar,
+                        edits_index=edits_index,
                     )
                 except OSError:
                     skipped.append(name)
                     continue
 
+        if edits_index is not None:
+            edits_index.close()
         if created:
             lifecycle.touch_scanned(f)
         db.commit()

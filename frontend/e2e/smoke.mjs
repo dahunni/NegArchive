@@ -627,6 +627,9 @@ async function main() {
         CaptureFrame: "42",
         CaptureDate: "2024-09-03",
         CaptureFilmStock: "HP5 Plus",
+        Developer: "Rodinal",
+        DevelopmentDilution: "1+50",
+        DevelopmentTime: "9:30",
         Notes: "From NegPy",
       }).toString("base64"),
       recipe: JSON.stringify({ version: 3, settings: { invert: true, exposure: 0.4, crop: [0, 0, 2, 1] } }),
@@ -668,6 +671,21 @@ async function main() {
   await shot(page, 17, "ready for NegPy")
   await page.getByRole("button", { name: "Done" }).click()
 
+  // The development fields (M5): what the file said ends up in its own columns,
+  // not appended to the roll's notes.
+  await page.goto(`${BASE_URL}/films/${rollId}`, { waitUntil: "load" })
+  const developedIn = (await page.getByTestId("roll-development").textContent().catch(() => "")) || ""
+  check("M5: the roll shows how it was developed", /Rodinal/.test(developedIn), developedIn.trim() || "none")
+  check(
+    "M5: the roll editor has the development fields",
+    await clickUntil(page.getByTestId("edit-roll"), page.getByTestId("development-fields")),
+  )
+  check(
+    "M5: the developer field carries what the file said",
+    (await page.locator("#edit-developer").inputValue()) === "Rodinal",
+  )
+  await page.keyboard.press("Escape")
+
   // Settings: the NegPy section, and writing the gear library NegPy reads.
   await page.goto(`${BASE_URL}/settings`, { waitUntil: "load" })
   check("M5: the settings page has a NegPy section", await visible(page.getByTestId("negpy-settings")))
@@ -680,6 +698,26 @@ async function main() {
     return Boolean(status.gear_synced_at)
   })
   check("M5: writing the gear library records when it ran", gearWritten)
+  check(
+    "M5: the settings page reports NegPy's edits.db",
+    await visible(page.getByTestId("negpy-edits-readout")),
+  )
+  const editsReadout = (await page.getByTestId("negpy-edits-readout").textContent()) || ""
+  check(
+    "M5: with no edits.db it says so rather than failing",
+    /No NegPy edits\.db|edits\.db:/.test(editsReadout),
+    editsReadout.trim(),
+  )
+  // From Node, not from the page: this request is *meant* to 404, and a 404 in the
+  // page would be logged as a console error and fail the "no console errors" check.
+  const editsMatch = await page.request.post(`${BASE_URL}/api/negpy/edits/match`, { data: {} })
+  const editsBody = await editsMatch.json().catch(() => null)
+  check(
+    "M5: matching against a missing edits.db is a clean 404",
+    editsMatch.status() === 404 && editsBody?.error?.code === "no_edits_db",
+    `${editsMatch.status()} ${JSON.stringify(editsBody).slice(0, 120)}`,
+  )
+
   const lookupOk = await page.evaluate(async (hash) => {
     const res = await fetch(`/api/negpy/lookup?hash=${hash}`)
     const payload = await res.json()

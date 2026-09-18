@@ -4,6 +4,7 @@
     POST /api/negpy/gear/sync              write cameras/lenses/film_stocks.json
     POST /api/negpy/rolls/{id}/handoff     prepare a roll folder plus a preset
     POST /api/negpy/ingest                 re-read metadata for frames already here
+    POST /api/negpy/edits/match            match frames against NegPy's edits.db
     GET  /api/negpy/lookup                 find a frame by NegPy content hash or path
 
 Every one of these is file-based and local: nothing here talks to NegPy, because
@@ -28,7 +29,7 @@ from ..errors import ApiError, error_response, from_exc, not_found, read_json
 from ..models import FilmRoll, ImageAsset, ImageType
 from ..services import locations as loc_svc
 from ..services import settings_store
-from ..services.negpy import dirs, gear, handoff, naming
+from ..services.negpy import dirs, edits, gear, handoff, naming
 from ..services.negpy import metadata as negpy_metadata
 
 router = APIRouter(prefix="/api/negpy", tags=["negpy"])
@@ -65,6 +66,9 @@ def status(db: Session = Depends(get_db)):
         "handoff_mode": settings.get("negpy_handoff_mode") or "link",
         "gear_synced_at": settings.get("negpy_gear_synced_at") or None,
         "paths": _paths(db),
+        # M5 ("left for later"): NegPy's own edits database, read-only. Absent is
+        # normal and not an error — it only ever adds information.
+        "edits_db": edits.describe(db),
         "allowed_bases": [str(base) for base in dirs.allowed_bases()],
         "filename_pattern": naming.FILENAME_PATTERN,
         "frames_with_metadata": ingested,
@@ -163,24 +167,107 @@ async def ingest(request: Request, db: Session = Depends(get_db)):
 
     changed = 0
     sidecars = 0
+    edits_matched = 0
     results = []
-    for frame in frames:
-        result = negpy_metadata.ingest_image(
-            db, frame, match_unassigned=True, enabled=enabled, create_gear=create_gear
-        )
-        if result:
-            changed += 1
-        if result.sidecar:
-            sidecars += 1
-        results.append(result.to_dict())
+    index = edits.open_index(db)
+    try:
+        for frame in frames:
+            result = negpy_metadata.ingest_image(
+                db,
+                frame,
+                match_unassigned=True,
+                enabled=enabled,
+                create_gear=create_gear,
+                edits_index=index,
+            )
+            if result:
+                changed += 1
+            if result.sidecar:
+                sidecars += 1
+            if result.edits_match:
+                edits_matched += 1
+            results.append(result.to_dict())
+    finally:
+        if index is not None:
+            index.close()
     db.commit()
     return {
         "ok": True,
         "examined": len(frames),
         "changed": changed,
         "sidecars": sidecars,
+        "edits_matched": edits_matched,
         "results": results,
     }
+
+
+@router.post("/edits/match")
+async def match_edits(request: Request, db: Session = Depends(get_db)):
+    """Match frames against NegPy's ``edits.db`` by content hash.
+
+    For an archive whose owner never turned sidecars on: NegPy keys its edits by
+    the same sampled hash NegArchive stores, so when both live on the same machine
+    every scan that has been worked on can be found without touching a file. The
+    database is opened **read-only and immutable** — nothing is written, locked or
+    created (app/services/negpy/edits.py).
+
+    Body (all optional): ``{"film_id": 3}``, ``{"image_ids": [...]}``, ``{"all": true}``
+    to re-check frames that already carry a recipe. A ``.negpy`` sidecar always wins,
+    so a frame that has one is skipped.
+    """
+    try:
+        payload = await read_json(request, required=False) or {}
+    except ApiError as exc:
+        return from_exc(exc)
+
+    index = edits.open_index(db)
+    if index is None:
+        report = edits.describe(db)
+        return error_response(
+            "no_edits_db",
+            "No readable edits.db in NegPy's user directory"
+            + (f" ({report['path']})" if report.get("path") else "")
+            + ". Set NEGPY_USER_DIR, or point the NegPy folder in Settings at it.",
+            404,
+            "negpy_user_dir",
+        )
+
+    try:
+        query = db.query(ImageAsset).filter(
+            ImageAsset.type == ImageType.scan, ImageAsset.content_hash.isnot(None)
+        )
+        if payload.get("film_id") is not None:
+            query = query.filter(ImageAsset.film_roll_id == int(payload["film_id"]))
+        image_ids = payload.get("image_ids")
+        if isinstance(image_ids, list) and image_ids:
+            query = query.filter(ImageAsset.id.in_([int(i) for i in image_ids]))
+        if not payload.get("all"):
+            # The default is the gap: frames nothing has recorded a recipe for.
+            query = query.filter(ImageAsset.negpy_recipe.is_(None))
+
+        limit = max(1, min(int(payload.get("limit") or 2000), 10000))
+        frames: List[ImageAsset] = query.order_by(ImageAsset.id.asc()).limit(limit).all()
+
+        matched = 0
+        by_hash = index.lookup_many([frame.content_hash for frame in frames])
+        for frame in frames:
+            if frame.sidecar_path:
+                continue  # a sidecar beside the scan wins
+            recipe = by_hash.get(str(frame.content_hash))
+            if recipe is None:
+                continue
+            negpy_metadata.attach_recipe(frame, recipe, "edits.db")
+            matched += 1
+        db.commit()
+        return {
+            "ok": True,
+            "database": str(index.path),
+            "examined": len(frames),
+            "matched": matched,
+            "rows": index.row_count(),
+        }
+    finally:
+        index.close()
 
 
 @router.get("/lookup")

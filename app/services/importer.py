@@ -50,6 +50,7 @@ from ..models import FilmRoll, ImageAsset, ImageType, LibraryRoot
 from ..routers.api import ALLOWED_EXTENSIONS, frame_number_from_filename
 from . import lifecycle, serials
 from .hashing import safe_content_hash
+from .negpy import edits as negpy_edits
 from .negpy import metadata as negpy_metadata
 from .negpy import sidecar as negpy_sidecar
 
@@ -258,6 +259,7 @@ def _link_file(
     roll: FilmRoll,
     result: ScanResult,
     ingest: tuple[bool, bool] = (True, False),
+    edits_index=None,
 ) -> None:
     absolute = str(file_path)
     digest = safe_content_hash(file_path)
@@ -320,9 +322,15 @@ def _link_file(
     # file itself is never written to; only the record learns something.
     enabled, create_gear = ingest
     ingested = negpy_metadata.ingest_image(
-        db, image, roll=roll, match_unassigned=False, enabled=enabled, create_gear=create_gear
+        db,
+        image,
+        roll=roll,
+        match_unassigned=False,
+        enabled=enabled,
+        create_gear=create_gear,
+        edits_index=edits_index,
     )
-    if ingested.sidecar:
+    if ingested.sidecar or ingested.edits_match:
         result.sidecars_seen += 1
     result.frames_added += 1
     lifecycle.touch_scanned(roll)
@@ -340,6 +348,10 @@ def scan_root(db: Session, root: LibraryRoot, commit: bool = True) -> ScanResult
             db.commit()
         return result
 
+    # NegPy's edits.db, opened once for the whole sweep — after the check above, so
+    # an unreachable share does not leave a connection open behind the early return.
+    edits_index = negpy_edits.open_index(db) if ingest[0] else None
+
     folders: list[Path] = []
     loose = _image_files(base)
     if loose:
@@ -356,8 +368,10 @@ def scan_root(db: Session, root: LibraryRoot, commit: bool = True) -> ScanResult
             continue
         roll = _roll_for_folder(db, folder, result)
         for file_path in files:
-            _link_file(db, file_path, roll, result, ingest)
+            _link_file(db, file_path, roll, result, ingest, edits_index)
 
+    if edits_index is not None:
+        edits_index.close()
     root.last_scan_at = datetime.utcnow()
     root.last_scan_summary = result.summary()
     if commit:

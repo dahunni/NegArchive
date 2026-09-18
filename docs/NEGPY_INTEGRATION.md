@@ -74,7 +74,7 @@ file mtime change; bundled entries win on id collision, which our prefix avoids.
 | EXIF `Make` + `Model` / `negpy:CaptureCameraMake/Model` | camera (by name, later by id) |
 | EXIF `LensModel` / `negpy:CaptureLensModel` | lens |
 | `negpy:CaptureFilmStock` + `CaptureFilmManufacturer` | film stock |
-| `negpy:Developer`, `DevelopmentDilution`, `PushPull`, `DevelopmentTime` | roll `notes` now; dedicated process fields later |
+| `negpy:Developer`, `DevelopmentDilution`, `PushPull`, `DevelopmentTime` | `film_rolls.developer`, `development_dilution`, `push_pull`, `development_time` (0006) |
 | `negpy:Notes` | image `notes` |
 
 XMP lives in JPEG APP1 (`http://ns.adobe.com/xap/1.0/`), TIFF tag 700, PNG `iTXt`, WebP `XMP `
@@ -104,6 +104,7 @@ All of it is in `app/services/negpy/` and `app/routers/negpy.py`; the tests are
 | NegPy → NegArchive | the export filename preset, parsed **before** the looser scanner rule | `negpy/naming.py` |
 | NegArchive → NegPy | `gear/cameras.json`, `lenses.json`, `film_stocks.json`, merge-safe on the `na-` id prefix, written atomically | `negpy/gear.py` |
 | NegArchive → NegPy | a roll folder of hard links named with the preset, plus `presets/metadata/<serial>.json` | `negpy/handoff.py` |
+| NegPy → NegArchive | `edits.db` read **read-only and immutable**, matched by content hash, for archives with no sidecars | `negpy/edits.py` |
 | both | the sampled content hash, so `edits.db` and a frame here can be matched (`GET /api/negpy/lookup?hash=…`) | `app/services/hashing.py` |
 
 Four decisions worth keeping in mind when this is extended:
@@ -131,6 +132,29 @@ M2's "last number in the name wins" rule reads `NEG-2024-0002_013_Kodak Gold 200
 the whole-name preset shape before that rule. A name that does not match the preset is left to the
 loose rule exactly as before.
 
+### Reading `edits.db`
+
+NegPy keeps every edit in `<user dir>/edits.db`, table `file_settings(file_hash,
+settings_json, file_path)`, keyed by the **content hash** of the source file rather than by its
+path. NegArchive computes the same hash for every frame, so on one machine the two can be
+matched exactly — which is the whole point of re-implementing the hash faithfully.
+
+Three rules in `app/services/negpy/edits.py`, and none of them is negotiable:
+
+1. **Read-only, always.** `sqlite3.connect("file:…?mode=ro&immutable=1", uri=True)`: the driver
+   will not write, will not create the file, takes no locks and leaves any WAL or journal alone,
+   so a NegPy that happens to be running is not disturbed. A test asserts an `INSERT` raises, and
+   another fingerprints the file before and after a full match.
+2. **Never required.** No database, an unreadable one, a schema this does not recognise — all mean
+   "no extra information", never an error. The table and the three columns are *sniffed* from
+   `sqlite_master` and `PRAGMA table_info`, so a rename upstream degrades instead of breaking.
+3. **A sidecar wins.** A `.negpy` file travels with the scan; edits.db is one machine's private
+   state. Where both exist the sidecar is what the archive records, and the stored recipe says
+   which it was (`source: "sidecar" | "edits.db"`).
+
+Reading somebody's data file is not linking against their program, so this stays MIT-clean — the
+schema above is treated as an observation that may be wrong, not as an interface that must hold.
+
 ### Where NegArchive writes
 
 | | Default | Override |
@@ -151,6 +175,10 @@ Only if the owner wants to contribute; NegArchive must not depend on them.
    flowing into `negpy:` XMP and the filename context. Framed as capture provenance, not an index.
 2. A headless export entry point (`python -m negpy export --preset X folder/`) built from the
    Qt-free pieces (`LoaderFactory` → `ImageProcessor` → `encoders` → `embed_metadata`).
+
+Both are now drafted in full, with the NegArchive side of each decided in advance, in
+[NEGPY_UPSTREAM.md](NEGPY_UPSTREAM.md) — **not filed**, because opening an issue or a PR on
+somebody else's project is the owner's call.
 
 Neither has been proposed upstream yet, and **NegArchive must keep working if neither ever lands**
 — which is the whole point of M5 being files. If the first one does land, the mapping is already

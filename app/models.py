@@ -122,6 +122,18 @@ class FilmRoll(Base):
     format: Mapped[str | None] = mapped_column(String(20))  # one of FILM_FORMATS
     notes: Mapped[str | None] = mapped_column(Text)
 
+    # --- M5: how the roll was developed ----------------------------------------
+    #: Free text on purpose. A developer is "Rodinal" or "Xtol" or "the lab down the
+    #: road"; a dilution is "1+50" or "stock"; a push is "+1" or "pulled one stop";
+    #: a time is "9:30" or "9 min at 20 °C". Every one of those is what somebody
+    #: wrote on the envelope, and an enum would only make them type it somewhere
+    #: else. They are filled from NegPy's ``negpy:Developer``,
+    #: ``DevelopmentDilution``, ``PushPull`` and ``DevelopmentTime`` on ingest.
+    developer: Mapped[str | None] = mapped_column(String(200))
+    development_dilution: Mapped[str | None] = mapped_column(String(100))
+    push_pull: Mapped[str | None] = mapped_column(String(50))
+    development_time: Mapped[str | None] = mapped_column(String(50))
+
     # Shoot date range (optional)
     start_date: Mapped[date | None] = mapped_column(Date)
     end_date: Mapped[date | None] = mapped_column(Date)

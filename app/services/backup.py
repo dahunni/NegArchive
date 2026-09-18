@@ -232,6 +232,11 @@ CSV_COLUMNS = [
     # M4 (appended, so older column positions do not shift)
     "location",
     "status",
+    # M5
+    "developer",
+    "development_dilution",
+    "push_pull",
+    "development_time",
 ]
 
 
@@ -265,6 +270,10 @@ def rolls_csv(db: Session) -> str:
                 "folder": roll.folder or "",
                 "location": loc_svc.path_string(roll.location_ref) or "",
                 "status": roll.status or "",
+                "developer": roll.developer or "",
+                "development_dilution": roll.development_dilution or "",
+                "push_pull": roll.push_pull or "",
+                "development_time": roll.development_time or "",
                 "frame_count": counts.get(roll.id, 0),
                 "notes": (roll.notes or "").replace("\n", " "),
                 "created_at": roll.created_at.isoformat() if roll.created_at else "",

@@ -107,6 +107,11 @@ export interface Film {
   /** One of `35mm`, `120`, `4x5`, `8x10`, `other`. */
   format: string | null
   notes: string | null
+  /** M5: how the roll was developed — free text, filled from NegPy's XMP when it says so. */
+  developer: string | null
+  development_dilution: string | null
+  push_pull: string | null
+  development_time: string | null
   building: string | null
   folder: string | null
   archive_serial: string | null
@@ -201,6 +206,8 @@ export interface NegpyRecipe {
   edited_at: string | null
   summary: string
   setting_count: number
+  /** Where the recipe was read from: a `.negpy` file, or NegPy's edits.db. */
+  source?: "sidecar" | "edits.db"
   file_hash?: string | null
   version?: unknown
   settings?: Record<string, unknown>
@@ -1361,6 +1368,14 @@ export interface NegpyStatus {
     handoff_dir: string | null
     error: string | null
   }
+  /** NegPy's own edits database, read-only. Absent is normal, not an error. */
+  edits_db: {
+    path: string | null
+    exists: boolean
+    readable: boolean
+    table: string | null
+    rows: number | null
+  }
   allowed_bases: string[]
   /** The NegPy export pattern to set, and the one NegArchive parses back. */
   filename_pattern: string
@@ -1418,6 +1433,30 @@ export interface IngestReport {
   examined: number
   changed: number
   sidecars: number
+  edits_matched?: number
+}
+
+export interface EditsMatchReport {
+  database: string
+  examined: number
+  matched: number
+  rows: number | null
+}
+
+/**
+ * Match frames against NegPy's `edits.db` by content hash (M5).
+ *
+ * For an archive whose owner never turned sidecars on. The database is opened
+ * read-only and immutable by the backend; nothing in it is written or locked.
+ */
+export async function matchNegpyEdits(body: { film_id?: number; all?: boolean } = {}): Promise<EditsMatchReport> {
+  const res = await apiFetch("/api/negpy/edits/match", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  })
+  await assertOk(res, "Could not read NegPy's edits database.")
+  return res.json()
 }
 
 export async function ingestNegpyMetadata(body: { film_id?: number; all?: boolean } = {}): Promise<IngestReport> {
