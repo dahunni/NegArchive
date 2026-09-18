@@ -124,7 +124,21 @@ def parse_choice(value, field: str, allowed: Sequence[str]) -> Optional[str]:
     return text
 
 
-async def read_json(request) -> dict:
+async def read_json(request, required: bool = True) -> dict:
+    """The request body as a dict.
+
+    ``required=False`` accepts an empty body as ``{}``, for the endpoints whose
+    options all have defaults ("prepare this roll for NegPy", M5) and which would
+    otherwise make every client send ``{}`` for nothing.
+    """
+    try:
+        raw = await request.body()
+    except Exception as exc:  # pragma: no cover - a client that disconnects mid-body
+        raise ApiError("invalid_json", "The request body could not be read.") from exc
+    if not (raw or b"").strip():
+        if required:
+            raise ApiError("invalid_json", "The request body is not valid JSON.")
+        return {}
     try:
         payload = await request.json()
     except Exception as exc:

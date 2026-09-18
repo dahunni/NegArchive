@@ -75,6 +75,35 @@ const SAMPLE_JPEG = Buffer.from(
   "base64",
 )
 
+/**
+ * The same JPEG with a NegPy XMP packet spliced in (M5).
+ *
+ * XMP lives in a JPEG APP1 segment: marker FF E1, a two-byte length, the
+ * namespace string "http://ns.adobe.com/xap/1.0/\0" and then the packet. Writing
+ * it by hand here keeps the e2e run free of an image library, and it is exactly
+ * what the backend has to read back out.
+ */
+function jpegWithNegpyXmp(properties) {
+  const attributes = Object.entries(properties)
+    .map(([key, value]) => `negpy:${key}="${value}"`)
+    .join(" ")
+  const packet = Buffer.from(
+    `<?xpacket begin="" id="W5M0MpCehiHzreSzNTczkc9d"?>` +
+      `<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">` +
+      `<rdf:Description rdf:about="" xmlns:negpy="https://negpy.app/ns/1.0/" ${attributes}/>` +
+      `</rdf:RDF></x:xmpmeta><?xpacket end="w"?>`,
+    "utf-8",
+  )
+  const header = Buffer.from("http://ns.adobe.com/xap/1.0/\0", "binary")
+  const length = header.length + packet.length + 2
+  const segment = Buffer.concat([
+    Buffer.from([0xff, 0xe1, (length >> 8) & 0xff, length & 0xff]),
+    header,
+    packet,
+  ])
+  return Buffer.concat([SAMPLE_JPEG.subarray(0, 2), segment, SAMPLE_JPEG.subarray(2)])
+}
+
 async function sampleFiles() {
   const dir = path.join(tmpdir(), `negarchive-e2e-${Date.now()}`)
   await mkdir(dir, { recursive: true })
@@ -577,6 +606,86 @@ async function main() {
     await fetch(`/api/films/${loadedId}`, { method: "DELETE" })
     await fetch(`/api/locations/${binderId}?force=true`, { method: "DELETE" })
   }, { loadedId, binderId })
+
+  // ---------------------------------------------------------------- M5: NegPy
+  // A scan that came out of NegPy knows its own roll, frame and date, and brings
+  // its `.negpy` sidecar with it. Both go in through the normal bulk upload.
+  await page.goto(`${BASE_URL}/films/${rollId}`, { waitUntil: "load" })
+  const negpyUpload = await page.evaluate(
+    async ({ rollId, jpeg, recipe }) => {
+      const bytes = Uint8Array.from(atob(jpeg), (c) => c.charCodeAt(0))
+      const body = new FormData()
+      body.append("files", new File([bytes], "NEGPY_042.jpg", { type: "image/jpeg" }))
+      body.append("files", new File([recipe], "NEGPY_042.jpg.negpy", { type: "application/json" }))
+      const res = await fetch(`/api/films/${rollId}/images/bulk`, { method: "POST", body })
+      const payload = await res.json()
+      return payload.images?.[0] ?? null
+    },
+    {
+      rollId,
+      jpeg: jpegWithNegpyXmp({
+        CaptureFrame: "42",
+        CaptureDate: "2024-09-03",
+        CaptureFilmStock: "HP5 Plus",
+        Notes: "From NegPy",
+      }).toString("base64"),
+      recipe: JSON.stringify({ version: 3, settings: { invert: true, exposure: 0.4, crop: [0, 0, 2, 1] } }),
+    },
+  )
+  check("M5: the file's own XMP set the frame number", negpyUpload?.frame_number === 42, JSON.stringify(negpyUpload?.frame_number))
+  check("M5: the capture date came from the file", negpyUpload?.capture_date === "2024-09-03", negpyUpload?.capture_date ?? "none")
+  check("M5: the .negpy sidecar was kept", Boolean(negpyUpload?.sidecar_path), negpyUpload?.sidecar_path ?? "none")
+
+  await page.reload({ waitUntil: "load" })
+  await visible(page.getByTestId("frame-cell"))
+  await page.getByTestId("frame-cell").last().click()
+  check("M5: the viewer says the frame was edited in NegPy", await visible(page.getByTestId("viewer-negpy")))
+  const negpyPanel = (await page.getByTestId("viewer-negpy").textContent()) || ""
+  check("M5: the recipe is summarised, not interpreted", /inverted/.test(negpyPanel), negpyPanel.slice(0, 120))
+  check("M5: the panel says where the metadata came from", /xmp/.test(negpyPanel))
+  await shot(page, 16, "a frame edited in NegPy")
+  await page.keyboard.press("Escape")
+
+  // "Open in NegPy": a folder of hard links plus a metadata preset.
+  check(
+    "M5: Open in NegPy prepares the roll",
+    await clickUntil(page.getByTestId("open-in-negpy"), page.getByTestId("handoff-steps")),
+  )
+  const handoffText = (await page.getByTestId("handoff-steps").textContent()) || ""
+  check("M5: the handoff names the export pattern", handoffText.includes("{{ roll }}_{{ frame|pad(3) }}_{{ film }}"))
+  check(
+    "M5: the handoff folder is named after the serial",
+    handoffText.includes(serialText),
+    handoffText.slice(0, 160),
+  )
+  check(
+    "M5: the dialog does not overflow its width",
+    await page.getByTestId("handoff-steps").evaluate((el) => {
+      const dialog = el.closest('[role="dialog"]')
+      return el.getBoundingClientRect().width <= dialog.getBoundingClientRect().width + 1
+    }),
+  )
+  await shot(page, 17, "ready for NegPy")
+  await page.getByRole("button", { name: "Done" }).click()
+
+  // Settings: the NegPy section, and writing the gear library NegPy reads.
+  await page.goto(`${BASE_URL}/settings`, { waitUntil: "load" })
+  check("M5: the settings page has a NegPy section", await visible(page.getByTestId("negpy-settings")))
+  check("M5: metadata ingest is on by default", await visible(page.getByTestId("negpy-ingest-toggle")))
+  await page.getByTestId("negpy-sync-gear").click()
+  await page.waitForTimeout(1500)
+  const gearWritten = await page.evaluate(async () => {
+    const res = await fetch("/api/negpy/status")
+    const status = await res.json()
+    return Boolean(status.gear_synced_at)
+  })
+  check("M5: writing the gear library records when it ran", gearWritten)
+  const lookupOk = await page.evaluate(async (hash) => {
+    const res = await fetch(`/api/negpy/lookup?hash=${hash}`)
+    const payload = await res.json()
+    return payload.count >= 1
+  }, negpyUpload?.content_hash)
+  check("M5: a frame can be found by its NegPy content hash", lookupOk)
 
   // ------------------------------------------------- clean up what we created
   // Also the only test of the delete dialog, and it keeps the archive tidy so a

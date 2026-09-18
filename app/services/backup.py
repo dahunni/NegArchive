@@ -150,6 +150,15 @@ def iter_export_zip(db: Session, chunk_bytes: int = 1024 * 1024) -> Iterator[byt
             managed.append((FILES_PREFIX + paths.relative_part(row["path"]), resolved))
     payload["file_count"] = len(managed)
 
+    # M5: a managed file's `.negpy` sidecar travels with it. It is the record of
+    # an edit somebody made in NegPy, it is tiny, and an export that dropped it
+    # would quietly lose work that is not in the database.
+    for arcname, source in list(managed):
+        sidecar = source.with_name(source.name + ".negpy")
+        if sidecar.is_file():
+            managed.append((arcname + ".negpy", sidecar))
+    payload["file_count"] = len(managed)
+
     sink = _ChunkSink()
     with zipfile.ZipFile(sink, "w", zipfile.ZIP_DEFLATED, allowZip64=True) as archive:
         archive.writestr("export.json", json.dumps(payload, indent=2, ensure_ascii=False))
@@ -189,7 +198,9 @@ _README = """NegArchive export
 export.json  every database table as plain JSON. Dates are ISO-8601, enums are
              their string values, ids are the ones this archive used.
 files/       the managed image files, under the same relative path they have in
-             the archive's data directory (data/uploads/...).
+             the archive's data directory (data/uploads/...). A file's `.negpy`
+             sidecar, if it has one, sits next to it under the same name plus
+             `.negpy` — that is where NegPy keeps what it did to the scan.
 
 Files that were imported "by reference" (storage_mode = "linked") are NOT in
 this ZIP: they live in a folder you manage. Their records carry source_path and

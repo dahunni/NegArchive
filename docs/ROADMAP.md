@@ -231,32 +231,69 @@ Specification with the owner's decisions: [M4_PAPER.md](M4_PAPER.md).
       move sequence, `/s/{serial}`, the wedge scanner, and checks the printouts at paper size.
 - [ ] TLS for the LAN so the phone camera scanner works away from localhost (also M3's PWA).
 
-## M5 — NegPy integration (file-based, no NegPy code in NegArchive)
+## M5 — NegPy integration (file-based, no NegPy code in NegArchive) *(done)*
 
-See [NEGPY_INTEGRATION.md](NEGPY_INTEGRATION.md) for formats and field mappings.
+See [NEGPY_INTEGRATION.md](NEGPY_INTEGRATION.md) for formats and field mappings. Everything here
+lives in `app/services/negpy/` (xmp, metadata, naming, sidecar, gear, handoff, dirs) plus
+`app/routers/negpy.py`; not a line of NegPy is imported, copied or vendored.
 
-- [ ] **Ingest NegPy exports**: read EXIF (`Make`, `Model`, `LensModel`, `ISOSpeedRatings`,
+- [x] **Ingest NegPy exports**: EXIF (`Make`, `Model`, `LensModel`, `ISOSpeedRatings`,
       `DateTimeOriginal`) and the XMP `negpy:` namespace (`CaptureRoll`, `CaptureFrame`,
-      `CaptureFilmStock`, …) on upload; match `CaptureRoll` to `archive_serial` or title; fill
-      frame number, capture date, camera/lens/film automatically.
-- [ ] **Gear sync (NegArchive → NegPy)**: write `cameras.json`, `lenses.json`, `film_stocks.json`
-      in NegPy's camelCase schema into a target `gear/` directory (env `NEGPY_USER_DIR` or a path
-      setting); stable ids `na-cam-<id>`; merge-safe (never overwrite ids not ours).
-- [ ] **Roll handoff (NegArchive → NegPy)**: "Open in NegPy" prepares a roll folder (copy or link)
-      plus a metadata preset JSON under `presets/metadata/<serial>.json` prefilled with camera,
-      lens, film, `capture_roll = serial`, capture date; the user adds the folder as a NegPy
-      library root or Hot Folder.
-- [ ] **Sidecar awareness**: accept `.negpy` sidecars on upload and in link mode; show
-      "edited in NegPy" and the recipe summary on the image page; keep sidecars next to files on
-      export/backup.
-- [ ] **Content hash compatible with NegPy** (reimplemented, documented algorithm: SHA-256 of
-      size + 1 MiB head + 1 MiB tail + 16 × 256 KiB interior chunks) so a NegArchive record can
-      be looked up in `edits.db` when both run on the same machine. Do not import NegPy code.
-- [ ] **Filename preset**: publish a recommended NegPy export preset
-      `{{ roll }}_{{ frame|pad(3) }}_{{ film }}` and parse it on import.
+      `CaptureFilmStock`, `CaptureCameraMake/Model`, `CaptureLensModel`, `Developer`, `Notes`, …)
+      are read on every upload path and on every file link mode touches. `CaptureRoll` is matched
+      against `archive_serial`, then against a *unique* title. **Ingest only fills blanks** — a
+      value a person typed is never overwritten — which is why it is on by default
+      (`negpy_ingest`). Gear is matched against the catalog, and only created when
+      `negpy_create_gear` says so. The XMP parser refuses a packet that declares a DTD or an
+      entity, and one over 4 MiB, rather than handing it to `xml.etree`.
+- [x] **Gear sync (NegArchive → NegPy)**: `POST /api/negpy/gear/sync` writes `cameras.json`,
+      `lenses.json`, `film_stocks.json` in NegPy's camelCase schema, ids `na-cam-<id>` /
+      `na-lens-<id>` / `na-film-<id>`, mount into `notes` (NegPy has no field), focal length and
+      maximum aperture parsed out of a lens name, film kinds translated to NegPy's `colorType`.
+      Merge-safe both ways: entries whose id is not ours keep their content *and their position*,
+      ours are updated in place, and an `na-` entry whose row was deleted here is dropped. Both
+      file shapes (bare array, or `{"cameras": [...]}`) survive a round trip, and the write is
+      atomic because NegPy reloads on mtime.
+- [x] **Roll handoff (NegArchive → NegPy)**: "Open in NegPy" on a roll prepares
+      `<handoff dir>/<serial>/` with every scan hard-linked (or copied, `mode: "copy"`), named with
+      the export preset, plus any `.negpy` sidecars and a `README.txt`; and
+      `presets/metadata/<serial>.json` with `capture_roll`, the capture date and the `na-…` gear
+      ids. Idempotent, and nothing original is moved, renamed or written to.
+- [x] **Sidecar awareness**: `.negpy` sidecars are accepted beside their scan in a bulk upload and
+      inside a ZIP (stored next to the managed file), found next to a linked file, and re-read on a
+      rescan when the sidecar's mtime moved — an edit in NegPy does not touch the scan, so nothing
+      else would notice. They are carried into the export, into a handoff, and deleted with the
+      frame. The viewer shows an "Edited in NegPy" badge and a one-line summary; the parsed recipe
+      is stored whole and deliberately not interpreted.
+- [x] **Content hash compatible with NegPy** (re-implemented from the written specification:
+      SHA-256 of size + 1 MiB head + 1 MiB tail + 16 × 256 KiB interior chunks, `services/hashing.py`).
+      `tests/test_m5_negpy.py` re-implements the specification a *second* time and compares, so an
+      "optimisation" that changes the digest fails the build rather than silently unmatching every
+      row in NegPy's `edits.db`. `GET /api/negpy/lookup?hash=…` answers with the roll and serial.
+- [x] **Filename preset**: `{{ roll }}_{{ frame|pad(3) }}_{{ film }}` is published in Settings, in
+      the handoff dialog and in the README, and parsed on import — *before* M2's looser
+      last-number-wins rule, because the preset ends in the film name and most film names end in
+      their ISO (`NEG-2024-0002_013_Kodak Gold 200.jpg` is frame 13, not frame 200).
+- [x] **Where NegArchive may write**: by default inside `DATA_DIR/negpy/` (works with no
+      configuration, and is part of a backup); `NEGPY_USER_DIR` / `NEGPY_EXPORT_DIR` point at
+      NegPy's own directories. A path set in Settings must resolve inside those, `NEGPY_DIRS_ALLOW`,
+      `LIBRARY_ROOTS_ALLOW` or `DATA_DIR/negpy`, or it is a 403 — the same rule as M3's library
+      roots, and for the same reason: the API has no password by default.
+- [x] Tests: `tests/test_m5_negpy.py` (77 new, 319 in total) and 13 new checks in the Playwright
+      smoke test, which uploads a JPEG with a hand-built XMP packet and its sidecar, reads the
+      viewer's panel, prepares a handoff and writes the gear library.
+
+Left for later, deliberately:
+
 - [ ] **Upstream proposals to NegPy** (separate, optional, GPL): a physical-storage field group in
       `MetadataConfig` (building/container/sleeve/serial → XMP), and a headless export entry point.
       Frame both as "external sync", because NegPy's library deliberately has no index database.
+      Nothing in NegArchive may depend on either; both are drafted in
+      [NEGPY_INTEGRATION.md](NEGPY_INTEGRATION.md).
+- [ ] Reading NegPy's `edits.db` directly (read-only, same machine) instead of only sidecars. The
+      hash lookup is the half of it that does not need NegPy's schema to stay stable.
+- [ ] Dedicated development fields on a roll (developer, dilution, push/pull, time). M5 appends
+      them to the roll's notes, which is where they will be read from when the columns arrive (M7).
 
 ## M6 — Immich connector (optional photo layer)
 

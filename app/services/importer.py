@@ -50,6 +50,8 @@ from ..models import FilmRoll, ImageAsset, ImageType, LibraryRoot
 from ..routers.api import ALLOWED_EXTENSIONS, frame_number_from_filename
 from . import lifecycle, serials
 from .hashing import safe_content_hash
+from .negpy import metadata as negpy_metadata
+from .negpy import sidecar as negpy_sidecar
 
 #: The same allowlist the upload endpoints use (roadmap M2, R#18).
 IMAGE_EXTENSIONS = ALLOWED_EXTENSIONS
@@ -155,13 +157,16 @@ class ScanResult:
     frames_updated: int = 0
     frames_unchanged: int = 0
     files_skipped: int = 0
+    #: M5: how many frames picked up a NegPy `.negpy` sidecar in this sweep.
+    sidecars_seen: int = 0
     roll_ids: list[int] = field(default_factory=list)
 
     def summary(self) -> str:
+        sidecars = f", {self.sidecars_seen} NegPy sidecars" if self.sidecars_seen else ""
         return (
             f"{self.frames_added} new, {self.frames_rehomed} re-homed, "
             f"{self.frames_updated} updated, {self.frames_unchanged} unchanged, "
-            f"{self.rolls_created} new rolls"
+            f"{self.rolls_created} new rolls{sidecars}"
         )
 
     def to_dict(self) -> dict:
@@ -172,6 +177,7 @@ class ScanResult:
             "frames_updated": self.frames_updated,
             "frames_unchanged": self.frames_unchanged,
             "files_skipped": self.files_skipped,
+            "sidecars_seen": self.sidecars_seen,
             "roll_ids": self.roll_ids,
             "summary": self.summary(),
         }
@@ -224,7 +230,35 @@ def _roll_for_folder(db: Session, folder: Path, result: ScanResult) -> FilmRoll:
     return roll
 
 
-def _link_file(db: Session, file_path: Path, roll: FilmRoll, result: ScanResult) -> None:
+def _refresh_sidecar(image: ImageAsset) -> bool:
+    """Pick up a ``.negpy`` sidecar that appeared or was written again (M5).
+
+    Editing a scan in NegPy does not touch the scan, so a rescan that only
+    compares image bytes would never notice. Comparing the sidecar's mtime with
+    what the frame recorded costs one `stat` per file and is what makes "edited in
+    NegPy" show up in the archive after the edit.
+    """
+    source = image.source_path or image.path
+    found = negpy_sidecar.find(source)
+    if found is None:
+        return False
+    try:
+        mtime = datetime.utcfromtimestamp(found.stat().st_mtime)
+    except OSError:
+        return False
+    if image.sidecar_path == str(found) and image.negpy_edited_at is not None:
+        if mtime <= image.negpy_edited_at:
+            return False
+    return negpy_metadata.attach_sidecar(image, found) is not None
+
+
+def _link_file(
+    db: Session,
+    file_path: Path,
+    roll: FilmRoll,
+    result: ScanResult,
+    ingest: tuple[bool, bool] = (True, False),
+) -> None:
     absolute = str(file_path)
     digest = safe_content_hash(file_path)
     if digest is None:
@@ -237,9 +271,15 @@ def _link_file(db: Session, file_path: Path, roll: FilmRoll, result: ScanResult)
         .first()
     )
     if existing is not None:
+        changed = False
         if existing.content_hash != digest:
             # Re-scanned or re-exported in place: same path, different bytes.
             existing.content_hash = digest
+            changed = True
+        if _refresh_sidecar(existing):
+            result.sidecars_seen += 1
+            changed = True
+        if changed:
             result.frames_updated += 1
         else:
             result.frames_unchanged += 1
@@ -262,20 +302,28 @@ def _link_file(db: Session, file_path: Path, roll: FilmRoll, result: ScanResult)
             result.frames_rehomed += 1
             return
 
-    db.add(
-        ImageAsset(
-            film_roll_id=roll.id,
-            type=ImageType.scan,
-            # `path` keeps pointing at the original for every consumer that only
-            # knows `path`; `source_path` is what marks it as not ours to touch.
-            path=absolute,
-            source_path=absolute,
-            content_hash=digest,
-            original_filename=file_path.name,
-            storage_mode="linked",
-            frame_number=frame_number_from_filename(file_path.name),
-        )
+    image = ImageAsset(
+        film_roll_id=roll.id,
+        type=ImageType.scan,
+        # `path` keeps pointing at the original for every consumer that only
+        # knows `path`; `source_path` is what marks it as not ours to touch.
+        path=absolute,
+        source_path=absolute,
+        content_hash=digest,
+        original_filename=file_path.name,
+        storage_mode="linked",
+        frame_number=frame_number_from_filename(file_path.name),
     )
+    db.add(image)
+    # M5: a linked file is read exactly like an uploaded one — EXIF, the `negpy:`
+    # XMP namespace, the filename preset and any `.negpy` sidecar beside it. The
+    # file itself is never written to; only the record learns something.
+    enabled, create_gear = ingest
+    ingested = negpy_metadata.ingest_image(
+        db, image, roll=roll, match_unassigned=False, enabled=enabled, create_gear=create_gear
+    )
+    if ingested.sidecar:
+        result.sidecars_seen += 1
     result.frames_added += 1
     lifecycle.touch_scanned(roll)
 
@@ -283,6 +331,7 @@ def _link_file(db: Session, file_path: Path, roll: FilmRoll, result: ScanResult)
 def scan_root(db: Session, root: LibraryRoot, commit: bool = True) -> ScanResult:
     """Walk one registered root and link everything under it."""
     result = ScanResult()
+    ingest = negpy_metadata.ingest_settings(db)  # M5, read once per sweep
     base = Path(root.path)
     if not base.is_dir():
         root.last_scan_at = datetime.utcnow()
@@ -307,7 +356,7 @@ def scan_root(db: Session, root: LibraryRoot, commit: bool = True) -> ScanResult
             continue
         roll = _roll_for_folder(db, folder, result)
         for file_path in files:
-            _link_file(db, file_path, roll, result)
+            _link_file(db, file_path, roll, result, ingest)
 
     root.last_scan_at = datetime.utcnow()
     root.last_scan_summary = result.summary()

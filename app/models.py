@@ -212,6 +212,19 @@ class ImageAsset(Base):
     frame_number: Mapped[int | None] = mapped_column(Integer, index=True)
     notes: Mapped[str | None] = mapped_column(Text)
     capture_date: Mapped[date | None] = mapped_column(Date)
+
+    # --- M5: what the file itself said, and what NegPy has done to it -----------
+    #: Everything read out of the file on ingest (EXIF, the ``negpy:`` XMP
+    #: namespace, the filename), verbatim. Kept even when it changed nothing: it is
+    #: the evidence behind an automatically filled frame number or date.
+    capture_metadata: Mapped[dict | None] = mapped_column(JSONB)
+    #: The ``.negpy`` sidecar next to this file, when there is one.
+    sidecar_path: Mapped[str | None] = mapped_column(String(1000))
+    #: When that sidecar was last written — i.e. when the scan was last edited.
+    negpy_edited_at: Mapped[datetime | None] = mapped_column(DateTime)
+    #: The parsed sidecar plus a one-line summary of it (services/negpy/sidecar.py).
+    negpy_recipe: Mapped[dict | None] = mapped_column(JSONB)
+
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     film_roll: Mapped["FilmRoll | None"] = relationship("FilmRoll", back_populates="images")

@@ -375,6 +375,49 @@ export function FrameViewer({
                   </div>
                 ) : null}
               </dl>
+
+              {/* M5: what NegPy has done to this scan, and what the file itself
+                  said when the archive read it. NegArchive does not interpret the
+                  recipe — it reports that there is one, and summarises it. */}
+              {frame.negpy_summary || frame.capture_metadata ? (
+                <div className="space-y-2 border-t border-border pt-3" data-testid="viewer-negpy">
+                  {frame.negpy_summary ? (
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Badge variant="secondary">Edited in NegPy</Badge>
+                      <span className="type-meta" data-testid="viewer-negpy-summary">
+                        {frame.negpy_summary}
+                        {frame.negpy_edited_at ? ` · ${formatDate(frame.negpy_edited_at)}` : ""}
+                      </span>
+                    </div>
+                  ) : null}
+                  {frame.capture_metadata ? (
+                    <dl className="space-y-1">
+                      <div className="flex justify-between gap-4">
+                        <dt className="type-meta">Read from the file</dt>
+                        <dd className="type-body" data-testid="viewer-metadata-sources">
+                          {frame.capture_metadata.sources.join(", ") || "nothing"}
+                        </dd>
+                      </div>
+                      {([
+                        ["Roll", frame.capture_metadata.roll],
+                        ["Camera", frame.capture_metadata.camera],
+                        ["Lens", frame.capture_metadata.lens],
+                        ["Film", frame.capture_metadata.film_stock],
+                        ["Developer", frame.capture_metadata.developer],
+                      ] as const)
+                        .filter(([, value]) => Boolean(value))
+                        .map(([label, value]) => (
+                          <div key={label} className="flex justify-between gap-4">
+                            <dt className="type-meta">{label}</dt>
+                            <dd className="truncate type-body" title={value ?? undefined}>
+                              {value}
+                            </dd>
+                          </div>
+                        ))}
+                    </dl>
+                  ) : null}
+                </div>
+              ) : null}
             </div>
           </aside>
         </div>
