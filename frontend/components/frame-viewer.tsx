@@ -387,6 +387,9 @@ export function FrameViewer({
                       <span className="type-meta" data-testid="viewer-negpy-summary">
                         {frame.negpy_summary}
                         {frame.negpy_edited_at ? ` · ${formatDate(frame.negpy_edited_at)}` : ""}
+                        {/* Which of the two sources this came from: the sidecar
+                            beside the scan, or NegPy's own edits database. */}
+                        {frame.negpy_recipe?.source === "edits.db" ? " · from edits.db" : ""}
                       </span>
                     </div>
                   ) : null}

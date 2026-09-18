@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react"
 import { useRouter } from "next/navigation"
-import { Download, FlaskConical, FolderPlus, HardDrive, RefreshCw, Trash2, Upload } from "lucide-react"
+import { Database, Download, FlaskConical, FolderPlus, HardDrive, RefreshCw, Trash2, Upload } from "lucide-react"
 
 import {
   type LibraryRoot,
@@ -22,6 +22,7 @@ import {
   getSystemInfo,
   importArchive,
   ingestNegpyMetadata,
+  matchNegpyEdits,
   scanLibraryRoot,
   syncNegpyGear,
   updateLibraryRoot,
@@ -180,6 +181,23 @@ export function SettingsWorkspace() {
       })
     } catch (caught) {
       toast({ title: "Could not read the files", description: errorMessage(caught), variant: "destructive" })
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const matchEdits = async () => {
+    setBusy("edits")
+    try {
+      const report = await matchNegpyEdits()
+      await reload()
+      router.refresh()
+      toast({
+        title: "NegPy edits matched",
+        description: `${report.matched} of ${report.examined} frames found in ${report.database}`,
+      })
+    } catch (caught) {
+      toast({ title: "Could not read edits.db", description: errorMessage(caught), variant: "destructive" })
     } finally {
       setBusy(null)
     }
@@ -446,6 +464,16 @@ export function SettingsWorkspace() {
             {negpy?.gear_synced_at ? ` Gear last written ${formatDate(negpy.gear_synced_at)}.` : ""}
           </p>
 
+          {/* NegPy's own edits database, if this machine has one. Read-only: the
+              backend opens it immutable, so nothing here can cost you an edit. */}
+          <p className="type-meta" data-testid="negpy-edits-readout">
+            {negpy?.edits_db?.readable
+              ? `NegPy's edits.db: ${negpy.edits_db.rows ?? "?"} edits at ${negpy.edits_db.path}. Matched by content hash, read-only.`
+              : negpy?.edits_db?.exists
+                ? `An edits.db is at ${negpy.edits_db.path}, but its tables are not the ones NegArchive knows. It is left alone.`
+                : "No NegPy edits.db on this machine. Sidecars beside the scans are the other way to see edits."}
+          </p>
+
           <div className="flex flex-wrap gap-2">
             <Button variant="outline" className="min-h-11" onClick={syncGear} disabled={busy === "gear"} data-testid="negpy-sync-gear">
               <FlaskConical className="mr-2 h-4 w-4" />
@@ -455,6 +483,18 @@ export function SettingsWorkspace() {
               <RefreshCw className="mr-2 h-4 w-4" />
               {busy === "ingest" ? "Reading…" : "Read metadata of older frames"}
             </Button>
+            {negpy?.edits_db?.readable ? (
+              <Button
+                variant="outline"
+                className="min-h-11"
+                onClick={matchEdits}
+                disabled={busy === "edits"}
+                data-testid="negpy-match-edits"
+              >
+                <Database className="mr-2 h-4 w-4" />
+                {busy === "edits" ? "Matching…" : "Match NegPy's edits"}
+              </Button>
+            ) : null}
           </div>
         </div>
       </section>

@@ -12,6 +12,8 @@ NegPy is GPL-3, NegArchive is MIT, and NegPy has no importable API anyway
 * :mod:`~app.services.negpy.sidecar` reads the ``.negpy`` JSON sidecars NegPy can
   leave next to a source file, so the archive can say "edited in NegPy" and show
   what the recipe does;
+* :mod:`~app.services.negpy.edits` reads NegPy's ``edits.db`` — read-only, keyed by
+  the same content hash — for the archives whose owner never turned sidecars on;
 * :mod:`~app.services.negpy.gear` writes NegArchive's cameras, lenses and film
   stocks into NegPy's ``gear/*.json`` schema, under ids prefixed ``na-``;
 * :mod:`~app.services.negpy.handoff` prepares a roll folder plus a metadata preset
@@ -25,6 +27,6 @@ behaviour has to match (the sampled content hash in
 specification and that specification is the docstring.
 """
 
-from . import dirs, gear, handoff, metadata, naming, sidecar, xmp  # noqa: F401
+from . import dirs, edits, gear, handoff, metadata, naming, sidecar, xmp  # noqa: F401
 
-__all__ = ["dirs", "gear", "handoff", "metadata", "naming", "sidecar", "xmp"]
+__all__ = ["dirs", "edits", "gear", "handoff", "metadata", "naming", "sidecar", "xmp"]
