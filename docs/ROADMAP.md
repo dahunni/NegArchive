@@ -283,17 +283,37 @@ lives in `app/services/negpy/` (xmp, metadata, naming, sidecar, gear, handoff, d
       smoke test, which uploads a JPEG with a hand-built XMP packet and its sidecar, reads the
       viewer's panel, prepares a handoff and writes the gear library.
 
-Left for later, deliberately:
+Then the three that were left for later, and are now done too:
 
-- [ ] **Upstream proposals to NegPy** (separate, optional, GPL): a physical-storage field group in
-      `MetadataConfig` (building/container/sleeve/serial → XMP), and a headless export entry point.
-      Frame both as "external sync", because NegPy's library deliberately has no index database.
-      Nothing in NegArchive may depend on either; both are drafted in
-      [NEGPY_INTEGRATION.md](NEGPY_INTEGRATION.md).
-- [ ] Reading NegPy's `edits.db` directly (read-only, same machine) instead of only sidecars. The
-      hash lookup is the half of it that does not need NegPy's schema to stay stable.
-- [ ] Dedicated development fields on a roll (developer, dilution, push/pull, time). M5 appends
-      them to the roll's notes, which is where they will be read from when the columns arrive (M7).
+- [x] **Reading NegPy's `edits.db`** (`app/services/negpy/edits.py`): NegPy keys its edits by the
+      same sampled content hash NegArchive stores, so on one machine every scan that has been
+      worked on can be found **without a sidecar**. Opened `mode=ro&immutable=1` — the driver will
+      not write, lock, create a journal or touch a WAL — and the table and column names are
+      *sniffed*, so a future NegPy that renames `settings_json` degrades to "no information"
+      instead of raising. A `.negpy` sidecar always wins, because it travels with the scan while
+      edits.db is one machine's private state. `POST /api/negpy/edits/match` does a batched pass;
+      uploads and library scans open the index once and use it when a frame has no sidecar. A
+      recipe records where it came from (`source: "sidecar" | "edits.db"`), which the viewer shows.
+- [x] **Development fields on a roll** (`developer`, `development_dilution`, `push_pull`,
+      `development_time`; `0006_m5_development`). M5 first appended a line to the roll's notes,
+      which could not be searched, printed or corrected without editing prose. They are free text
+      on purpose — a developer is "Rodinal" or "the lab down the road", a time is "9:30" or
+      "9 min at 20 °C" — filled from `negpy:Developer` / `DevelopmentDilution` / `PushPull` /
+      `DevelopmentTime` on ingest, editable in the roll form, shown on the roll page and appended
+      to the roll CSV.
+- [x] **Upstream proposals to NegPy**, written up in [NEGPY_UPSTREAM.md](NEGPY_UPSTREAM.md): the
+      physical-storage field group (framed as capture provenance, since NegPy's library
+      deliberately has no index database) and the headless export entry point, each with what
+      NegArchive would do with it and what it would deliberately *not* do. **Not filed**: opening
+      an issue or a PR on somebody else's project is the owner's call, not the archive's. Nothing
+      in NegArchive depends on either.
+
+Still open, deliberately:
+
+- [ ] Per-frame ratings and keep/reject from NegPy's `file_marks` (M7 owns it).
+- [ ] A development *catalog* (processes as entries, like cameras and film stocks) rather than
+      four strings per roll. Worth it only once there are enough rolls to make the repetition
+      annoying; the strings migrate into it cleanly when that day comes.
 
 ## M6 — Immich connector (optional photo layer)
 

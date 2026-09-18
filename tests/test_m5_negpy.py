@@ -235,7 +235,7 @@ def test_the_negpy_namespace_fills_every_field(tmp_path):
     assert meta.lens == "AF Nikkor 50mm f/1.8D"
     assert meta.capture_date.isoformat() == "2026-03-14"
     assert meta.developer == "Rodinal"
-    assert "1+50" in meta.development
+    assert meta.dilution == "1+50"
     assert meta.notes == "Rain on the harbour wall"
     assert "xmp" in meta.sources
 
@@ -768,6 +768,218 @@ def test_ingest_reports_when_it_is_switched_off(client):
     res = client.post("/api/negpy/ingest", json={})
     assert res.status_code == 409
     assert res.json()["error"]["code"] == "ingest_disabled"
+
+
+# --- how the roll was developed -----------------------------------------------
+#
+# Four free-text columns since 0006. Before that, ingest appended a line to the
+# roll's notes, which could not be searched, printed or corrected without editing
+# prose — these tests are what stops that coming back.
+
+
+def test_the_development_fields_come_from_the_file(client):
+    roll = make_roll(client)
+    upload(
+        client,
+        roll["id"],
+        "dev.jpg",
+        jpeg_bytes(
+            xmp=xmp_packet(
+                CaptureFrame="1",
+                Developer="Rodinal",
+                DevelopmentDilution="1+50",
+                PushPull="+1",
+                DevelopmentTime="9:30",
+            )
+        ),
+    )
+    updated = client.get(f"/api/films/{roll['id']}").json()["film"]
+    assert updated["developer"] == "Rodinal"
+    assert updated["development_dilution"] == "1+50"
+    assert updated["push_pull"] == "+1"
+    assert updated["development_time"] == "9:30"
+    # …and the roll's notes are left for the person who writes in them.
+    assert not (updated["notes"] or "")
+
+
+def test_development_a_person_typed_is_not_overwritten(client):
+    roll = make_roll(client, developer="HC-110", development_dilution="B")
+    upload(
+        client,
+        roll["id"],
+        "dev2.jpg",
+        jpeg_bytes(xmp=xmp_packet(CaptureFrame="1", Developer="Rodinal", DevelopmentDilution="1+25")),
+    )
+    updated = client.get(f"/api/films/{roll['id']}").json()["film"]
+    assert (updated["developer"], updated["development_dilution"]) == ("HC-110", "B")
+
+
+def test_the_development_fields_round_trip_through_the_api(client):
+    roll = make_roll(client, developer="Xtol", push_pull="-1")
+    assert roll["developer"] == "Xtol"
+    res = client.put(f"/api/films/{roll['id']}", json={"development_time": "11:00", "push_pull": None})
+    assert res.status_code == 200, res.text
+    updated = res.json()["film"]
+    assert updated["development_time"] == "11:00"
+    assert updated["push_pull"] is None
+    assert updated["developer"] == "Xtol"  # untouched keys stay
+
+
+def test_the_roll_csv_carries_the_development(client):
+    make_roll(client, developer="Rodinal", development_dilution="1+50")
+    body = client.get("/api/export/rolls.csv").text
+    header = body.splitlines()[0]
+    assert header.endswith("developer,development_dilution,push_pull,development_time")
+    assert "Rodinal" in body
+
+
+# --- NegPy's edits.db ---------------------------------------------------------
+#
+# NegPy keys its edits by the same content hash NegArchive stores, so on one
+# machine the two can be matched without a sidecar and without either side writing
+# anything. The database is somebody's work: every test here also checks we did not
+# touch it.
+
+
+def write_edits_db(path, rows, *, table="file_settings", columns=("file_hash", "settings_json", "file_path")):
+    """A stand-in for NegPy's edits.db. `rows` is [(hash, settings dict, path)]."""
+    import sqlite3
+
+    connection = sqlite3.connect(str(path))
+    try:
+        connection.execute(f"CREATE TABLE {table} ({', '.join(columns)})")
+        connection.executemany(
+            f"INSERT INTO {table} VALUES ({', '.join('?' * len(columns))})",
+            [(digest, json.dumps(settings), file_path) for digest, settings, file_path in rows],
+        )
+        connection.commit()
+    finally:
+        connection.close()
+    return path
+
+
+@pytest.fixture
+def negpy_user_dir(client):
+    """A NegPy user directory NegArchive is allowed to look in (inside DATA_DIR)."""
+    from app import paths
+
+    target = paths.data_dir() / "negpy" / f"user-{unique('t')}"
+    target.mkdir(parents=True, exist_ok=True)
+    res = client.put("/api/system/settings", json={"negpy_user_dir": str(target)})
+    assert res.status_code == 200, res.text
+    yield target
+    client.put("/api/system/settings", json={"negpy_user_dir": ""})
+
+
+def fingerprint(path):
+    """Enough to prove a file was not written to: size, mtime and its bytes."""
+    stat = os.stat(path)
+    with open(path, "rb") as handle:
+        return stat.st_size, stat.st_mtime_ns, hashlib.sha256(handle.read()).hexdigest()
+
+
+def test_a_frame_is_matched_to_its_negpy_edit(client, negpy_user_dir):
+    roll = make_roll(client)
+    image = upload(client, roll["id"], "edited.jpg", jpeg_bytes(), frame_number=4)
+    database = write_edits_db(
+        negpy_user_dir / "edits.db",
+        [(image["content_hash"], {"invert": True, "exposure": 0.5}, "/somewhere/edited.tif")],
+    )
+    before = fingerprint(database)
+
+    res = client.post("/api/negpy/edits/match", json={"film_id": roll["id"]})
+    assert res.status_code == 200, res.text
+    assert res.json()["matched"] == 1
+
+    frame = client.get(f"/api/images/{image['id']}").json()
+    assert frame["negpy_recipe"]["source"] == "edits.db"
+    assert "inverted" in frame["negpy_summary"]
+    assert frame["sidecar_path"] is None  # there was no sidecar; nothing was invented
+    assert fingerprint(database) == before  # NegPy's database is untouched
+
+
+def test_a_sidecar_beside_the_scan_wins_over_the_database(client, negpy_user_dir):
+    roll = make_roll(client)
+    res = client.post(
+        f"/api/films/{roll['id']}/images/bulk",
+        files=[
+            ("files", ("both_001.jpg", jpeg_bytes(), "image/jpeg")),
+            ("files", ("both_001.jpg.negpy", json.dumps(RECIPE).encode(), "application/json")),
+        ],
+    )
+    frame = res.json()["images"][0]
+    write_edits_db(
+        negpy_user_dir / "edits.db",
+        [(frame["content_hash"], {"exposure": 9.9, "sharpening": 1}, "/elsewhere.tif")],
+    )
+    client.post("/api/negpy/edits/match", json={"film_id": roll["id"], "all": True})
+    after = client.get(f"/api/images/{frame['id']}").json()
+    assert after["negpy_recipe"]["source"] == "sidecar"
+
+
+def test_an_upload_picks_up_its_edit_without_a_sidecar(client, negpy_user_dir):
+    """The hash is known before the upload, because it is a hash of the bytes."""
+    from app.services.hashing import hash_stream
+
+    payload = jpeg_bytes(size=(21, 14))
+    digest = hash_stream(io.BytesIO(payload), len(payload))
+    write_edits_db(negpy_user_dir / "edits.db", [(digest, {"invert": True, "crop": [0, 0, 1, 1]}, "/x.tif")])
+
+    roll = make_roll(client)
+    image = upload(client, roll["id"], "auto.jpg", payload, frame_number=2)
+    assert image["content_hash"] == digest
+    assert image["negpy_recipe"]["source"] == "edits.db"
+    assert "inverted" in image["negpy_summary"]
+
+
+def test_a_database_with_a_foreign_schema_is_ignored(client, negpy_user_dir):
+    database = write_edits_db(
+        negpy_user_dir / "edits.db",
+        [("abc", {"a": 1}, "/x")],
+        table="something_else",
+        columns=("id", "blob", "note"),
+    )
+    status = client.get("/api/negpy/status").json()["edits_db"]
+    assert status["exists"] is True and status["readable"] is False
+    res = client.post("/api/negpy/edits/match", json={})
+    assert res.status_code == 404
+    assert res.json()["error"]["code"] == "no_edits_db"
+    assert os.path.isfile(database)
+
+
+def test_no_database_at_all_is_not_an_error(client, negpy_user_dir):
+    status = client.get("/api/negpy/status").json()["edits_db"]
+    assert status["exists"] is False
+    assert status["path"].endswith("edits.db")
+    # …and every other NegPy feature still works.
+    assert client.post("/api/negpy/gear/sync").status_code == 200
+
+
+def test_status_reports_the_database_when_it_is_readable(client, negpy_user_dir):
+    write_edits_db(negpy_user_dir / "edits.db", [("h1", {"invert": True}, "/a"), ("h2", {}, "/b")])
+    status = client.get("/api/negpy/status").json()["edits_db"]
+    assert (status["exists"], status["readable"], status["table"], status["rows"]) == (
+        True,
+        True,
+        "file_settings",
+        2,
+    )
+
+
+def test_the_connection_is_read_only(client, negpy_user_dir):
+    """Belt and braces: the driver itself must refuse a write."""
+    import sqlite3
+
+    from app.services.negpy import edits as edits_mod
+
+    database = write_edits_db(negpy_user_dir / "edits.db", [("h", {"invert": True}, "/a")])
+    connection = edits_mod.connect(database)
+    assert connection is not None
+    try:
+        with pytest.raises(sqlite3.OperationalError):
+            connection.execute("INSERT INTO file_settings VALUES ('x', '{}', '/y')")
+    finally:
+        connection.close()
 
 
 # --- the content hash, and looking a frame up by it ---------------------------
