@@ -51,6 +51,12 @@ KNOWN_SETTINGS: Dict[str, tuple[str, Any]] = {
     "negpy_handoff_mode": ("text", "link"),
     # Set by the last successful gear sync, so Settings can say when it last ran.
     "negpy_gear_synced_at": ("text", ""),
+    # M5: how previews are rendered — "auto" prints a frame the archive knows is
+    # a negative (its film stock says so, or NegPy has an edit for it) as a
+    # positive and leaves everything else alone; "raw" always shows the scan as
+    # stored; "positive" always prints. The scan itself is never changed: a
+    # rendering lives in the disposable preview cache.
+    "preview_render": ("text", "auto"),
 }
 
 

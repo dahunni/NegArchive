@@ -1,5 +1,7 @@
 import glob
+import hashlib
 import io
+import json
 import os
 import re
 import shutil
@@ -41,13 +43,15 @@ from ..models import (
     Location,
 )
 from ..seed import seed_catalog
-from ..services import lifecycle, serials
+from ..services import lifecycle, serials, settings_store
 from ..services import locations as loc_svc
+from ..services import preview as preview_render
 from ..services import strips as strips_svc
 from ..services.hashing import safe_content_hash
 from ..services.negpy import edits as negpy_edits
 from ..services.negpy import metadata as negpy_metadata
 from ..services.negpy import naming as negpy_naming
+from ..services.negpy import recipe as negpy_recipe
 from ..services.negpy import sidecar as negpy_sidecar
 
 router = APIRouter(prefix="/api", tags=["api"])
@@ -292,6 +296,10 @@ def image_to_dict(i: ImageAsset) -> dict:
         "negpy_edited_at": i.negpy_edited_at.isoformat() if i.negpy_edited_at else None,
         "negpy_recipe": i.negpy_recipe or None,
         "negpy_summary": (i.negpy_recipe or {}).get("summary") if i.negpy_recipe else None,
+        # M5: how much of that recipe the positive preview can actually render,
+        # and the names of the settings it cannot. The viewer shows both, because
+        # an approximation that hides its edges is worse than no approximation.
+        "negpy_render": negpy_recipe.report(i.negpy_recipe) if i.negpy_recipe else None,
         "created_at": i.created_at.isoformat(),
     }
 
@@ -1090,9 +1098,18 @@ def get_image(image_id: int, db: Session = Depends(get_db)):
     return image_to_dict(i)
 
 
-def _cache_file(image_id: int, width: int, mtime_ns: int) -> str:
-    """Cache file for one rendered preview, keyed by image id + width + source mtime."""
-    return os.path.join(cache_dir(), f"{image_id}_{width}_{mtime_ns}.jpg")
+def _cache_file(image_id: int, width: int, mtime_ns: int, token: str = "raw") -> str:
+    """Cache file for one rendered preview.
+
+    Keyed by image id, width, **render token** and source mtime, in that order:
+    ``_write_cache`` drops everything sharing the key up to the last underscore,
+    so putting the token before the mtime means a new mtime replaces that
+    rendering and a different rendering (raw vs. positive) lives beside it (M5).
+    The token also carries a hash of the render settings, so editing a frame in
+    NegPy re-renders the preview even though the scan itself never changed.
+    """
+    safe = re.sub(r"[^a-z0-9]+", "", str(token).lower())[:24] or "raw"
+    return os.path.join(cache_dir(), f"{image_id}_{width}_{safe}_{mtime_ns}.jpg")
 
 
 def _write_cache(cache_path: str, payload: bytes) -> None:
@@ -1123,16 +1140,82 @@ def drop_cached_previews(image_id: int) -> None:
             pass
 
 
-def _cached_response(cache_path: str) -> FileResponse:
+def _cached_response(cache_path: str, mode: str = "raw") -> FileResponse:
     return FileResponse(
         cache_path,
         media_type="image/jpeg",
-        headers={"Cache-Control": "public, max-age=31536000, immutable", "X-Preview-Cache": "hit"},
+        headers={
+            "Cache-Control": "public, max-age=31536000, immutable",
+            "X-Preview-Cache": "hit",
+            # M5: which rendering this is, so the UI (and a bug report) can tell a
+            # positive preview from the scan as it was stored.
+            "X-Preview-Render": mode,
+        },
     )
 
 
+def film_kind_of(image: ImageAsset) -> Optional[str]:
+    """The film stock kind behind a frame, if the roll records one (M5)."""
+    roll = image.film_roll
+    stock = roll.film_stock_ref if roll is not None else None
+    if stock is None or stock.kind is None:
+        return None
+    return stock.kind.value if isinstance(stock.kind, FilmKind) else str(stock.kind)
+
+
+def render_plan(db: Session, image: ImageAsset, requested: Optional[str]) -> Tuple[str, Optional[preview_render.RenderSettings]]:
+    """Whether to print this frame as a positive, and how (M5).
+
+    ``requested`` is the query parameter; ``auto`` (the default) defers to the
+    ``preview_render`` setting, which itself defaults to ``auto``. Auto means
+    **print what the archive knows is a negative**: a scan whose roll names a
+    negative film stock, or one NegPy has an edit for. A frame whose film is
+    unknown stays raw, because "a scan" might be a scan of a print, and turning
+    somebody's photograph inside out uninvited is worse than an orange thumbnail.
+    """
+    mode = (requested or "auto").strip().lower()
+    if mode not in {"auto", "raw", "positive"}:
+        mode = "auto"
+    if mode == "auto":
+        mode = (settings_store.get(db, "preview_render") or "auto").strip().lower()
+    kind = film_kind_of(image)
+    polarity = preview_render.polarity_for(kind, image.type.value if image.type else "scan")
+
+    if mode == "raw":
+        return "raw", None
+    if mode == "auto":
+        knows_it_is_a_negative = polarity in {"negative", "mono"} and kind is not None
+        if not (knows_it_is_a_negative or image.negpy_recipe):
+            return "raw", None
+    if image.type == ImageType.contact_sheet:
+        return "raw", None  # a picture *of* frames is already a positive
+
+    settings = negpy_recipe.from_recipe(image.negpy_recipe, polarity=polarity)
+    return "positive", settings
+
+
+def _render_token(settings: Optional[preview_render.RenderSettings]) -> str:
+    if settings is None:
+        return "raw"
+    payload = json.dumps(preview_render.describe(settings), sort_keys=True, default=str)
+    return "p" + hashlib.sha1(payload.encode("utf-8")).hexdigest()[:12]
+
+
+def _apply_render(array, settings: preview_render.RenderSettings):
+    """Run the renderer, and fall back to the untouched pixels if it cannot."""
+    try:
+        return preview_render.render(array, settings), "positive"
+    except Exception:  # noqa: BLE001 - a preview must never fail on maths
+        return array, "raw"
+
+
 @router.get("/images/{image_id}/preview", responses={404: {"model": schemas.ErrorOut}})
-def get_image_preview(image_id: int, width: int = 1200, db: Session = Depends(get_db)):
+def get_image_preview(
+    image_id: int,
+    width: int = 1200,
+    render: str = Query("auto", description="auto | raw | positive (M5)"),
+    db: Session = Depends(get_db),
+):
     i = db.get(ImageAsset, image_id)
     if not i:
         return not_found("Frame")
@@ -1140,14 +1223,22 @@ def get_image_preview(image_id: int, width: int = 1200, db: Session = Depends(ge
     abs_path = _abs(i.path)
     ext = os.path.splitext(abs_path)[1].lower()
 
+    mode, render_settings = render_plan(db, i, render)
+    token = _render_token(render_settings)
+
     # Clamp the width so the cache cannot be filled with arbitrary sizes.
     width = max(16, min(int(width or 1200), 6000))
+    # A crop means fewer pixels survive, so decode wider and let the crop land
+    # near the width that was actually asked for.
+    decode_width = width
+    if render_settings is not None and render_settings.crop:
+        decode_width = int(min(width / max(render_settings.crop[2], 0.05), 6000))
     cache_path = None
     try:
         mtime_ns = os.stat(abs_path).st_mtime_ns
-        cache_path = _cache_file(image_id, width, mtime_ns)
+        cache_path = _cache_file(image_id, width, mtime_ns, token)
         if os.path.exists(cache_path):
-            return _cached_response(cache_path)
+            return _cached_response(cache_path, mode)
     except OSError:
         cache_path = None
 
@@ -1159,9 +1250,20 @@ def get_image_preview(image_id: int, width: int = 1200, db: Session = Depends(ge
         # Convert unusual modes to RGB safely
         if img.mode != "RGB":
             img = img.convert("RGB")
-        if width and img.width > width:
-            new_h = max(1, int(img.height * (width / img.width)))
-            img = img.resize((width, new_h), PILImage.LANCZOS)
+        if decode_width and img.width > decode_width:
+            new_h = max(1, int(img.height * (decode_width / img.width)))
+            img = img.resize((decode_width, new_h), PILImage.LANCZOS)
+        served = mode
+        if render_settings is not None:
+            # M5: print the negative. The scan on disk is untouched; this is the
+            # preview cache, which is disposable by design.
+            import numpy as np
+
+            rendered, served = _apply_render(np.asarray(img), render_settings)
+            img = PILImage.fromarray(np.asarray(rendered, dtype="uint8"), mode="RGB")
+            if img.width > width:
+                new_h = max(1, int(img.height * (width / img.width)))
+                img = img.resize((width, new_h), PILImage.LANCZOS)
         buf = io.BytesIO()
         img.save(buf, format="JPEG", quality=85)
         data = buf.getvalue()
@@ -1170,7 +1272,11 @@ def get_image_preview(image_id: int, width: int = 1200, db: Session = Depends(ge
         return StreamingResponse(
             io.BytesIO(data),
             media_type="image/jpeg",
-            headers={"Cache-Control": "public, max-age=31536000, immutable", "X-Preview-Cache": "miss"},
+            headers={
+                "Cache-Control": "public, max-age=31536000, immutable",
+                "X-Preview-Cache": "miss",
+                "X-Preview-Render": served,
+            },
         )
     except Exception:
         # Secondary fallback: OpenCV can read more TIFF variants (e.g., 16-bit)
@@ -1200,10 +1306,21 @@ def get_image_preview(image_id: int, width: int = 1200, db: Session = Depends(ge
             elif cv_img.shape[2] != 3:
                 cv_img = cv_img[:, :, :3]
 
-            if width and cv_img.shape[1] > width:
-                scale = width / float(cv_img.shape[1])
+            if decode_width and cv_img.shape[1] > decode_width:
+                scale = decode_width / float(cv_img.shape[1])
                 new_h = int(cv_img.shape[0] * scale)
-                cv_img = cv2.resize(cv_img, (width, new_h), interpolation=cv2.INTER_AREA)
+                cv_img = cv2.resize(cv_img, (decode_width, new_h), interpolation=cv2.INTER_AREA)
+
+            served = mode
+            if render_settings is not None:
+                # The renderer works in RGB; OpenCV hands over BGR.
+                rendered, served = _apply_render(cv_img[:, :, ::-1], render_settings)
+                cv_img = np.ascontiguousarray(np.asarray(rendered, dtype=np.uint8)[:, :, ::-1])
+                if cv_img.shape[1] > width:
+                    scale = width / float(cv_img.shape[1])
+                    cv_img = cv2.resize(
+                        cv_img, (width, max(1, int(cv_img.shape[0] * scale))), interpolation=cv2.INTER_AREA
+                    )
 
             ok, enc = cv2.imencode(".jpg", cv_img, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
             if not ok:
@@ -1217,13 +1334,15 @@ def get_image_preview(image_id: int, width: int = 1200, db: Session = Depends(ge
                 headers={
                     "Cache-Control": "public, max-age=31536000, immutable",
                     "X-Preview-Cache": "miss",
+                    "X-Preview-Render": served,
                 },
             )
         except Exception:
-            # Final fallback: serve original if browser-friendly
+            # Final fallback: serve original if browser-friendly. It is the scan
+            # as stored, never a rendering, so the header says so (M5).
             if ext in {".jpg", ".jpeg", ".png"} and os.path.exists(abs_path):
                 media_type = "image/jpeg" if ext in {".jpg", ".jpeg"} else "image/png"
-                return FileResponse(abs_path, media_type=media_type)
+                return FileResponse(abs_path, media_type=media_type, headers={"X-Preview-Render": "raw"})
             if not os.path.exists(abs_path):
                 return error_response(
                     "file_missing",

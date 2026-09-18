@@ -194,6 +194,8 @@ class ImageOut(Model):
     negpy_edited_at: Optional[datetime] = None
     negpy_recipe: Optional[Dict[str, Any]] = None
     negpy_summary: Optional[str] = None
+    #: M5: how much of that recipe the positive preview renders, and what it does not.
+    negpy_render: Optional[Dict[str, Any]] = None
     created_at: datetime
 
 
