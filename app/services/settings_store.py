@@ -3,8 +3,14 @@
 Anything that describes *this deployment* (ports, paths, passwords) is an
 environment variable. Anything the person using the archive toggles in the UI
 lives here, in the database, so it is part of a backup and comes back with a
-restore. Today that is exactly one thing — whether the watch folder poller runs —
-but the table is the seam for the M4/M6 settings that will follow.
+restore: the watch folder toggle, the serial prefix, the NegPy folders and — since
+M6 — the network share those folders usually live on.
+
+One thing deliberately does *not* live here: the SMB password. Settings are
+exported, and an export ZIP that carries the NAS password is a copy of the NAS
+password on every machine the archive was ever restored to. It is written to
+``$DATA_DIR/.smb/credentials`` (mode 0600) instead; see
+:mod:`app.services.smb`.
 
 Keys are allowlisted on purpose: a settings table that takes any key is an
 untyped column of mystery strings a year later.
@@ -51,6 +57,24 @@ KNOWN_SETTINGS: Dict[str, tuple[str, Any]] = {
     "negpy_handoff_mode": ("text", "link"),
     # Set by the last successful gear sync, so Settings can say when it last ran.
     "negpy_gear_synced_at": ("text", ""),
+    # M6: the network share NegArchive and NegPy both work in
+    # (app/services/smb.py). These describe a share the way you would describe it
+    # to a colleague — the password is *not* here: it lives in
+    # $DATA_DIR/.smb/credentials with mode 0600, so it is neither in the database
+    # nor in an export ZIP.
+    "smb_enabled": ("bool", False),
+    "smb_host": ("text", ""),
+    "smb_share": ("text", ""),
+    "smb_subpath": ("text", ""),
+    "smb_username": ("text", ""),
+    "smb_domain": ("text", ""),
+    "smb_version": ("text", "3.0"),
+    # A read-only mount cannot hold NegPy's gear and presets, so live mode needs
+    # this off; it is offered for an archive that only ever reads a scanner's share.
+    "smb_readonly": ("bool", False),
+    # A mount does not survive the container, so the default is to make it again
+    # at startup.
+    "smb_automount": ("bool", True),
     # M5: how previews are rendered — "auto" prints a frame the archive knows is
     # a negative (its film stock says so, or NegPy has an edit for it) as a
     # positive and leaves everything else alone; "raw" always shows the scan as

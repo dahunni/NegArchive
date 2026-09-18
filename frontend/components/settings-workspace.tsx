@@ -35,6 +35,7 @@ import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog"
+import { ShareSettings } from "@/components/share-settings"
 import { EmptyState } from "@/components/empty-state"
 import { useToast } from "@/hooks/use-toast"
 
@@ -255,6 +256,11 @@ export function SettingsWorkspace() {
           <Fact label="Password" value={info?.auth_required ? "set" : "not set (open on this network)"} />
         </dl>
       </section>
+
+      {/* ------------------------------------------------- the share, and live mode */}
+      {/* M6. Above the linked folders on purpose: on a two-machine setup the
+          folders below usually live on this share, so mounting it is step one. */}
+      <ShareSettings onChanged={reload} />
 
       {/* ------------------------------------------------------- linked folders */}
       <section className="space-y-3">

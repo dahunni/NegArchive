@@ -34,7 +34,7 @@ from sqlalchemy.orm import Session
 
 from ... import paths
 from ...errors import ApiError
-from .. import settings_store
+from .. import settings_store, smb
 
 #: Subdirectory of ``DATA_DIR`` used when nothing is configured.
 DEFAULT_SUBDIR = "negpy"
@@ -64,6 +64,11 @@ def allowed_bases() -> List[Path]:
     scans from is a reasonable place to hand a roll back to).
     """
     bases: List[Path] = [paths.data_dir() / DEFAULT_SUBDIR]
+    # M6: the share, while it is mounted. This is what makes live mode work with
+    # nothing in the environment — gear/ and presets/ are written onto the share,
+    # where the machine running NegPy can see them.
+    if smb.is_mounted():
+        bases.append(smb.mount_base())
     for name in ("NEGPY_USER_DIR", "NEGPY_EXPORT_DIR"):
         found = _env_path(name)
         if found is not None:

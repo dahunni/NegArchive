@@ -18,8 +18,9 @@ from . import auth, paths
 from .db import SessionLocal, engine
 from .errors import ApiError, from_exc, validation_error_response
 from .routers import api, backup, library, locations, negpy, scan, system
+from .routers import smb as smb_router
 from .seed import seed_catalog
-from .services import network, watcher
+from .services import network, smb, watcher
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -103,6 +104,11 @@ async def lifespan(app: FastAPI):
     finally:
         db.close()
     announce()
+
+    # M6: a mount does not survive the container it was made in, so a restart would
+    # otherwise come back with every linked frame pointing into an empty directory.
+    # Never fatal: a NAS that boots slower than the server is a Tuesday.
+    smb.remount_at_startup()
 
     # M3: the watch folder. Off unless WATCH_INTERVAL_SECONDS says otherwise, so a
     # bare `uvicorn` never starts a process that walks directories every 30 seconds.
@@ -200,3 +206,4 @@ app.include_router(system.router)
 app.include_router(locations.router)
 app.include_router(scan.router)
 app.include_router(negpy.router)
+app.include_router(smb_router.router)

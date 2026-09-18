@@ -3,6 +3,11 @@
 Findings from reading NegPy `0.59.0` source (github.com/marcinz606/NegPy, GPL-3.0,
 Python ≥ 3.13, PyQt6 + WebGPU). Paths are NegPy repo paths.
 
+> **This document assumes both programs can see the same files.** They usually cannot — NegArchive
+> is a container on a server and NegPy is a desktop app on a laptop. [NEGPY_LIVE.md](NEGPY_LIVE.md)
+> (M6) is how that is closed: a network share the container mounts from Settings, and a one-button
+> setup that makes the exchange below happen by itself.
+
 ## What NegPy is and is not
 
 | NegPy has | NegPy does not have |

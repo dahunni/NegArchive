@@ -1508,3 +1508,156 @@ export async function ingestNegpyMetadata(body: { film_id?: number; all?: boolea
   await assertOk(res, "Could not read the files.")
   return res.json()
 }
+
+// ---------------------------------------------------------------------------
+// M6: the network share, and the live mode built on it (docs/NEGPY_LIVE.md)
+// ---------------------------------------------------------------------------
+
+export interface SmbConfig {
+  enabled: boolean
+  host: string
+  share: string
+  /** An optional folder inside the share. */
+  subpath: string
+  username: string
+  domain: string
+  version: string
+  readonly: boolean
+  automount: boolean
+  /** `//nas.local/photo`, empty until a host and share are set. */
+  unc: string
+  /** `//nas.local/photo/film` — the share plus the folder inside it. */
+  display: string
+}
+
+export interface SmbCapabilities {
+  /** Is `mount.cifs` in the image? */
+  cifs_utils: boolean
+  cifs_utils_path: string | null
+  /** Does the container have CAP_SYS_ADMIN? Without it, mounting fails. */
+  sys_admin: boolean
+  mount_base: string
+}
+
+export interface SmbStatus {
+  config: SmbConfig
+  mountpoint: string
+  mounted: boolean
+  /** Whether a password is stored. Never the password itself. */
+  has_credentials: boolean
+  capabilities: SmbCapabilities
+  /** A sentence naming the fix, when the container cannot mount at all. */
+  unavailable_reason: string | null
+  space: { total: number; used: number; free: number } | null
+  versions: string[]
+}
+
+/** The half of live mode that happens on the laptop. Comes from the backend so
+ *  the folder names in the instructions are the ones it actually made. */
+export interface LiveClientSteps {
+  rolls: string
+  exports: string
+  user: string
+  filename_pattern: string
+}
+
+export interface LiveState {
+  mounted: boolean
+  mountpoint: string
+  folders: { path: string; exists: boolean; registered: boolean; watched: boolean }[]
+  negpy_user_dir_on_share: boolean
+  watch_enabled: boolean
+  /** Every part checked against the world, not remembered. */
+  ready: boolean
+  client: LiveClientSteps
+}
+
+export interface LiveReport {
+  mountpoint: string
+  folders_created: string[]
+  folders_existing: string[]
+  roots_added: string[]
+  roots_existing: string[]
+  settings_changed: Record<string, string>
+  gear: Record<string, unknown>
+  watch_enabled: boolean
+  changed: boolean
+  summary: string
+  client: LiveClientSteps
+}
+
+export async function getSmbStatus(): Promise<SmbStatus> {
+  const res = await apiFetch("/api/smb/status")
+  await assertOk(res, "Could not read the share settings.")
+  return res.json()
+}
+
+/** Save the share. Omit `password` to keep the stored one; pass "" to clear it. */
+export async function saveSmbConfig(data: {
+  host: string
+  share: string
+  subpath?: string
+  username?: string
+  password?: string
+  domain?: string
+  version?: string
+  readonly?: boolean
+  automount?: boolean
+  enabled?: boolean
+}): Promise<SmbStatus> {
+  const res = await apiFetch("/api/smb/config", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  })
+  await assertOk(res, "Could not save the share.")
+  return res.json()
+}
+
+/** A TCP connect to the NAS, before anything privileged is attempted. */
+export async function testSmb(data: { host?: string; share?: string } = {}): Promise<{
+  ok: boolean
+  reachable: boolean
+  error?: string
+  capabilities: SmbCapabilities
+  unavailable_reason: string | null
+}> {
+  const res = await apiFetch("/api/smb/test", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  })
+  await assertOk(res, "Could not reach the NAS.")
+  return res.json()
+}
+
+export async function mountSmb(): Promise<SmbStatus> {
+  const res = await apiFetch("/api/smb/mount", { method: "POST" })
+  await assertOk(res, "Could not mount the share.")
+  return res.json()
+}
+
+export async function unmountSmb(lazy = false): Promise<SmbStatus> {
+  const res = await apiFetch(`/api/smb/unmount?lazy=${lazy}`, { method: "POST" })
+  await assertOk(res, "Could not unmount the share.")
+  return res.json()
+}
+
+export async function forgetSmbPassword(): Promise<SmbStatus> {
+  const res = await apiFetch("/api/smb/credentials", { method: "DELETE" })
+  await assertOk(res, "Could not forget the password.")
+  return res.json()
+}
+
+export async function getLiveState(): Promise<LiveState> {
+  const res = await apiFetch("/api/smb/live")
+  await assertOk(res, "Could not read the live setup.")
+  return (await res.json()).live as LiveState
+}
+
+/** Make the folders, watch them, point NegPy's folders at the share, sync gear. */
+export async function applyLiveMode(): Promise<LiveReport> {
+  const res = await apiFetch("/api/smb/live", { method: "POST" })
+  await assertOk(res, "Could not set live mode up.")
+  return (await res.json()).report as LiveReport
+}

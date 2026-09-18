@@ -48,7 +48,7 @@ from ..models import FilmRoll, ImageAsset, ImageType, LibraryRoot
 # direction; `routers.api` does not import this module, so it is a straight edge,
 # not a cycle. If it ever needs to, both belong in a service of their own.)
 from ..routers.api import ALLOWED_EXTENSIONS, frame_number_from_filename
-from . import lifecycle, serials
+from . import lifecycle, serials, smb
 from .hashing import safe_content_hash
 from .negpy import edits as negpy_edits
 from .negpy import metadata as negpy_metadata
@@ -99,8 +99,9 @@ def parse_folder_name(name: str) -> tuple[str, Optional[str]]:
 def allowed_bases() -> list[Path]:
     """Directories a library root may live under, from ``LIBRARY_ROOTS_ALLOW``.
 
-    Colon-separated (``os.pathsep``), empty by default: with nothing configured
-    **no** folder can be registered. The API is on a LAN with no authentication by
+    Colon-separated (``os.pathsep``), empty by default — plus the network share,
+    when one is mounted (M6). With nothing configured and nothing mounted, **no**
+    folder can be registered. The API is on a LAN with no authentication by
     default, and "POST me any path" would otherwise let a visitor enumerate and
     read the whole filesystem through ``/download``.
     """
@@ -110,6 +111,12 @@ def allowed_bases() -> list[Path]:
         part = part.strip()
         if part:
             bases.append(Path(part).expanduser().resolve())
+    # M6: the share mounted from Settings counts, but only while it is actually
+    # mounted. An unmounted mount point is an empty directory, and registering a
+    # root inside one would produce a folder that imports nothing and looks broken.
+    mounted = smb.mount_base()
+    if smb.is_mounted(mounted) and mounted not in bases:
+        bases.append(mounted)
     return bases
 
 
