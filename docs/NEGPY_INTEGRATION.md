@@ -155,6 +155,38 @@ Three rules in `app/services/negpy/edits.py`, and none of them is negotiable:
 Reading somebody's data file is not linking against their program, so this stays MIT-clean — the
 schema above is treated as an observation that may be wrong, not as an interface that must hold.
 
+### Printing the negative for the preview
+
+`app/services/preview.py` renders a scan as a positive on demand, into the disposable preview
+cache — the archive stores one file per frame, and it is the scan. `app/services/negpy/recipe.py`
+maps an edit's tone controls and geometry onto that renderer.
+
+What is rendered, and where it comes from:
+
+| Stage | Source |
+|---|---|
+| crop, rotation, flips | the recipe, applied exactly |
+| log conversion, per-channel percentile bounds, polarity | PIPELINE.md §2 |
+| exposure anchor metered off the frame (Auto Density) | §3 helper, our calibration |
+| grade as ISO-R, matched to the frame's textural range (Auto Grade) | §3 helper, our calibration |
+| print exposure in stops, per-channel offsets | the recipe |
+| midtone S-curve, zone densities, split grade | §3, with their constants |
+| softplus toe and shoulder, `D_min` 0.06, `D_max` 2.3 | §3, with their constants |
+| `I = 10⁻ᴰ`, black point compensation, Adobe RGB TRC | §3 output |
+
+What is **not** rendered, and is reported by name in the viewer: flat-field, sensor crosstalk
+unmix, HDR merge, cast removal, dye-coupling paper profiles, hue trim, dodge and burn, local grade,
+contrast masks, CLAHE, retouching, Lab mode, alt processes, toning, finish, ICC soft-proofing.
+
+Two calibration constants are **ours, not NegPy's**, and the module says so: their Auto Density and
+Auto Grade are metered on a linear raw decode against fixed bounds, while this renderer's axis is
+normalized per frame, so a picture occupying the lower third of the axis printed far too bright
+with their numbers. Measured against a reference photograph put through a synthetic film gamma and
+orange mask: their constants give an RMS error of 54 on a 0–255 scale, ours give 25.
+
+The faithful render is NegPy's own and stays NegPy's: export into a folder registered as a library
+root (linked, not copied), or see proposal 3 in [NEGPY_UPSTREAM.md](NEGPY_UPSTREAM.md).
+
 ### Where NegArchive writes
 
 | | Default | Override |

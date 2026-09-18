@@ -308,8 +308,35 @@ Then the three that were left for later, and are now done too:
       an issue or a PR on somebody else's project is the owner's call, not the archive's. Nothing
       in NegArchive depends on either.
 
+And the one that came out of using it: **seeing the positive**.
+
+- [x] **A negative is printed for the preview** (`app/services/preview.py`), on demand and into the
+      existing disposable cache, so the archive still stores exactly one file per frame. Geometry
+      from the recipe is exact; the tone is an approximation of NegPy's print stage built from the
+      formulas and constants in its `docs/PIPELINE.md` — polarity and per-channel percentile bounds,
+      a metered exposure anchor, an ISO-R grade, the midtone S-curve, the zone densities, softplus
+      toe and shoulder, `I = 10⁻ᴰ` and black point compensation. Where NegPy meters per frame the
+      calibration is ours, because our axis is per-frame and theirs is not; measured against a
+      reference photograph put through a synthetic film gamma and orange mask, their constants on
+      our axis give an RMS error of 54 and ours give 25.
+- [x] **It says what it could not render** (`app/services/negpy/recipe.py`): a recipe's tone and
+      geometry keys are applied and **every other key is reported by name**, in the viewer, as
+      "6 of 11 settings rendered · not rendered: cast_removal_strength, lab.clahe_strength,
+      local_masks, paper_profile…". Dodging and burning, contrast masks, paper profiles, cast
+      removal, CLAHE, retouching, toning and soft-proofing are NegPy's and stay NegPy's.
+- [x] **It only prints what the archive knows is a negative** (`preview_render`, default `auto`):
+      the roll's film stock says so, or NegPy has an edit for the frame. Unknown film is left alone —
+      it might be a scan of a print — and a contact sheet is never inverted. Settings forces either
+      way; the viewer has a toggle that remembers the choice per browser.
+
 Still open, deliberately:
 
+- [ ] Rendering NegPy's recipe *faithfully*. It is a nine-stage pipeline with WebGPU shaders, a raw
+      decode this backend deliberately cannot do (M2 removed the two-gigabyte dependency stack) and
+      hundreds of parameters; reimplementing it would drift out of date silently every time NegPy
+      retunes a constant. The faithful render comes from NegPy — export into a folder registered as
+      a library root and the positives are linked, not copied — or from the preview-on-save
+      proposal in [NEGPY_UPSTREAM.md](NEGPY_UPSTREAM.md).
 - [ ] Per-frame ratings and keep/reject from NegPy's `file_marks` (M7 owns it).
 - [ ] A development *catalog* (processes as entries, like cameras and film stocks) rather than
       four strings per roll. Worth it only once there are enough rolls to make the repetition
