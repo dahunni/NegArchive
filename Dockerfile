@@ -5,9 +5,13 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# System dependencies for OpenCV headless
+# libgl1 + libglib2.0-0: OpenCV headless. cifs-utils: mounting the network share
+# NegPy and NegArchive share (M6, app/services/smb.py) — it brings in mount.cifs,
+# which is what `mount -t cifs` execs. About 1 MB; the capability to use it is a
+# separate decision the Compose file makes.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
+    cifs-utils \
     libgl1 \
     libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
@@ -22,6 +26,10 @@ COPY . /app
 # standalone, without a mount.
 ENV DATA_DIR=/data
 RUN mkdir -p /data
+
+# Where an SMB share is mounted (M6). Created in the image so the mount point
+# exists before anything tries to mount on it; empty until Settings says otherwise.
+RUN mkdir -p /mnt/negarchive
 
 EXPOSE 8000
 

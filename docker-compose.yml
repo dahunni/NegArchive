@@ -81,13 +81,38 @@ services:
       NEGPY_USER_DIR: ${NEGPY_USER_DIR:-}
       NEGPY_EXPORT_DIR: ${NEGPY_EXPORT_DIR:-}
       NEGPY_DIRS_ALLOW: ${NEGPY_DIRS_ALLOW:-}
+      # M6: where Settings mounts your network share. A mounted share is
+      # automatically a place library roots and NegPy's folders may live, so
+      # LIBRARY_ROOTS_ALLOW above is not needed for it.
+      SMB_MOUNT_BASE: ${SMB_MOUNT_BASE:-/mnt/negarchive}
       UI_PORT: ${UI_PORT:-8021}
+    # M6 — mounting the share NegPy and NegArchive both work in.
+    #
+    # Mounting a filesystem is privileged: no amount of userspace cleverness gets
+    # around it, so the container that does it needs CAP_SYS_ADMIN. That is a real
+    # escalation — with it, this container can mount things — so it is opt-in and
+    # written here rather than hidden in the image.
+    #
+    # **Set NEGARCHIVE_PASSWORD if you turn this on.** The API has no login by
+    # default, and these two lines give it the ability to mount.
+    #
+    # Comment both out (and `docker compose up -d`) to switch the feature off; the
+    # Settings card then says the container may not mount and why.
+    cap_add:
+      - SYS_ADMIN
+    security_opt:
+      # Ubuntu and Debian hosts ship an AppArmor profile that blocks mount() even
+      # with the capability. Harmless where AppArmor is not in use (macOS, Fedora).
+      - apparmor:unconfined
     volumes:
       - ${DATA_DIR:-./data}:/data
       # Your scan library, for import by reference. Read-only: NegArchive never
       # writes to a linked folder. Set LIBRARY_HOST_DIR and
       # LIBRARY_ROOTS_ALLOW=/library in .env to switch the feature on.
       - ${LIBRARY_HOST_DIR:-./data/library}:/library:ro
+      # M6: the mount point for the network share. NOT a bind mount — a bind here
+      # would be replaced by the SMB mount and confuse both. It only needs to be a
+      # directory in the container, which the image creates.
     healthcheck:
       test:
         - CMD-SHELL

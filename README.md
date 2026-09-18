@@ -10,8 +10,9 @@ default (see [A shared password](#a-shared-password)). A full review with confir
 Milestones M0 (the bugs that broke shipped workflows in Docker), M1 (the UI rework), M2 (archive
 integrity: Postgres only, Alembic, original filenames, gear foreign keys, validation, file
 lifecycle), M3 (offline-first: one Compose stack, import by reference, backup, PWA), M4 (the
-physical archive: serials, locations, lifecycle, codes, printouts, scanner console) and M5 (the
-NegPy integration: metadata ingest, gear sync, roll handoff, sidecars) are done;
+physical archive: serials, locations, lifecycle, codes, printouts, scanner console), M5 (the
+NegPy integration: metadata ingest, gear sync, roll handoff, sidecars) and M6 (the network share,
+so NegPy on a laptop and NegArchive on a server work in the same folder) are done;
 read the [Known issues](#known-issues) section before deploying.
 
 ## Where this is going
@@ -23,6 +24,8 @@ Three goals drive the roadmap (details and reasoning in [docs/ROADMAP.md](docs/R
    stays the negative-conversion tool; the two exchange files (gear JSON, XMP metadata, `.negpy`
    sidecars, filenames), never code. See [docs/NEGPY_INTEGRATION.md](docs/NEGPY_INTEGRATION.md)
    for why, and for the field mappings. *(M5, done — see [Working with NegPy](#working-with-negpy-m5).)*
+   Since M6 the two can work in the same folder on a network share, so an edit in NegPy shows up
+   here on its own — see [Working live in NegPy](#working-live-in-negpy-m6).
 2. **Offline-first, on Postgres.** No runtime network calls, one Compose stack that includes
    Postgres, one command to run, everything exportable as plain files, import-by-reference so
    scans are not duplicated, a watch folder for scanner output, and an installable PWA for the
@@ -75,7 +78,7 @@ A **roll** is the unit of work, so the roll list is the home page and everything
   behind those URLs left the source tree (M3). The path, the name the scanner gave the file,
   whether NegArchive owns it and its content hash are stored in the database
 - Face detection was deleted in M2: no DeepFace, no TensorFlow, no scikit-learn. People come
-  from Immich in M6. The backend image is about 0.28 GB instead of 2 GB.
+  from Immich in M7. The backend image is about 0.28 GB instead of 2 GB.
 
 ## Project structure
 
@@ -98,6 +101,9 @@ app/                    FastAPI backend
   routers/locations.py  the storage tree, binder pages, moves (M4)
   routers/scan.py       the scanner console's grammar and command cards (M4)
   routers/negpy.py      status, gear sync, roll handoff, ingest, hash lookup (M5)
+  routers/smb.py        the network share and the live-mode setup (M6)
+  services/smb.py       the only place that runs `mount`: validation, credentials, status (M6)
+  services/livemode.py  one button: folders, watched roots, NegPy's folders, gear (M6)
   services/hashing.py   the sampled SHA-256 that identifies a scan — and ties it to NegPy
   services/importer.py  scanning a library root into rolls and linked frames
   services/watcher.py   the background poller
@@ -873,6 +879,53 @@ group, a headless export entry point) are drafted in
 [docs/NEGPY_UPSTREAM.md](docs/NEGPY_UPSTREAM.md) and have deliberately **not** been filed — nothing
 here depends on either of them.
 
+## Working live in NegPy (M6)
+
+M5 assumed NegArchive and NegPy were on one machine. They are not: the archive is a container on a
+server, NegPy is a desktop app on a laptop. M6 closes that gap with a network share both can see.
+The reasoning, the layout and the security notes are in [docs/NEGPY_LIVE.md](docs/NEGPY_LIVE.md);
+this is what you do.
+
+**Settings → Network share.** Type the NAS address, the share, and a user and password if it needs
+one. *Test connection* is a TCP connect to port 445, so "the NAS is asleep" and "the password is
+wrong" are told apart before anything is mounted. Then *Save and mount*.
+
+**Then one button, “Set up live mode”.** It makes four folders on the share, registers two of them
+as watched library roots, points NegPy's gear and presets at the share, and syncs the gear catalog:
+
+```
+rolls/          scans live here forever; NegArchive links them, NegPy edits them in place
+exports/        what NegPy exports; watched too, so finished positives come back on their own
+negpy-user/     gear/ and presets/metadata/ — NegArchive writes, NegPy reads
+handoff/        a prepared roll, for the times you still want one
+```
+
+It creates nothing that exists and turns nothing off, so it is safe to run again.
+
+**The Mac side is five steps, printed in the page with your own paths and a copy button on each:**
+mount the share in Finder, add `rolls/` as a NegPy library root, **turn on `.negpy` sidecars in
+NegPy** (the one setting the whole thing depends on), symlink NegPy's `gear` and `presets/metadata`
+onto the share, and set NegPy's export folder and filename pattern.
+
+After that you just work. Edit a frame in NegPy, and within 30 seconds the archive shows it as
+edited with a one-line summary of the recipe — because the sidecar lands next to the file the
+archive linked, and the watch sweep compares its mtime.
+
+**What it costs.** Mounting a filesystem is privileged, so `docker-compose.yml` grants the `web`
+service `CAP_SYS_ADMIN` (opt-in, with a comment saying why). **Set `NEGARCHIVE_PASSWORD` if you use
+this** — the API has no login by default and these endpoints can mount filesystems. The SMB
+password is kept in `$DATA_DIR/.smb/credentials` (mode 0600), never in the database and never in a
+backup export.
+
+**Endpoints:** `GET /api/smb/status`, `PUT /api/smb/config`, `POST /api/smb/test`,
+`POST /api/smb/mount`, `POST /api/smb/unmount`, `DELETE /api/smb/credentials`,
+`GET /api/smb/live`, `POST /api/smb/live`.
+
+**Known limits:** one share, one editing machine, and NegPy converting big TIFFs over SMB is slower
+than off local disk. Mounting itself is not covered by CI — it needs a NAS and a capability a
+runner does not have — but the validation, the argv, the credentials file, the allow-lists and the
+whole of live mode's wiring are (`tests/test_m6_smb.py`).
+
 ## Known issues
 
 The full list with evidence and file references is [docs/REVIEW.md](docs/REVIEW.md). M2 closed
@@ -912,7 +965,10 @@ Full checklist: [docs/ROADMAP.md](docs/ROADMAP.md).
 6. **M5** *(done)* NegPy: ingest its XMP and EXIF on upload and in link mode, the export filename
    preset, `.negpy` sidecars, gear sync into NegPy's `gear/*.json`, roll handoff with a metadata
    preset, a content hash compatible with NegPy's. See [Working with NegPy](#working-with-negpy-m5).
-7. **M6** Immich connector, optional: shared files via an external library, XMP sidecars, one
+7. **M6** *(done)* the network share: the container mounts your NAS from Settings, and one button
+   sets up the folders NegPy and the archive share — so you work in NegPy and the archive notices
+   your edits on its own. See [Working live in NegPy](#working-live-in-negpy-m6).
+8. **M7** Immich connector, optional: shared files via an external library, XMP sidecars, one
    album per roll with tags, "Open in Immich", people from Immich. NegArchive stays standalone.
 
 ## License

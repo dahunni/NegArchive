@@ -16,7 +16,7 @@ Guiding decisions (see [NEGPY_INTEGRATION.md](NEGPY_INTEGRATION.md) for the reas
 4. **Immich is the optional photo layer, NegArchive is the film layer.** Immich (external
    libraries, XMP sidecars, REST API) can own thumbnails, faces and people, map, mobile backup and
    sharing. NegArchive owns rolls, frames, gear, storage location, serials, labels, contact sheets
-   and unscanned rolls, and must keep working without Immich. See M6.
+   and unscanned rolls, and must keep working without Immich. See M7.
 
 ---
 
@@ -123,7 +123,7 @@ and "not found" was an HTTP 200. All of that is fixed here.
 - [x] Faces are gone: `services/face.py`, the `Face` and `Person` models and their tables, and
       the `deepface` and `scikit-learn` requirements. `opencv-python-headless` stays, the
       preview fallback still decodes 16-bit TIFFs with it. The backend image went from about
-      2 GB to 0.28 GB. People detection comes from Immich (M6). **R#10, R#15**
+      2 GB to 0.28 GB. People detection comes from Immich (M7). **R#10, R#15**
 - [x] The filmstock `kind` select lists the enum; film stocks gained `manufacturer` and
       `format`, rolls gained `format` (`35mm`, `120`, `4x5`, `8x10`, `other`). **R#21**
 
@@ -337,12 +337,47 @@ Still open, deliberately:
       retunes a constant. The faithful render comes from NegPy — export into a folder registered as
       a library root and the positives are linked, not copied — or from the preview-on-save
       proposal in [NEGPY_UPSTREAM.md](NEGPY_UPSTREAM.md).
-- [ ] Per-frame ratings and keep/reject from NegPy's `file_marks` (M7 owns it).
+- [ ] Per-frame ratings and keep/reject from NegPy's `file_marks` (M8 owns it).
 - [ ] A development *catalog* (processes as entries, like cameras and film stocks) rather than
       four strings per roll. Worth it only once there are enough rolls to make the repetition
       annoying; the strings migrate into it cleanly when that day comes.
 
-## M6 — Immich connector (optional photo layer)
+## M6 — the network share *(done)*
+
+M5 assumed NegArchive and NegPy ran on one machine. They do not: the archive is a container on a
+server, NegPy is a desktop app on a laptop. Without a folder both can see, "edit in NegPy and the
+archive notices" is not possible at all — so this is the milestone that makes M5 true in the
+deployment people actually have. Reasoning and security notes:
+[docs/NEGPY_LIVE.md](NEGPY_LIVE.md).
+
+- [x] **The container mounts the share itself**, configured in Settings rather than in Compose:
+      address, share, folder, user, password, SMB version, read-only, automount. `cifs-utils` in
+      the image, `CAP_SYS_ADMIN` opt-in on the `web` service with a comment saying what it costs.
+- [x] **Test before mount**: a TCP connect to 445, so "the NAS is asleep" and "the password is
+      wrong" are different answers. `mount.cifs`'s own errors are translated into sentences with a
+      next step in them.
+- [x] **The password is not in the database and not in an export**: `$DATA_DIR/.smb/credentials`,
+      mode 0600, which is the file `mount.cifs` reads. Never on a command line, never in
+      `/api/smb/status`.
+- [x] **Every field that reaches the command line is validated.** A mount option string is
+      comma-separated, so a comma in a share name is an injection; argv is a list, never a shell
+      string; credentials may not contain a newline.
+- [x] **A mounted share is automatically a place library roots and NegPy's folders may live** — and
+      stops being one the moment it is unmounted, read fresh from `/proc/self/mounts`, so a root
+      can never be registered inside an empty mount point.
+- [x] **Live mode, one button**: makes `rolls/`, `exports/`, `negpy-user/` and `handoff/` on the
+      share, registers the first two as watched roots, points `negpy_user_dir` and
+      `negpy_handoff_dir` at the share, turns the watcher on and syncs the gear catalog. Idempotent.
+- [x] **The five Mac steps are in the page**, with the real `/Volumes/...` paths computed from the
+      saved share and a copy button on each — including the one setting the whole thing depends on,
+      `.negpy` sidecars in NegPy.
+- [x] Remount at startup: a mount does not survive the container it was made in.
+
+Deliberately not done: more than one share, more than one editing machine, and moving NegPy's
+`edits.db` onto the share (a SQLite file written by a desktop app over SMB is the textbook
+corruption case — sidecars carry the same information and travel with the file).
+
+## M7 — Immich connector (optional photo layer)
 
 Immich stays optional: every feature below is behind an "Immich" settings section (base URL +
 API key) and NegArchive works fully without it. Two services, two databases; never share
@@ -367,7 +402,7 @@ Immich's Postgres.
 - [ ] Later, optional: an Immich workflow plugin (Wasm, alpha) that files a newly added asset into
       the right album by parsing the NegPy/NegArchive XMP, so the connector also runs inside Immich.
 
-## M7 — Nice to have
+## M8 — Nice to have
 
 - [ ] Paper twin: photograph the DM index print or sleeve page as the roll's contact sheet.
 - [ ] Darkroom prints as assets with paper, size, location; loan / status log.
