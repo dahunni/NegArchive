@@ -1346,13 +1346,29 @@ export function barcodeUrl(text: string, height = 12, label = true): string {
 export interface PrintQueue {
   items: (Film & { reason: "never_printed" | "moved_since_print" })[]
   total: number
+  limit?: number
+  offset?: number
+  has_more?: boolean
 }
 
-export async function getPrintQueue(): Promise<PrintQueue> {
-  const res = await apiFetch("/api/print/queue")
+/**
+ * A page of the print queue. An archive that has never printed a label has its
+ * whole catalogue in here, so this is paged like every other list.
+ */
+export async function getPrintQueue(
+  query: { limit?: number; offset?: number; reason?: "never_printed" | "moved_since_print" } = {},
+): Promise<PrintQueue> {
+  const params = new URLSearchParams()
+  params.set("limit", String(query.limit ?? PRINT_QUEUE_PAGE))
+  if (query.offset) params.set("offset", String(query.offset))
+  if (query.reason) params.set("reason", query.reason)
+  const res = await apiFetch(`/api/print/queue?${params.toString()}`)
   await assertOk(res, "Could not load the print queue.")
   return res.json()
 }
+
+/** How many rolls the queue asks for at a time. */
+export const PRINT_QUEUE_PAGE = 50
 
 export async function markPrinted(rollIds: number[]): Promise<number> {
   const res = await apiFetch("/api/print/mark", {

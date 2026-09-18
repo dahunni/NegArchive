@@ -587,6 +587,44 @@ async function main() {
   check("M4: the command cards render", (await page.getByTestId("command-card").count()) >= 8)
   await page.goto(`${BASE_URL}/print/queue`, { waitUntil: "load" })
   check("M4: the print queue lists the new roll", ((await page.getByTestId("print-queue").textContent()) || "").includes(serialText))
+
+  // The queue arrives with nothing selected: "mark printed" freezes a serial, and
+  // a button that says "Mark 145 printed" the moment the page loads is one click
+  // away from freezing the whole archive.
+  check(
+    "M4: the queue selects nothing until you do",
+    ((await page.getByTestId("mark-all-printed").textContent()) || "").trim() === "Mark printed" &&
+      (await page.getByTestId("mark-all-printed").isDisabled()),
+  )
+  await page.getByTestId("select-shown").click()
+  await page.waitForTimeout(300)
+  check(
+    "M4: selecting the rolls shown arms the button",
+    /Mark \d+ printed/.test((await page.getByTestId("mark-all-printed").textContent()) || ""),
+    (await page.getByTestId("mark-all-printed").textContent()) || "",
+  )
+  check("M4: the queue says how many of how many it is showing", await visible(page.getByTestId("queue-count")))
+  await page.getByTestId("select-shown").click()
+
+  // Printing an ordinary page: no app chrome, and no row sliced across the break.
+  await page.emulateMedia({ media: "print" })
+  await page.waitForTimeout(200)
+  const printable = await page.evaluate(() => {
+    const header = document.querySelector("header")
+    const row = document.querySelector('[data-testid="print-queue-list"] > li')
+    return {
+      headerHidden: !header || getComputedStyle(header).display === "none",
+      rowBreak: row ? getComputedStyle(row).breakInside : null,
+      background: getComputedStyle(document.body).backgroundColor,
+    }
+  })
+  check("M4: printing a page leaves the navigation off the paper", printable.headerHidden)
+  check(
+    "M4: a queue row is never split across a page break",
+    printable.rowBreak === "avoid",
+    printable.rowBreak ?? "none",
+  )
+  await page.emulateMedia({ media: null })
   await shot(page, 10, "print queue")
 
   // Load film on a camera creates a roll in status loaded

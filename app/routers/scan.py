@@ -10,8 +10,10 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Optional
 
 from fastapi import APIRouter, Depends, Query, Response
+from sqlalchemy import and_, func, or_
 from sqlalchemy.orm import Session
 
 from .. import schemas
@@ -137,31 +139,79 @@ def codes_for_location(location_id: int, db: Session = Depends(get_db)):
 # --- print queue ---------------------------------------------------------------
 
 
+#: A page of the queue. An archive's *whole* backlog is not a screenful, and it is
+#: not something to hold in memory either.
+QUEUE_PAGE = 50
+QUEUE_MAX_PAGE = 500
+
+
 @router.get("/print/queue")
-def print_queue(db: Session = Depends(get_db)):
-    """Rolls that never had a label, or moved since the last one was printed."""
+def print_queue(
+    limit: int = Query(QUEUE_PAGE, ge=1, le=QUEUE_MAX_PAGE),
+    offset: int = Query(0, ge=0),
+    reason: Optional[str] = Query(None, description="never_printed | moved_since_print"),
+    db: Session = Depends(get_db),
+):
+    """Rolls that never had a label, or moved since the last one was printed.
+
+    Paged like every other list since M3 (R#20): an archive that has never printed
+    a label has its entire catalogue in here, and sending all of it — with a
+    thumbnail strip per roll — is how the page became something you scroll past
+    rather than work through.
+
+    The "moved since the last print" test is done in SQL against the latest move
+    per roll; it used to read every row of ``location_moves`` into a dict, which is
+    every move the archive has ever recorded.
+    """
     from .api import film_to_dict, roll_summaries
 
-    rolls = db.query(FilmRoll).order_by(FilmRoll.created_at.desc()).all()
-    latest_move = {}
-    for move in db.query(LocationMove).all():
-        latest_move[move.roll_id] = max(latest_move.get(move.roll_id, move.moved_at), move.moved_at)
-    due = []
-    for roll in rolls:
-        reason = None
-        if roll.label_printed_at is None:
-            reason = "never_printed"
-        elif roll.id in latest_move and latest_move[roll.id] > roll.label_printed_at:
-            reason = "moved_since_print"
-        if reason:
-            due.append((roll, reason))
-    summaries = roll_summaries(db, [r.id for r, _ in due])
+    latest_move = (
+        db.query(LocationMove.roll_id.label("roll_id"), func.max(LocationMove.moved_at).label("moved_at"))
+        .group_by(LocationMove.roll_id)
+        .subquery()
+    )
+    never_printed = FilmRoll.label_printed_at.is_(None)
+    moved_since = and_(
+        FilmRoll.label_printed_at.isnot(None),
+        latest_move.c.moved_at.isnot(None),
+        latest_move.c.moved_at > FilmRoll.label_printed_at,
+    )
+
+    query = db.query(FilmRoll, latest_move.c.moved_at).outerjoin(
+        latest_move, latest_move.c.roll_id == FilmRoll.id
+    )
+    wanted = (reason or "").strip().lower()
+    if wanted == "never_printed":
+        query = query.filter(never_printed)
+    elif wanted == "moved_since_print":
+        query = query.filter(moved_since)
+    elif wanted:
+        return error_response(
+            "invalid_reason",
+            "Reason must be never_printed or moved_since_print.",
+            400,
+            "reason",
+        )
+    else:
+        query = query.filter(or_(never_printed, moved_since))
+
+    total = query.order_by(None).count()
+    rows = query.order_by(FilmRoll.created_at.desc(), FilmRoll.id.desc()).limit(limit).offset(offset).all()
+
+    summaries = roll_summaries(db, [roll.id for roll, _ in rows])
+    items = [
+        {
+            **film_to_dict(roll, *summaries.get(roll.id, (0, []))),
+            "reason": "never_printed" if roll.label_printed_at is None else "moved_since_print",
+        }
+        for roll, _ in rows
+    ]
     return {
-        "items": [
-            {**film_to_dict(r, *summaries.get(r.id, (0, []))), "reason": reason}
-            for r, reason in due
-        ],
-        "total": len(due),
+        "items": items,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "has_more": offset + len(items) < total,
     }
 
 

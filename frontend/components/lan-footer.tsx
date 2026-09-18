@@ -34,7 +34,7 @@ export function LanFooter() {
   if (!info?.ui_url) return null
 
   return (
-    <footer className="border-t border-border" data-testid="lan-footer">
+    <footer className="border-t border-border" data-testid="lan-footer" data-print-hide>
       <div className="mx-auto flex max-w-7xl flex-col gap-3 px-4 py-4 sm:px-6 lg:px-8">
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
           <span className="type-meta uppercase tracking-wide">On this network</span>

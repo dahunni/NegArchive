@@ -711,8 +711,18 @@ the whole workflow is scans only. The phone camera scans QR codes too (needs HTT
 
 **Printouts** are plain A4 pages you print or save as PDF from the browser: the sleeve cover sheet
 (its grid mirrors the strips on the page behind it), stickers (50 × 25 mm, 20 per sheet), index
-cards (A6), binder spine labels, location labels, binder indexes and the whole tree. The **Print**
-page lists rolls that never had a label or moved since the last one.
+cards (A6), binder spine labels, location labels, binder indexes and the whole tree.
+
+**The print queue** lists rolls that never had a label, or moved since the last one was printed. It
+is paged (50 at a time) because an archive that has never printed a label has its whole catalogue in
+there, and it starts with **nothing selected**: marking a label printed freezes that roll's serial,
+so a button offering to do it to every roll at once is not a good default. Select the ones you
+printed — "Select these 50" does the page — then mark them. `?reason=never_printed` or
+`moved_since_print` narrows it.
+
+**Printing an ordinary page** of the app (the queue, a roll, a location) leaves the navigation, the
+footer and the buttons off the paper, keeps a row or a card whole instead of slicing it across a
+page break, and prints in the light palette even when the screen is dark.
 
 ## Working with NegPy (M5)
 

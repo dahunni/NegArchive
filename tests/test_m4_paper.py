@@ -338,6 +338,42 @@ def test_codes_render_as_svg(client, monkeypatch):
 # --- printing ------------------------------------------------------------------
 
 
+def test_the_print_queue_is_paged(client):
+    """An archive that never printed a label has its whole catalogue in here."""
+    made = [make_roll(client)["id"] for _ in range(3)]
+    first = client.get("/api/print/queue", params={"limit": 2}).json()
+    assert len(first["items"]) == 2
+    assert first["total"] >= 3
+    assert first["has_more"] is True
+    assert first["limit"] == 2 and first["offset"] == 0
+
+    second = client.get("/api/print/queue", params={"limit": 2, "offset": 2}).json()
+    assert len(second["items"]) <= 2
+    # Newest first, and no roll on both pages.
+    assert not ({item["id"] for item in first["items"]} & {item["id"] for item in second["items"]})
+    assert made[-1] in {item["id"] for item in first["items"]}
+
+
+def test_the_queue_can_be_asked_for_one_reason(client):
+    printed_then_moved = make_roll(client)
+    client.post("/api/print/mark", json={"roll_ids": [printed_then_moved["id"]]})
+    box = make_location(client)
+    client.post(f"/api/films/{printed_then_moved['id']}/move", json={"location_id": box["id"]})
+    fresh = make_roll(client)
+
+    moved = client.get("/api/print/queue", params={"reason": "moved_since_print", "limit": 500}).json()
+    never = client.get("/api/print/queue", params={"reason": "never_printed", "limit": 500}).json()
+    moved_ids = {item["id"] for item in moved["items"]}
+    never_ids = {item["id"] for item in never["items"]}
+    assert printed_then_moved["id"] in moved_ids and printed_then_moved["id"] not in never_ids
+    assert fresh["id"] in never_ids and fresh["id"] not in moved_ids
+    assert all(item["reason"] == "moved_since_print" for item in moved["items"])
+
+    bad = client.get("/api/print/queue", params={"reason": "whenever"})
+    assert bad.status_code == 400
+    assert bad.json()["error"]["code"] == "invalid_reason"
+
+
 def test_print_queue_tracks_unprinted_and_moved_rolls(client):
     roll = make_roll(client)
     queue = client.get("/api/print/queue").json()
