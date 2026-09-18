@@ -314,8 +314,9 @@ It walks every route at desktop width and at 375px, creates a roll through the w
 files, edits a frame number and a note in place, drives the viewer and the keyboard shortcuts,
 checks pagination, the LAN footer and its QR code, the settings page, the manifest and the service
 worker, toggles dark mode, and fails on any console error.
-`SCREENSHOT_DIR=../screenshots npm run e2e` refreshes the screenshots below. It expects a
-populated archive; `scripts/seed_demo.py` makes one.
+`SCREENSHOT_DIR=../screenshots npm run e2e` writes screenshots into a git-ignored folder (see
+[Screenshots](#screenshots) — they show the machine they were taken on, so they are not committed).
+It expects a populated archive; `scripts/seed_demo.py` makes one.
 
 Environment variables:
 
@@ -889,56 +890,22 @@ MIT. NegPy is GPL-3 and is deliberately not imported or bundled.
 
 ## Screenshots
 
-Taken by the smoke test against a seeded archive.
+Not in the repository, on purpose.
 
-The roll list, the home page:
+A screenshot of this application shows whatever the machine it ran on was called: the settings page
+prints `DATA_DIRECTORY`, the NegPy dialog prints the folder it prepared, and the footer prints the
+LAN address. On a developer's laptop those paths contain the account name, and a public repository
+is a bad place for it. Screenshots that had been committed were removed from the working tree **and
+from every commit in the history**; `screenshots/` is git-ignored so it cannot come back by
+accident.
 
-![The roll list](screenshots/screenshot-01.png)
+To make your own, run the archive with a neutral data directory and a neutral advertised host:
 
-A roll as a workspace — contact sheet, drop zone, frame grid:
+```bash
+DATA_DIR=/tmp/negarchive-demo NEGARCHIVE_PUBLIC_HOST=archive.local make dev
+cd frontend && SCREENSHOT_DIR=../screenshots npm run e2e      # the smoke test takes them
+```
 
-![A roll workspace](screenshots/screenshot-02.png)
-
-The frame viewer, with the metadata panel beside the image:
-
-![The frame viewer](screenshots/screenshot-03.png)
-
-At 375px: the roll list and a roll workspace.
-
-![The roll list at 375px](screenshots/screenshot-04.png)
-![A roll workspace at 375px](screenshots/screenshot-05.png)
-
-The new-roll wizard, the gear catalog, and the frames page in dark mode:
-
-![The new roll wizard](screenshots/screenshot-06.png)
-![The gear catalog](screenshots/screenshot-07.png)
-![Frames in dark mode](screenshots/screenshot-08.png)
-
-Settings: where the files are, which folders are linked, the watch folder, and getting everything
-out again.
-
-![Settings](screenshots/screenshot-09.png)
-
-The paper side (M4): the storage tree, a binder with its pages, the scanner console mid-move, a
-roll with its lifecycle and location, the print queue, and a sleeve cover sheet as the browser
-prints it.
-
-![Locations](screenshots/screenshot-11.png)
-![A binder and its pages](screenshots/screenshot-12.png)
-![The scanner console holding a roll for a move](screenshots/screenshot-13.png)
-![A roll with its lifecycle and location](screenshots/screenshot-15.png)
-![The print queue](screenshots/screenshot-10.png)
-![A sleeve cover sheet](screenshots/screenshot-14.png)
-
-NegPy (M5): a frame that came back from NegPy — its own metadata filled the panel, and the recipe
-is summarised, not interpreted — and the folder and preset "Open in NegPy" prepares.
-
-![A frame edited in NegPy](screenshots/screenshot-16.png)
-![Ready for NegPy](screenshots/screenshot-17.png)
-
-The same frame printed as a positive — with the line saying how much of its NegPy recipe the render
-could apply — and as the scanner handed it over, which is the file the archive stores. One file on
-disk, two ways of looking at it.
-
-![A negative printed as a positive](screenshots/screenshot-18.png)
-![The same frame, as scanned](screenshots/screenshot-19.png)
+and **look at every image before adding one** — `git add -f screenshots/…` is deliberate for exactly
+this reason. Anything showing a home directory, a hostname, a LAN address or a serial you would
+rather not publish does not belong in a public repository.

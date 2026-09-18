@@ -55,3 +55,9 @@ static/cache/
 
 # A Next.js build started from the wrong directory lands here; never commit it.
 .next/
+
+# Screenshots are not committed: they show the machine they were taken on — the
+# data directory (which contains the account name on a laptop), the LAN address,
+# the hostname. Regenerate them locally with a neutral DATA_DIR; `git add -f` if
+# you have looked at one and it is safe to publish.
+screenshots/
