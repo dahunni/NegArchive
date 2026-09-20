@@ -52,7 +52,6 @@ from uuid import uuid4
 
 from sqlalchemy.orm import Session
 
-from .. import paths
 from ..models import FilmRoll, ImageAsset, ImageType
 
 # The upload path's own rules — allowlist, sniff, size, the one place that builds
@@ -67,7 +66,7 @@ from ..routers.api import (
     max_upload_bytes,
     store_sidecar_bytes,
 )
-from . import lifecycle, network, rawdecode, serials, settings_store
+from . import lifecycle, rawdecode, serials, settings_store, share
 from .hashing import safe_content_hash
 from .importer import parse_folder_name
 from .negpy import edits as negpy_edits
@@ -76,17 +75,9 @@ from .negpy import sidecar as negpy_sidecar
 
 log = logging.getLogger("negarchive.inbox")
 
-#: Where the share is, inside the container. Overridable for a laptop or a test.
+#: Where the inbox is: the `inbox/` folder of the archive's own share
+#: (app/services/share.py). Overridable for a laptop or a test.
 INBOX_DIR_ENV = "INBOX_DIR"
-
-#: The share as the stack serves it: ``smb://<host>:<port>/<name>``. The password
-#: is the `smb` service's and is never read here — the card tells you where it is.
-SHARE_NAME_ENV = "SHARE_NAME"
-SHARE_USER_ENV = "SHARE_USER"
-SHARE_PORT_ENV = "SHARE_PORT"
-DEFAULT_SHARE_NAME = "negarchive"
-DEFAULT_SHARE_USER = "negarchive"
-DEFAULT_SHARE_PORT = 445
 
 #: A file younger than this may still be arriving over the network.
 SETTLE_SECONDS = 10
@@ -109,54 +100,13 @@ LISTED_PENDING = 30
 
 def inbox_dir() -> Path:
     raw = (os.getenv(INBOX_DIR_ENV) or "").strip()
-    return Path(raw).expanduser().resolve() if raw else paths.data_dir() / "inbox"
+    return Path(raw).expanduser().resolve() if raw else share.folder(share.INBOX_DIR)
 
 
 def ensure() -> Path:
     target = inbox_dir()
     target.mkdir(parents=True, exist_ok=True)
     return target
-
-
-def share_name() -> str:
-    return (os.getenv(SHARE_NAME_ENV) or "").strip() or DEFAULT_SHARE_NAME
-
-
-def share_user() -> str:
-    return (os.getenv(SHARE_USER_ENV) or "").strip() or DEFAULT_SHARE_USER
-
-
-def share_port() -> int:
-    try:
-        return int((os.getenv(SHARE_PORT_ENV) or "").strip() or DEFAULT_SHARE_PORT)
-    except ValueError:
-        return DEFAULT_SHARE_PORT
-
-
-def share_urls() -> List[str]:
-    """``smb://`` addresses a Mac on this network can paste into Finder, best first.
-
-    Same host logic as the footer's URL (``NEGARCHIVE_PUBLIC_HOST``, then the LAN
-    addresses this host looks reachable on), because the container only knows
-    its bridge address and that is useless to a laptop.
-    """
-    override = network.ui_host()
-    hosts = ([override] if override else []) + [ip for ip in network.lan_ips() if ip != override]
-    port = share_port()
-    suffix = "" if port == DEFAULT_SHARE_PORT else f":{port}"
-    return [f"smb://{host}{suffix}/{share_name()}" for host in hosts]
-
-
-def share_info() -> Dict[str, Any]:
-    return {
-        "name": share_name(),
-        "user": share_user(),
-        "port": share_port(),
-        "urls": share_urls(),
-        "url": (share_urls() or [None])[0],
-        # What Finder mounts it as, which is what NegPy's export folder is set to.
-        "mac_path": f"/Volumes/{share_name()}",
-    }
 
 
 # ---------------------------------------------------------------------------
@@ -481,10 +431,10 @@ def status(db: Session) -> Dict[str, Any]:
     return {
         "dir": str(base),
         "exists": base.is_dir(),
-        "share": share_info(),
+        "share": share.info(db),
         "pending": pending(),
         "last_sweep_at": settings_store.get(db, "inbox_last_sweep_at"),
         "last_summary": settings_store.get(db, "inbox_last_summary"),
         "interval_seconds": watch_interval_seconds(),
-        "filename_pattern": "{{ roll }}_{{ frame|pad(3) }}_{{ film }}",
+        "filename_pattern": share.FILENAME_PATTERN,
     }

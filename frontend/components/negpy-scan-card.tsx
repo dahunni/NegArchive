@@ -4,14 +4,7 @@ import { useCallback, useEffect, useState } from "react"
 import Link from "next/link"
 import { Camera, Check, Copy, Loader2, RefreshCw } from "lucide-react"
 
-import {
-  type ScanPlan,
-  type SmbStatus,
-  errorMessage,
-  getNegpyScanPlan,
-  getSmbStatus,
-  scanLibraryRoot,
-} from "@/lib/api"
+import { type ScanPlan, errorMessage, getNegpyScanPlan, scanLibraryRoot } from "@/lib/api"
 import { Button } from "@/components/ui/button"
 import { useToast } from "@/hooks/use-toast"
 
@@ -38,7 +31,6 @@ export function NegpyScanCard({
 }) {
   const { toast } = useToast()
   const [plan, setPlan] = useState<ScanPlan | null>(null)
-  const [smb, setSmb] = useState<SmbStatus | null>(null)
   const [checking, setChecking] = useState(false)
   // Shown by default while there is nothing to show yet; a scanned roll can still
   // open it to scan a second strip into the same folder.
@@ -46,12 +38,9 @@ export function NegpyScanCard({
 
   useEffect(() => {
     let cancelled = false
-    Promise.all([getNegpyScanPlan(rollId), getSmbStatus().catch(() => null)])
-      .then(([p, s]) => {
-        if (!cancelled) {
-          setPlan(p)
-          setSmb(s)
-        }
+    getNegpyScanPlan(rollId)
+      .then((p) => {
+        if (!cancelled) setPlan(p)
       })
       .catch(() => {
         /* the card simply does not render; the roll page works without it */
@@ -86,12 +75,9 @@ export function NegpyScanCard({
 
   if (!plan) return null
 
-  // The path Finder mounts on the Mac, derived the same way the share settings do it:
-  // /Volumes/<share>[/<folder>]/rolls. The container's path is useless on a laptop.
-  const macBase = smb?.config.share
-    ? `/Volumes/${smb.config.share}${smb.config.subpath ? `/${smb.config.subpath}` : ""}`
-    : null
-  const outputForMac = macBase ? `${macBase}/rolls` : plan.output_dir
+  // The path as the Mac sees it (/Volumes/<share>/rolls): the container's path is
+  // useless on a laptop, and the backend knows the share's name.
+  const outputForMac = plan.mac_output_dir || plan.output_dir
 
   return (
     <section
@@ -119,13 +105,13 @@ export function NegpyScanCard({
 
       {open ? (
         <div className="mt-3 space-y-3">
-          {!plan.mounted || !plan.root_id ? (
+          {!plan.root_id ? (
             <p className="type-body">
-              The network share is not set up for live mode yet.{" "}
+              The share is not set up for live mode yet.{" "}
               <Link href="/settings" className="underline underline-offset-4">
-                Mount it and press “Set up live mode” in Settings
+                Press “Set up” under The share in Settings
               </Link>
-              , then come back — the two lines below only work when NegPy and the archive see the same folder.
+              , then come back — the folder below is only watched once that has run.
             </p>
           ) : null}
 

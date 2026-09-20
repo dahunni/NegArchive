@@ -19,9 +19,10 @@ from .db import SessionLocal, engine
 from .errors import ApiError, from_exc, validation_error_response
 from .routers import api, backup, library, locations, negpy, scan, system
 from .routers import inbox as inbox_router
+from .routers import share as share_router
 from .routers import smb as smb_router
 from .seed import seed_catalog
-from .services import inbox, network, smb, watcher
+from .services import network, share, smb, watcher
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -81,7 +82,7 @@ def configure_logging() -> None:
 
 def announce() -> None:
     """Print where the archive can be reached (M3, LAN discoverability)."""
-    urls = network.ui_urls()
+    urls = network.ui_urls()  # env only: no database this early, and the setting is read by the page
     log.info("NegArchive data directory: %s", paths.data_dir())
     if urls:
         log.info("NegArchive UI on this network: %s", "  ".join(urls))
@@ -111,9 +112,9 @@ async def lifespan(app: FastAPI):
     # Never fatal: a NAS that boots slower than the server is a Tuesday.
     smb.remount_at_startup()
 
-    # M6.2: the inbox the stack's own share serves. Created here so the `smb`
-    # service has something to export on the very first start.
-    inbox.ensure()
+    # M6.2: the archive's own share — inbox/, rolls/, negpy-user/, handoff/ —
+    # made (and opened to the share's user) before the `smb` service exports it.
+    share.ensure_layout()
 
     # M3: the watch folder. Off unless WATCH_INTERVAL_SECONDS says otherwise, so a
     # bare `uvicorn` never starts a process that walks directories every 30 seconds.
@@ -213,3 +214,4 @@ app.include_router(scan.router)
 app.include_router(negpy.router)
 app.include_router(smb_router.router)
 app.include_router(inbox_router.router)
+app.include_router(share_router.router)

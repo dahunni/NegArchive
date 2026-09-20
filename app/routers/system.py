@@ -94,7 +94,7 @@ def watch_interval_seconds() -> Optional[int]:
 @router.get("/system/info")
 def system_info(db: Session = Depends(get_db)):
     """Everything a phone at the shelf needs in order to find and trust this box."""
-    urls = network.ui_urls()
+    urls = network.ui_urls(db)
     try:
         counts = {
             "rolls": db.query(func.count(FilmRoll.id)).scalar() or 0,

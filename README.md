@@ -913,15 +913,16 @@ After that you just work. Edit a frame in NegPy, and within 30 seconds the archi
 edited with a one-line summary of the recipe — because the sidecar lands next to the file the
 archive linked, and the watch sweep compares its mtime.
 
-**The simplest workflow: export into the archive's own share.** The stack serves one folder over
-SMB itself (`./data/inbox`, the `smb` service in `docker-compose.yml`) — no NAS, nothing privileged.
-Mount it on the Mac once (Finder ⌘K → `smb://<your server>/negarchive`, user and password from
-`.env`), set NegPy's export folder to `/Volumes/negarchive` with the filename pattern
-`{{ roll }}_{{ frame|pad(3) }}_{{ film }}`, and export. Every 30 seconds the archive takes what
-landed there **into** the archive — filed on the roll the file names (its serial in the name or in
-NegPy's XMP, or a subfolder named after the roll), marked as the finished positive it is, never
-printed a second time — and deletes it from the inbox, so the folder never fills up. Duplicates are
-dropped; anything the archive cannot take stays put and is named in Settings → *NegPy exports*.
+**The archive serves the share.** The stack exports one folder over SMB itself (`./data/share`,
+the `smb` service in `docker-compose.yml`) — no NAS, nothing privileged — and everything NegPy and
+the archive exchange is on it: `inbox/` (NegPy's exports, taken onto their rolls as finished
+positives and deleted, so the folder never fills up), `rolls/` (camera scans, a folder per roll,
+linked and edited in place), `negpy-user/` (gear and presets), `handoff/`. Mount it on the Mac once
+(Finder ⌘K → `smb://<your server>/negarchive`, user and password from `.env`), press **Set up** under
+*The share* in Settings, and follow the Mac steps printed there with the share's own paths. Two
+optional addresses under *This machine* — one for links (may be a proxy URL), one for the share (the
+box itself) — replace the guessed LAN address. Mounting a NAS *into* the archive is still possible,
+under *Advanced*, with its Compose capability lines off by default.
 
 Uploads of finished positives work the same way from the browser: a NegPy export is recognised by
 its XMP, the roll's upload box has a "These are finished positives" checkbox for exports that lost

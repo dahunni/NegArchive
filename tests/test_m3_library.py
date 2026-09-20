@@ -71,11 +71,14 @@ def test_folder_names_become_a_title_and_maybe_a_serial(folder, title, serial):
 # --- registering a root -------------------------------------------------------
 
 
-def test_registering_is_refused_when_the_allowlist_is_empty(client, tmp_path, monkeypatch):
+def test_registering_is_refused_outside_the_allowlist_even_with_nothing_configured(client, tmp_path, monkeypatch):
+    """With no LIBRARY_ROOTS_ALLOW the only allowed base is the archive's own share
+    (M6.2, a folder under DATA_DIR), so an arbitrary path is still a 403 — the M3
+    rule that "POST me any path" must never work on an open LAN is unchanged."""
     monkeypatch.delenv("LIBRARY_ROOTS_ALLOW", raising=False)
     res = register(client, tmp_path)
     assert res.status_code == 403
-    assert res.json()["error"]["code"] == "library_roots_disabled"
+    assert res.json()["error"]["code"] == "path_not_allowed"
 
 
 def test_registering_a_folder_outside_the_allowlist_is_refused(client, library, tmp_path):
@@ -99,11 +102,15 @@ def test_a_root_can_only_be_registered_once(client, library):
     assert duplicate.json()["error"]["code"] == "duplicate_root"
 
 
-def test_the_roots_listing_says_why_the_feature_is_off(client, monkeypatch):
+def test_the_roots_listing_names_the_share_as_the_one_allowed_place(client, monkeypatch):
+    """Since M6.2 the feature is never entirely off: the archive's own share is
+    always a place a root may live, and the listing says so rather than "disabled"."""
+    from app.services import share
+
     monkeypatch.delenv("LIBRARY_ROOTS_ALLOW", raising=False)
     body = client.get("/api/library/roots").json()
-    assert body["enabled"] is False
-    assert body["allowed_bases"] == []
+    assert body["enabled"] is True
+    assert body["allowed_bases"] == [str(share.base())]
 
 
 # --- scanning -----------------------------------------------------------------

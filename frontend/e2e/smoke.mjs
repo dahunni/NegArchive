@@ -774,13 +774,37 @@ async function main() {
   // Settings: the NegPy section, and writing the gear library NegPy reads.
   await page.goto(`${BASE_URL}/settings`, { waitUntil: "load" })
   check("M5: the settings page has a NegPy section", await visible(page.getByTestId("negpy-settings")))
-  // M6.2: the archive's own share, first thing on the page: the address, the
-  // export folder, and what is waiting.
-  check("M6.2: the settings page shows the inbox share", await visible(page.getByTestId("inbox-card")))
-  const inboxText = (await page.getByTestId("inbox-card").textContent()) || ""
-  check("M6.2: the inbox card names the export folder", inboxText.includes("/Volumes/"))
-  check("M6.2: the inbox card gives the filename pattern", inboxText.includes("{{ roll }}_{{ frame|pad(3) }}_{{ film }}"))
+  // M6.2/M6.3: the archive's own share, first thing on the page: the address, the
+  // Mac steps with the share's own paths, live mode, and what is in the inbox.
+  check("M6.3: the settings page shows the share", await visible(page.getByTestId("share-card")))
+  const shareText = (await page.getByTestId("share-card").textContent()) || ""
+  check("M6.3: the share card names the export folder", shareText.includes("/Volumes/negarchive/inbox"))
+  check("M6.3: the share card names the scan folder", shareText.includes("/Volumes/negarchive/rolls"))
+  check("M6.3: the share card gives the filename pattern", shareText.includes("{{ roll }}_{{ frame|pad(3) }}_{{ film }}"))
   check("M6.2: the inbox reports what is waiting", await visible(page.getByTestId("inbox-readout")))
+  check("M6.3: live mode has a Set up button", await visible(page.getByTestId("share-setup")))
+  await page.getByTestId("share-setup").click()
+  await page.waitForTimeout(1500)
+  check(
+    "M6.3: one press sets live mode up on the served share",
+    /Live mode is set up/.test((await page.getByTestId("live-readout").textContent()) || ""),
+  )
+  // The two address overrides live under This machine.
+  check("M6.3: there is an address field for links", await visible(page.getByTestId("links-address")))
+  check("M6.3: there is an address field for the share", await visible(page.getByTestId("share-address")))
+  await page.getByTestId("share-address").fill("archive.local")
+  await page.getByTestId("share-address").press("Enter")
+  await page.waitForTimeout(800)
+  await page.reload({ waitUntil: "load" })
+  check(
+    "M6.3: the share address override reaches the card",
+    ((await page.getByTestId("share-card").textContent()) || "").includes("smb://archive.local/negarchive"),
+  )
+  await page.getByTestId("share-address").fill("")
+  await page.getByTestId("share-address").press("Enter")
+  await page.waitForTimeout(500)
+  // The NAS mount is still there, but out of the way.
+  check("M6.3: the NAS mount is under Advanced", await visible(page.getByTestId("advanced-nas")))
   check("M5: metadata ingest is on by default", await visible(page.getByTestId("negpy-ingest-toggle")))
   await page.getByTestId("negpy-sync-gear").click()
   await page.waitForTimeout(1500)

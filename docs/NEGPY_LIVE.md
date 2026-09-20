@@ -129,16 +129,42 @@ the share you saved — `/Volumes/<share>/<folder>/rolls` is what Finder will ha
    `{{ roll }}_{{ frame|pad(3) }}_{{ film }}`, so finished positives file themselves onto the right
    roll ([NEGPY_INTEGRATION.md](NEGPY_INTEGRATION.md) explains why that pattern is parsed strictly).
 
-## The simplest version: the archive's own share (M6.2)
+## The archive's own share (M6.2, M6.3)
 
-Everything below this section is about mounting *somebody else's* share. Most people do not need
-it. The stack serves a share of its own — one folder, `./data/inbox`, the `smb` service in
-`docker-compose.yml` — and NegPy exports straight into it:
+**Live mode runs on a share the stack serves itself.** Everything further down about mounting a
+NAS *into* the archive is the older, now optional route (Settings → *Advanced*; its Compose
+capability lines are commented out by default). The `smb` service in `docker-compose.yml` exports
+`./data/share`, and `app/services/share.py` owns its layout and its address:
+
+| On the share | What happens there |
+|---|---|
+| `inbox/` | NegPy's exports land here and are taken into the archive and deleted (`app/services/inbox.py`) |
+| `rolls/` | camera scans, a folder per roll named after its serial; linked, edited in place |
+| `negpy-user/` | `gear/` and `presets/metadata/` — the archive writes, NegPy reads |
+| `handoff/` | a prepared roll, when you want one |
+
+Setting it up is one button — Settings → *The share* → **Set up** (`POST /api/share/setup`,
+`livemode.apply`): it makes the layout, watches `rolls/`, points `negpy_user_dir` and
+`negpy_handoff_dir` at the share, turns the watcher on and syncs the gear. Idempotent. The Mac
+steps on the same card use the share's own paths (`/Volumes/negarchive/…`).
+
+**Two addresses (M6.3).** Settings → *This machine* has *Address for links* (`public_base_url`:
+an IP, a name, or a full URL such as `https://archive.example.com` when a proxy answers for the
+archive — used by the footer, the QR code and printed labels) and *Address for the share*
+(`share_host`: what Finder connects to — the box itself, never the proxy). Each is optional; the
+share borrows the links' hostname when it has none of its own, and both fall back to the LAN
+addresses the container can see. `NEGARCHIVE_PUBLIC_HOST` and `SHARE_HOST` set the same from the
+environment.
+
+**Permissions.** Samba writes as its own user and the API runs as root, so `share.ensure_layout()`
+makes the layout world-writable. It is a letterbox on a home LAN; the archive's own copies of
+everything live elsewhere under `DATA_DIR`.
+
+The inbox on it:
 
 1. Finder → Go → Connect to Server: `smb://<your server>/negarchive`, user and password from `.env`
-   (`SHARE_USER` / `SHARE_PASSWORD`, `negarchive` / `negarchive` until you change them). Settings →
-   *NegPy exports* prints the exact address and has a copy button.
-2. NegPy → Export: output folder `/Volumes/negarchive`, filename pattern
+   (`SHARE_USER` / `SHARE_PASSWORD`, `negarchive` / `negarchive` until you change them).
+2. NegPy → Export: output folder `/Volumes/negarchive/inbox`, filename pattern
    `{{ roll }}_{{ frame|pad(3) }}_{{ film }}`.
 3. Export.
 

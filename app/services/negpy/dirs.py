@@ -34,7 +34,7 @@ from sqlalchemy.orm import Session
 
 from ... import paths
 from ...errors import ApiError
-from .. import settings_store, smb
+from .. import settings_store, share, smb
 
 #: Subdirectory of ``DATA_DIR`` used when nothing is configured.
 DEFAULT_SUBDIR = "negpy"
@@ -69,6 +69,8 @@ def allowed_bases() -> List[Path]:
     # where the machine running NegPy can see them.
     if smb.is_mounted():
         bases.append(smb.mount_base())
+    # M6.2: the archive's own share, always — it is a folder under DATA_DIR.
+    bases.append(share.base())
     for name in ("NEGPY_USER_DIR", "NEGPY_EXPORT_DIR"):
         found = _env_path(name)
         if found is not None:

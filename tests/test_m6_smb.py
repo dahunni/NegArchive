@@ -27,12 +27,11 @@ code, running against a real directory, which is the part that can be wrong.
 import os
 import stat
 import subprocess
-from pathlib import Path
 
 import pytest
 
 from app.errors import ApiError
-from app.services import livemode, settings_store, smb
+from app.services import livemode, smb
 
 
 @pytest.fixture
@@ -254,106 +253,7 @@ def test_a_mounted_share_is_a_place_negpys_folders_may_live(pretend_mounted):
     assert dirs.is_allowed(pretend_mounted / "negpy-user")
 
 
-# --- live mode ------------------------------------------------------------------
-
-
-def test_live_mode_needs_a_mounted_share(db_session, monkeypatch):
-    monkeypatch.setattr(smb, "is_mounted", lambda target=None: False)
-    with pytest.raises(ApiError) as caught:
-        livemode.apply(db_session)
-    assert caught.value.code == "not_mounted"
-
-
-def test_live_mode_refuses_a_read_only_share(db_session, pretend_mounted):
-    settings_store.set_value(db_session, "smb_readonly", True)
-    db_session.commit()
-    try:
-        with pytest.raises(ApiError) as caught:
-            livemode.apply(db_session)
-        assert caught.value.code == "share_readonly"
-    finally:
-        settings_store.set_value(db_session, "smb_readonly", False)
-        db_session.commit()
-
-
-def test_live_mode_makes_the_folders_watches_them_and_points_negpy_at_the_share(
-    db_session, pretend_mounted
-):
-    report = livemode.apply(db_session)
-
-    for name in (livemode.ROLLS_DIR, livemode.EXPORTS_DIR, livemode.USER_DIR, livemode.HANDOFF_DIR):
-        assert (pretend_mounted / name).is_dir(), f"{name} was not created"
-
-    # Both folders a scan can arrive in are swept, or the sidecar loop never runs.
-    from app.models import LibraryRoot
-
-    roots = {r.path: r for r in db_session.query(LibraryRoot).all()}
-    for name, _label in livemode.WATCHED:
-        path = str(pretend_mounted / name)
-        assert path in roots, f"{name} was not registered"
-        assert roots[path].watch is True, f"{name} was registered but not watched"
-
-    # NegPy's gear and presets go on the share, where the laptop can see them.
-    assert settings_store.get(db_session, "negpy_user_dir") == str(pretend_mounted / livemode.USER_DIR)
-    assert settings_store.get(db_session, "negpy_handoff_dir") == str(pretend_mounted / livemode.HANDOFF_DIR)
-    assert settings_store.get(db_session, "watch_enabled") is True
-    assert report.changed is True
-
-    # And the gear sync actually wrote the files NegPy reads.
-    assert (pretend_mounted / livemode.USER_DIR / "gear" / "cameras.json").is_file()
-
-
-def test_live_mode_run_twice_changes_nothing_the_second_time(db_session, pretend_mounted):
-    livemode.apply(db_session)
-    again = livemode.apply(db_session)
-    assert again.folders_created == []
-    assert again.roots_added == []
-    assert again.settings_changed == {}
-    assert again.changed is False
-    assert "Already set up" in again.summary()
-
-
-def test_live_mode_turns_watching_back_on_for_a_root_that_had_it_off(db_session, pretend_mounted):
-    """Registered but not swept is the difference between working and seeming not to."""
-    from app.models import LibraryRoot
-
-    livemode.apply(db_session)
-    path = str(pretend_mounted / livemode.ROLLS_DIR)
-    root = db_session.query(LibraryRoot).filter(LibraryRoot.path == path).one()
-    root.watch = False
-    db_session.commit()
-
-    livemode.apply(db_session)
-    db_session.refresh(root)
-    assert root.watch is True
-
-
-def test_live_state_reports_what_is_actually_there(db_session, pretend_mounted):
-    before = livemode.state(db_session)
-    assert before["ready"] is False
-
-    livemode.apply(db_session)
-    after = livemode.state(db_session)
-    assert after["ready"] is True
-    assert after["negpy_user_dir_on_share"] is True
-    assert all(check["watched"] and check["exists"] for check in after["folders"])
-
-    # A folder somebody deleted on the NAS is not "ready" any more.
-    import shutil
-
-    shutil.rmtree(pretend_mounted / livemode.ROLLS_DIR)
-    assert livemode.state(db_session)["ready"] is False
-
-
-def test_the_client_steps_name_the_folders_live_mode_actually_made(db_session, pretend_mounted):
-    """The macOS instructions in Settings come from here, so they cannot go stale."""
-    report = livemode.apply(db_session)
-    steps = report.to_dict()["client"]
-    assert steps["rolls"] == str(pretend_mounted / livemode.ROLLS_DIR)
-    assert steps["user"] == str(pretend_mounted / livemode.USER_DIR)
-    assert Path(steps["rolls"]).is_dir()
-    # The preset the round trip depends on (docs/NEGPY_INTEGRATION.md).
-    assert steps["filename_pattern"] == "{{ roll }}_{{ frame|pad(3) }}_{{ film }}"
+# --- live mode moved: it targets the archive's own share now (tests/test_m6_share.py)
 
 
 # --- the deployment tells the truth about itself --------------------------------
@@ -419,8 +319,8 @@ def test_the_scan_plan_names_the_folder_and_the_roll(client):
     assert plan["folder"] == f"{plan['output_dir']}/{serial}"
     assert plan["example_file"] == f"{serial}_Frame001.ARW"
     assert plan["already_linked"] is False
-    # Nothing is mounted in CI, and the plan says so rather than pretending.
-    assert plan["mounted"] is False
+    assert plan["mac_output_dir"].startswith("/Volumes/")
+    # Live mode has not been set up in this test, and the plan says so rather than pretending.
     assert plan["ready"] is False
 
 
