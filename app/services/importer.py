@@ -51,7 +51,7 @@ from ..models import FilmRoll, ImageAsset, ImageType, LibraryRoot
 # direction; `routers.api` does not import this module, so it is a straight edge,
 # not a cycle. If it ever needs to, both belong in a service of their own.)
 from ..routers.api import ALLOWED_EXTENSIONS, frame_number_from_filename
-from . import lifecycle, serials, smb
+from . import lifecycle, serials, share, smb
 from .hashing import safe_content_hash
 from .negpy import edits as negpy_edits
 from .negpy import metadata as negpy_metadata
@@ -120,6 +120,10 @@ def allowed_bases() -> list[Path]:
     mounted = smb.mount_base()
     if smb.is_mounted(mounted) and mounted not in bases:
         bases.append(mounted)
+    # M6.2: the archive's own share — a folder under DATA_DIR the stack serves.
+    served = share.base()
+    if served not in bases:
+        bases.append(served)
     return bases
 
 

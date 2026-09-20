@@ -910,6 +910,8 @@ export interface Settings {
   negpy_handoff_dir?: string
   negpy_handoff_mode?: string
   negpy_gear_synced_at?: string
+  /** M6.3: the address Finder connects to for the archive's own share (IP or hostname). */
+  share_host?: string
   /** M5: "auto" | "raw" | "positive" — how previews are rendered. */
   preview_render?: PreviewRender
 }
@@ -1502,6 +1504,9 @@ export interface ScanPlan {
   roll_id: number
   /** The share's rolls/ folder, as the container sees it. */
   output_dir: string
+  /** The same folder as the Mac sees it — what gets typed into NegPy. */
+  mac_output_dir: string
+  served: boolean
   /** The archive's serial — NegPy's "roll name" field. Null until the roll has one. */
   roll_name: string | null
   folder: string | null
@@ -1608,20 +1613,31 @@ export interface SmbStatus {
   versions: string[]
 }
 
-/** The archive's own share, and what is waiting in it (M6.2). */
+/** How the archive's own share is reached and laid out (M6.2, M6.3). */
+export interface ShareInfo {
+  name: string
+  user: string
+  port: number
+  /** The `share_host` setting / SHARE_HOST, or the links' hostname; null = LAN addresses. */
+  host_override: string | null
+  /** smb:// addresses for Finder, best first; empty when no LAN address is known. */
+  urls: string[]
+  url: string | null
+  /** What Finder mounts it as. */
+  mac_root: string
+  /** The inbox as the Mac sees it — NegPy's export folder. */
+  mac_path: string
+  dir: string
+  folders: Record<string, string>
+  mac_folders: Record<string, string>
+  filename_pattern: string
+}
+
+/** The inbox: what is waiting in it, and the last sweep (M6.2). */
 export interface InboxStatus {
   dir: string
   exists: boolean
-  share: {
-    name: string
-    user: string
-    port: number
-    /** smb:// addresses for Finder, best first; empty when no LAN address is known. */
-    urls: string[]
-    url: string | null
-    /** What Finder mounts it as — NegPy's export folder. */
-    mac_path: string
-  }
+  share: ShareInfo
   pending: { count: number; files: { name: string; size: number; age_seconds: number; accepted: boolean }[] }
   last_sweep_at: string | null
   last_summary: string | null
@@ -1643,6 +1659,26 @@ export interface InboxSweep {
   summary: string
 }
 
+/** Everything the share card draws: the address, live mode, the inbox (M6.3). */
+export interface ShareStatus {
+  share: ShareInfo
+  live: LiveState
+  inbox: InboxStatus
+}
+
+export async function getShare(): Promise<ShareStatus> {
+  const res = await apiFetch("/api/share")
+  await assertOk(res, "Could not read the share.")
+  return res.json()
+}
+
+/** Live mode on the archive's own share: the watched folder, NegPy's folders, gear. */
+export async function setupShare(): Promise<{ report: LiveReport; live: LiveState; share: ShareInfo }> {
+  const res = await apiFetch("/api/share/setup", { method: "POST" })
+  await assertOk(res, "Could not set the share up.")
+  return res.json()
+}
+
 export async function getInbox(): Promise<InboxStatus> {
   const res = await apiFetch("/api/inbox")
   await assertOk(res, "Could not read the inbox.")
@@ -1658,15 +1694,27 @@ export async function sweepInbox(): Promise<InboxStatus & { result: InboxSweep }
 /** The half of live mode that happens on the laptop. Comes from the backend so
  *  the folder names in the instructions are the ones it actually made. */
 export interface LiveClientSteps {
-  rolls: string
-  exports: string
+  /** smb:// addresses for Finder, best first. */
+  urls: string[]
+  url: string | null
   user: string
+  mac_root: string
+  rolls: string
+  inbox: string
+  /** The old name of the inbox step. */
+  exports: string
+  user_dir: string
+  handoff: string
   filename_pattern: string
 }
 
 export interface LiveState {
+  /** The served folder exists (M6.3); `mounted` is its old name. */
+  served: boolean
   mounted: boolean
+  base: string
   mountpoint: string
+  layout: Record<string, boolean>
   folders: { path: string; exists: boolean; registered: boolean; watched: boolean }[]
   negpy_user_dir_on_share: boolean
   watch_enabled: boolean
@@ -1676,6 +1724,7 @@ export interface LiveState {
 }
 
 export interface LiveReport {
+  base: string
   mountpoint: string
   folders_created: string[]
   folders_existing: string[]

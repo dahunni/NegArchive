@@ -15,7 +15,11 @@ from __future__ import annotations
 import ipaddress
 import os
 import socket
-from typing import List
+from typing import TYPE_CHECKING, List, Optional
+from urllib.parse import urlsplit
+
+if TYPE_CHECKING:  # pragma: no cover - typing only; this module must not need the database
+    from sqlalchemy.orm import Session
 
 
 def _is_useful(address: str) -> bool:
@@ -67,27 +71,51 @@ def ui_port() -> int:
         return 8021
 
 
-def ui_host() -> str | None:
-    """Explicit override for setups where the container cannot see the LAN.
+def public_base_url(db: Optional["Session"] = None) -> Optional[str]:
+    """The address links are written with, when somebody said so (M6.3).
 
-    In Docker the backend only knows its bridge address (172.x), which is useless
-    to a phone. ``NEGARCHIVE_PUBLIC_HOST=192.168.1.37`` (or a hostname) fixes it.
+    The ``public_base_url`` setting first — it can be a full URL, because a web
+    UI behind a reverse proxy is ``https://archive.example.com`` with no port —
+    then ``NEGARCHIVE_PUBLIC_HOST`` from the environment. A bare host or IP gets
+    ``http://`` and the UI port; a URL is kept as typed, minus a trailing slash.
     """
+    if db is not None:
+        from . import settings_store  # noqa: PLC0415 - optional: this module works without a database
+
+        configured = str(settings_store.get(db, "public_base_url") or "").strip()
+        if configured:
+            return normalize_base_url(configured)
     value = (os.getenv("NEGARCHIVE_PUBLIC_HOST") or "").strip()
-    return value or None
+    return normalize_base_url(value) if value else None
 
 
-def ui_url() -> str | None:
-    """The URL to print, show in the footer and encode in the QR code."""
-    host = ui_host() or (lan_ips()[0] if lan_ips() else None)
-    if not host:
+def normalize_base_url(value: str) -> str:
+    text = value.strip().rstrip("/")
+    if "://" in text:
+        return text
+    return f"http://{text}:{ui_port()}"
+
+
+def ui_host(db: Optional["Session"] = None) -> str | None:
+    """The hostname of the links override, or None. Kept for callers that want a host."""
+    url = public_base_url(db)
+    if not url:
         return None
-    return f"http://{host}:{ui_port()}"
+    return urlsplit(url).hostname or None
 
 
-def ui_urls() -> List[str]:
-    """Every candidate URL, so the footer can offer an alternative."""
+def ui_url(db: Optional["Session"] = None) -> str | None:
+    """The URL to print, show in the footer and encode in the QR code."""
+    override = public_base_url(db)
+    if override:
+        return override
+    ips = lan_ips()
+    return f"http://{ips[0]}:{ui_port()}" if ips else None
+
+
+def ui_urls(db: Optional["Session"] = None) -> List[str]:
+    """Every candidate URL, the override first, so the footer can offer an alternative."""
     port = ui_port()
-    override = ui_host()
-    hosts = ([override] if override else []) + [ip for ip in lan_ips() if ip != override]
-    return [f"http://{host}:{port}" for host in hosts]
+    override = public_base_url(db)
+    host = urlsplit(override).hostname if override else None
+    return ([override] if override else []) + [f"http://{ip}:{port}" for ip in lan_ips() if ip != host]

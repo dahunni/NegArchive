@@ -414,6 +414,15 @@ that workflow **the raw is the scan**, and the archive has to treat it as one.
       (`SETTLE_SECONDS`), duplicates are removed and counted, rejects stay and are named,
       emptied subfolders and macOS `._` twins are cleared. `GET /api/inbox`, `POST /api/inbox/sweep`;
       Settings → *NegPy exports* prints the `smb://` address (same host logic as the footer).
+- [x] **Live mode moved onto the served share; two address overrides (M6.3).** The share is
+      `./data/share` with `inbox/`, `rolls/`, `negpy-user/`, `handoff/` (`app/services/share.py`,
+      world-writable for Samba's user); `livemode.apply` needs no mount any more and watches
+      `rolls/` only — the inbox is emptied, not indexed; `GET /api/share`, `POST /api/share/setup`;
+      the NAS client mount is under Settings → *Advanced* with its `cap_add` lines commented out
+      by default. `public_base_url` (links; may be a proxy URL, used by footer, QR and labels;
+      `NEGARCHIVE_PUBLIC_HOST` from the environment) and `share_host` (what Finder connects to;
+      `SHARE_HOST`) are two settings under *This machine*, because the web UI may sit behind a
+      proxy while SMB wants the box itself.
 - [x] **A frame that is already a positive** (`image_assets.positive`, `0007_m6_positive`). The
       export-and-upload workflow — convert in NegPy, export a JPEG, drop it on the roll — printed
       the export a second time because the roll's film is a negative. `true` means "show as it

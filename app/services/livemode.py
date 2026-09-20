@@ -1,16 +1,16 @@
-"""Live mode: one button that wires the share up so NegPy can just be worked in (M6).
+"""Live mode: one button that wires the archive's own share up for NegPy (M6, M6.3).
 
-The M5 integration exchanges files, and M6's share is where those files live. What
-is left is the wiring — five folders, two library roots, two settings and a gear
-sync — and every one of them is a thing you can get subtly wrong on your own. So
-this does it, and the Settings page explains what it did.
+The M5 integration exchanges files; the share (:mod:`app.services.share`) is
+where those files live. What is left is the wiring — a watched folder, two
+settings and a gear sync — and every one of them is a thing you can get subtly
+wrong on your own. So this does it, and the Settings page explains what it did.
 
-The layout it makes on the share::
+The layout it wires up, all on the one share the stack serves::
 
-    rolls/          scans live here forever. NegArchive *links* them, never copies,
-                    and NegPy opens the same folder as a library root
-    exports/        what NegPy exports; a watched root too, so finished positives
-                    come back into the archive on their own
+    inbox/          NegPy's exports; taken into the archive and deleted
+                    (app/services/inbox.py — swept whether or not this ran)
+    rolls/          camera scans, a folder per roll. NegArchive *links* them,
+                    never copies, and NegPy opens the same folder
     negpy-user/     gear/ and presets/metadata/ — NegArchive writes, NegPy reads
     handoff/        a prepared roll, for the times you still want one
 
@@ -26,6 +26,11 @@ sidecar written next to a hard link is not next to the frame's ``source_path``.
 **What it will not do.** It never touches a folder that already exists, never
 un-registers a root, and never turns a setting off. Run it twice and the second
 run reports that there was nothing to do.
+
+Until M6.3 this targeted a NAS share mounted *into* the container. The owner did
+not want a NAS in the loop, so the base is now the folder the stack serves
+itself; nothing has to be mounted before this can run, and the old
+``exports/`` root is gone — the inbox is where exports go, and it empties itself.
 """
 
 from __future__ import annotations
@@ -33,34 +38,33 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy.orm import Session
 
 from ..errors import ApiError
 from ..models import FilmRoll, LibraryRoot
-from . import settings_store, smb
+from . import settings_store, share
 from .negpy import gear as negpy_gear
 
 log = logging.getLogger("negarchive.livemode")
 
-#: The folders live mode makes on the share. Fixed names on purpose: the point of
-#: the button is that there is nothing to decide.
-ROLLS_DIR = "rolls"
-EXPORTS_DIR = "exports"
-USER_DIR = "negpy-user"
-HANDOFF_DIR = "handoff"
+#: Names kept as module constants for the code and tests that import them.
+ROLLS_DIR = share.ROLLS_DIR
+INBOX_DIR = share.INBOX_DIR
+USER_DIR = share.USER_DIR
+HANDOFF_DIR = share.HANDOFF_DIR
 
-#: Which of them become watched library roots, and what they are called in the UI.
-WATCHED = ((ROLLS_DIR, "Scans (NegPy works here)"), (EXPORTS_DIR, "NegPy exports"))
+#: The one folder that becomes a watched library root, and what it is called in the UI.
+#: The inbox is not a root — it is emptied, not indexed.
+WATCHED = ((ROLLS_DIR, "Scans (NegPy works here)"),)
 
 
 @dataclass
 class Report:
     """What live mode changed, in the order a person would want to read it."""
 
-    mountpoint: str = ""
+    base: str = ""
     folders_created: List[str] = field(default_factory=list)
     folders_existing: List[str] = field(default_factory=list)
     roots_added: List[str] = field(default_factory=list)
@@ -68,6 +72,7 @@ class Report:
     settings_changed: Dict[str, str] = field(default_factory=dict)
     gear: Dict[str, Any] = field(default_factory=dict)
     watch_enabled: bool = False
+    client: Dict[str, Any] = field(default_factory=dict)
 
     @property
     def changed(self) -> bool:
@@ -80,14 +85,15 @@ class Report:
         if self.folders_created:
             parts.append(f"{len(self.folders_created)} folders made")
         if self.roots_added:
-            parts.append(f"{len(self.roots_added)} folders watched")
+            parts.append(f"{len(self.roots_added)} folder watched")
         if self.settings_changed:
             parts.append("NegPy folders pointed at the share")
         return ", ".join(parts) + "."
 
     def to_dict(self) -> Dict[str, Any]:
         return {
-            "mountpoint": self.mountpoint,
+            "base": self.base,
+            "mountpoint": self.base,  # the name the first frontend used
             "folders_created": self.folders_created,
             "folders_existing": self.folders_existing,
             "roots_added": self.roots_added,
@@ -97,22 +103,30 @@ class Report:
             "watch_enabled": self.watch_enabled,
             "changed": self.changed,
             "summary": self.summary(),
-            "client": client_steps(self.mountpoint),
+            "client": self.client,
         }
 
 
-def client_steps(mountpoint: str) -> Dict[str, Any]:
+def client_steps(db: Optional[Session] = None) -> Dict[str, Any]:
     """The half of live mode that happens on the laptop, not the server.
 
-    Returned with the report rather than hard-coded in the frontend, because the
-    folder names here are the ones this module just made: if they ever change, the
-    instructions change with them instead of quietly becoming wrong.
+    Returned by the backend rather than hard-coded in the frontend, because the
+    folder names here are the ones this module makes: if they ever change, the
+    instructions change with them instead of quietly becoming wrong. Paths are
+    the Mac's — ``/Volumes/<share>/…`` — since that is where they get pasted.
     """
+    info = share.info(db)
     return {
-        "rolls": f"{mountpoint}/{ROLLS_DIR}",
-        "exports": f"{mountpoint}/{EXPORTS_DIR}",
-        "user": f"{mountpoint}/{USER_DIR}",
-        "filename_pattern": "{{ roll }}_{{ frame|pad(3) }}_{{ film }}",
+        "urls": info["urls"],
+        "url": info["url"],
+        "user": info["user"],
+        "mac_root": info["mac_root"],
+        "rolls": share.mac_path(ROLLS_DIR),
+        "inbox": share.mac_path(INBOX_DIR),
+        "exports": share.mac_path(INBOX_DIR),  # the old name for the same step
+        "user_dir": share.mac_path(USER_DIR),
+        "handoff": share.mac_path(HANDOFF_DIR),
+        "filename_pattern": share.FILENAME_PATTERN,
     }
 
 
@@ -124,32 +138,35 @@ def scan_plan(db: Session, roll: FilmRoll) -> Dict[str, Any]:
     roll after the archive's serial, and :func:`app.services.importer.scan_root`
     adopts the folder onto the roll that already carries that serial — film,
     camera and lifecycle included — on the next sweep. Nothing here is remembered:
-    the mount, the root and the watcher are checked when asked, like :func:`state`.
+    the folder, the root and the watcher are checked when asked, like :func:`state`.
     """
-    base = smb.mount_base()
-    mounted = smb.is_mounted(base)
-    rolls_root = str(base / ROLLS_DIR)
+    rolls_dir = share.folder(ROLLS_DIR)
+    rolls_root = str(rolls_dir)
     root = db.query(LibraryRoot).filter(LibraryRoot.path == rolls_root).first()
     serial = roll.archive_serial or ""
     watching = bool(root and root.watch) and bool(settings_store.get(db, "watch_enabled"))
     return {
         "roll_id": roll.id,
-        # The two things to type into NegPy, in the order its panel asks for them.
+        # The two things to type into NegPy, in the order its panel asks for them —
+        # as the Mac sees them, which is where they get typed.
         "output_dir": rolls_root,
+        "mac_output_dir": share.mac_path(ROLLS_DIR),
         "roll_name": serial or None,
         # What will appear, so the page can say it before it happens.
         "folder": f"{rolls_root}/{serial}" if serial else None,
         "example_file": f"{serial}_Frame001.ARW" if serial else None,
         # Whether the folder will be picked up by itself, and how soon.
         "root_id": root.id if root else None,
-        "mounted": mounted,
+        "served": rolls_dir.is_dir(),
+        "mounted": rolls_dir.is_dir(),  # the first frontend's name for it
         "watched": watching,
         "interval_seconds": _watch_interval_seconds(),
-        "ready": bool(mounted and root is not None and watching and serial),
+        "ready": bool(rolls_dir.is_dir() and root is not None and watching and serial),
         # A roll that already has a folder keeps it; the page says so instead of
         # inviting a second one.
         "source_dir": roll.source_dir,
         "already_linked": bool(roll.source_dir),
+        "share": share.info(db),
     }
 
 
@@ -171,48 +188,18 @@ def _watch_interval_seconds() -> Optional[int]:
     return value if value > 0 else None
 
 
-def _require_share(db: Session) -> Path:
-    config = smb.load(db)
-    if not smb.is_mounted():
-        raise ApiError(
-            "not_mounted",
-            "Mount the share first: live mode needs a folder both this server and "
-            "the machine running NegPy can see.",
-            409,
-            "smb",
-        )
-    if config.readonly:
-        raise ApiError(
-            "share_readonly",
-            "The share is mounted read-only, so NegPy's gear and presets cannot be "
-            "written to it. Turn off “Read-only” and mount again.",
-            409,
-            "readonly",
-        )
-    return smb.mount_base()
-
-
 def apply(db: Session) -> Report:
-    """Make the folders, register the roots, point NegPy's folders at the share."""
-    base = _require_share(db)
-    report = Report(mountpoint=str(base))
+    """Make the folders, register the root, point NegPy's folders at the share."""
+    try:
+        base = share.ensure_layout()
+    except OSError as exc:
+        raise ApiError("write_failed", f"Could not make the share's folders under {share.base()}: {exc}", 500) from exc
+    report = Report(base=str(base))
 
-    for name in (ROLLS_DIR, EXPORTS_DIR, USER_DIR, HANDOFF_DIR):
+    for name in share.LAYOUT:
         target = base / name
-        if target.is_dir():
-            report.folders_existing.append(str(target))
-            continue
-        try:
-            target.mkdir(parents=True, exist_ok=True)
-        except OSError as exc:
-            raise ApiError(
-                "write_failed",
-                f"Could not make {target} on the share: {exc}. Does the SMB user have "
-                "write access to it?",
-                502,
-                "smb",
-            ) from exc
-        report.folders_created.append(str(target))
+        # ensure_layout made them all; report which ones were already there before.
+        (report.folders_existing if _existed_before(target) else report.folders_created).append(str(target))
 
     for name, label in WATCHED:
         path = str(base / name)
@@ -258,19 +245,36 @@ def apply(db: Session) -> Report:
         log.warning("live mode: gear sync failed: %s", exc)
         report.gear = {"ok": False, "error": str(exc)}
 
+    report.client = client_steps(db)
+    _mark_applied(base)
     log.info("live mode applied at %s: %s", base, report.summary())
     return report
+
+
+#: A marker file so a second run can tell "made just now" from "was already there".
+_MARKER = ".negarchive-live"
+
+
+def _existed_before(target) -> bool:
+    return (share.base() / _MARKER).is_file()
+
+
+def _mark_applied(base) -> None:
+    try:
+        (base / _MARKER).write_text("live mode has run here; safe to delete\n", encoding="utf-8")
+    except OSError:
+        pass
 
 
 def state(db: Session) -> Dict[str, Any]:
     """Is live mode actually on? Checked, not remembered.
 
-    Every part is verified against the world — the mount, the folders, the roots,
-    the settings — so a share that went away or a root somebody removed shows up
-    as "not set up" instead of a stale yes.
+    Every part is verified against the world — the folders, the root, the
+    settings — so a root somebody removed shows up as "not set up" instead of a
+    stale yes.
     """
-    base = smb.mount_base()
-    mounted = smb.is_mounted(base)
+    base = share.base()
+    served = base.is_dir()
     roots = {root.path: root for root in db.query(LibraryRoot).all()}
     checks = []
     for name, _label in WATCHED:
@@ -279,23 +283,24 @@ def state(db: Session) -> Dict[str, Any]:
         checks.append(
             {
                 "path": path,
-                "exists": (base / name).is_dir() if mounted else False,
+                "exists": (base / name).is_dir(),
                 "registered": root is not None,
                 "watched": bool(root and root.watch),
             }
         )
+    folders = {name: (base / name).is_dir() for name in share.LAYOUT}
     user_dir = str(base / USER_DIR)
+    on_share = str(settings_store.get(db, "negpy_user_dir") or "") == user_dir
+    watch_on = bool(settings_store.get(db, "watch_enabled"))
     return {
-        "mounted": mounted,
+        "served": served,
+        "mounted": served,  # the first frontend's name for it
+        "base": str(base),
         "mountpoint": str(base),
+        "layout": folders,
         "folders": checks,
-        "negpy_user_dir_on_share": str(settings_store.get(db, "negpy_user_dir") or "") == user_dir,
-        "watch_enabled": bool(settings_store.get(db, "watch_enabled")),
-        "ready": bool(
-            mounted
-            and all(check["exists"] and check["watched"] for check in checks)
-            and str(settings_store.get(db, "negpy_user_dir") or "") == user_dir
-            and settings_store.get(db, "watch_enabled")
-        ),
-        "client": client_steps(str(base)),
+        "negpy_user_dir_on_share": on_share,
+        "watch_enabled": watch_on,
+        "ready": bool(served and all(folders.values()) and all(c["exists"] and c["watched"] for c in checks) and on_share and watch_on),
+        "client": client_steps(db),
     }

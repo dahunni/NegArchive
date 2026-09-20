@@ -79,6 +79,10 @@ KNOWN_SETTINGS: Dict[str, tuple[str, Any]] = {
     # configuration — nothing reads these back but the page.
     "inbox_last_sweep_at": ("text", ""),
     "inbox_last_summary": ("text", ""),
+    # M6.3: the address Finder connects to for the archive's own share — an IP or a
+    # hostname. Separate from `public_base_url` (the links) on purpose: the web UI
+    # may live behind a proxy on a name, while SMB wants the box's own address.
+    "share_host": ("text", ""),
     # M5: how previews are rendered — "auto" prints a frame the archive knows is
     # a negative (its film stock says so, or NegPy has an edit for it) as a
     # positive and leaves everything else alone; "raw" always shows the scan as

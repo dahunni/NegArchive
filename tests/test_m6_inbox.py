@@ -17,7 +17,7 @@ import pytest
 from test_m5_negpy import jpeg_bytes, xmp_packet
 
 from app import paths
-from app.services import inbox
+from app.services import inbox, share
 
 RECIPE = {"version": 3, "settings": {"invert": True, "exposure": 0.4}}
 TIFF_LE = b"II*\x00\x08\x00\x00\x00" + b"\x00" * 56
@@ -206,17 +206,17 @@ def test_finders_droppings_are_cleared_but_never_mistaken_for_photos(client, box
 
 def test_status_says_where_the_share_is(client, box, monkeypatch):
     monkeypatch.setenv("NEGARCHIVE_PUBLIC_HOST", "archive.local")
-    monkeypatch.setenv(inbox.SHARE_NAME_ENV, "negarchive")
-    monkeypatch.setenv(inbox.SHARE_USER_ENV, "tim")
+    monkeypatch.setenv(share.SHARE_NAME_ENV, "negarchive")
+    monkeypatch.setenv(share.SHARE_USER_ENV, "tim")
     body = client.get("/api/inbox").json()
     assert body["ok"] and body["dir"] == str(box)
     assert body["share"]["url"] == "smb://archive.local/negarchive"
-    assert body["share"]["user"] == "tim" and body["share"]["mac_path"] == "/Volumes/negarchive"
+    assert body["share"]["user"] == "tim" and body["share"]["mac_path"] == "/Volumes/negarchive/inbox"
     assert body["filename_pattern"] == "{{ roll }}_{{ frame|pad(3) }}_{{ film }}"
     assert "password" not in json.dumps(body).lower()
 
 
 def test_a_non_default_port_is_in_the_address(monkeypatch):
     monkeypatch.setenv("NEGARCHIVE_PUBLIC_HOST", "192.168.1.10")
-    monkeypatch.setenv(inbox.SHARE_PORT_ENV, "1445")
-    assert inbox.share_urls()[0] == "smb://192.168.1.10:1445/negarchive"
+    monkeypatch.setenv(share.SHARE_PORT_ENV, "1445")
+    assert share.urls()[0] == "smb://192.168.1.10:1445/negarchive"

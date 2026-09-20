@@ -35,7 +35,7 @@ import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog"
-import { InboxCard } from "@/components/inbox-card"
+import { ShareCard } from "@/components/share-card"
 import { ShareSettings } from "@/components/share-settings"
 import { EmptyState } from "@/components/empty-state"
 import { useToast } from "@/hooks/use-toast"
@@ -256,17 +256,33 @@ export function SettingsWorkspace() {
           <Fact label="Frames" value={info ? String(info.counts.frames) : "…"} />
           <Fact label="Password" value={info?.auth_required ? "set" : "not set (open on this network)"} />
         </dl>
+        {/* M6.3: two addresses, on purpose. The web UI may sit behind a proxy on a
+            name; SMB wants the box itself. Each is optional — empty means "work it
+            out from the network". */}
+        <div className="grid gap-3 rounded-lg border border-border bg-card p-4 sm:grid-cols-2">
+          <AddressField
+            id="links-address"
+            label="Address for links"
+            hint="Printed on labels, in the footer and the QR code. An IP or a name, or a full URL if a proxy answers for the archive (https://archive.example.com)."
+            placeholder={info?.ui_url ?? "192.168.1.10 or https://archive.example.com"}
+            value={settings?.public_base_url ?? ""}
+            onSave={(value) => saveSetting({ public_base_url: value })}
+          />
+          <AddressField
+            id="share-address"
+            label="Address for the share"
+            hint="What Finder connects to for smb://…/negarchive — the box itself, not a proxy. Empty: the links' address, else the LAN address."
+            placeholder="192.168.1.10 or archive.local"
+            value={settings?.share_host ?? ""}
+            onSave={(value) => saveSetting({ share_host: value })}
+          />
+        </div>
       </section>
 
       {/* ---------------------------------------------- M6.2: the archive's own share */}
-      {/* First, because it is the whole NegPy setup for most people: export into the
-          folder the stack serves, and the archive does the rest. */}
-      <InboxCard onChanged={reload} />
-
-      {/* ------------------------------------------------- the share, and live mode */}
-      {/* M6. Above the linked folders on purpose: on a two-machine setup the
-          folders below usually live on this share, so mounting it is step one. */}
-      <ShareSettings onChanged={reload} />
+      {/* First, because it is the whole NegPy setup: mount the share the stack serves,
+          point NegPy at it, and the archive does the rest. */}
+      <ShareCard onChanged={reload} />
 
       {/* ------------------------------------------------------- linked folders */}
       <section className="space-y-3">
@@ -536,6 +552,14 @@ export function SettingsWorkspace() {
       </section>
 
       {/* -------------------------------------------------------- backup & export */}
+      {/* ------------------------------------------------------ M6: a NAS, if you must */}
+      <details className="rounded-lg border border-dashed border-border p-4" data-testid="advanced-nas">
+        <summary className="cursor-pointer type-section">Advanced: mount a NAS into the archive</summary>
+        <div className="mt-4">
+          <ShareSettings onChanged={reload} />
+        </div>
+      </details>
+
       <section className="space-y-3">
         <div>
           <h2 className="type-section">Backup and export</h2>
@@ -604,6 +628,54 @@ export function SettingsWorkspace() {
         title="Stop tracking this folder?"
         description={`NegArchive forgets ${pendingRemove?.path}. The files stay on disk and the frames stay in the archive; only the automatic scanning stops.`}
       />
+    </div>
+  )
+}
+
+/** A text setting saved when you leave the field or press Enter (M6.3). */
+function AddressField({
+  id,
+  label,
+  hint,
+  placeholder,
+  value,
+  onSave,
+}: {
+  id: string
+  label: string
+  hint: string
+  placeholder?: string
+  value: string
+  onSave: (value: string) => void
+}) {
+  const [draft, setDraft] = useState(value)
+  // Re-sync when the saved value changes underneath (a reload), without an effect:
+  // React's "adjust state while rendering" pattern.
+  const [seen, setSeen] = useState(value)
+  if (value !== seen) {
+    setSeen(value)
+    setDraft(value)
+  }
+  const commit = () => {
+    if (draft.trim() !== value.trim()) onSave(draft.trim())
+  }
+  return (
+    <div className="space-y-1.5">
+      <Label htmlFor={id}>{label}</Label>
+      <Input
+        id={id}
+        data-testid={id}
+        value={draft}
+        placeholder={placeholder}
+        onChange={(event) => setDraft(event.target.value)}
+        onBlur={commit}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") (event.target as HTMLInputElement).blur()
+        }}
+        className="h-11"
+        spellCheck={false}
+      />
+      <p className="type-meta">{hint}</p>
     </div>
   )
 }

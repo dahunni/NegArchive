@@ -1,15 +1,12 @@
 "use client"
 
 import { useEffect, useState } from "react"
-import { Check, Copy, HardDrive, Loader2, Plug, Sparkles, Unplug } from "lucide-react"
+import { Check, Copy, HardDrive, Loader2, Plug, Unplug } from "lucide-react"
 
 import {
-  type LiveState,
   type SmbStatus,
-  applyLiveMode,
   errorMessage,
   forgetSmbPassword,
-  getLiveState,
   getSmbStatus,
   mountSmb,
   saveSmbConfig,
@@ -78,7 +75,6 @@ export function CopyLine({ value, label }: { value: string; label: string }) {
 export function ShareSettings({ onChanged }: { onChanged?: () => void }) {
   const { toast } = useToast()
   const [status, setStatus] = useState<SmbStatus | null>(null)
-  const [live, setLive] = useState<LiveState | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
@@ -92,12 +88,8 @@ export function ShareSettings({ onChanged }: { onChanged?: () => void }) {
   const [readonly, setReadonly] = useState(false)
 
   const reload = async () => {
-    const [nextStatus, nextLive] = await Promise.all([
-      getSmbStatus().catch(() => null),
-      getLiveState().catch(() => null),
-    ])
+    const nextStatus = await getSmbStatus().catch(() => null)
     setStatus(nextStatus)
-    setLive(nextLive)
     if (nextStatus) {
       setHost(nextStatus.config.host)
       setShare(nextStatus.config.share)
@@ -172,32 +164,20 @@ export function ShareSettings({ onChanged }: { onChanged?: () => void }) {
 
   const unmount = () => run("unmount", async () => { await unmountSmb(); return "Share unmounted" })
 
-  const setUpLive = () =>
-    run("live", async () => {
-      const report = await applyLiveMode()
-      return report.summary
-    })
-
   const forget = () => run("forget", async () => { await forgetSmbPassword(); return "Password forgotten" })
 
   const blocked = status?.unavailable_reason ?? null
   const mounted = status?.mounted ?? false
   const canMount = host.trim().length > 0 && share.trim().length > 0 && !blocked
 
-  // Where the same share appears on the Mac running NegPy. Finder mounts a share
-  // at /Volumes/<share>, and the folder inside it comes along.
-  const macBase = share.trim() ? `/Volumes/${share.trim()}${subpath.trim() ? `/${subpath.trim()}` : ""}` : "/Volumes/<share>"
-  const smbUrl = host.trim() && share.trim() ? `smb://${host.trim()}/${share.trim()}` : "smb://<nas>/<share>"
-
   return (
     <section className="space-y-3">
       <div>
-        <h2 className="type-section">Network share</h2>
+        <h3 className="type-section text-base">Mount a NAS into the archive instead</h3>
         <p className="mt-1 type-body text-muted-foreground">
-          NegArchive runs on this server; NegPy runs on your Mac. For NegPy to edit a scan and for
-          the archive to notice, both have to be looking at <em>the same folder</em> — so the
-          archive mounts your NAS here, and you mount it on the Mac. Then you just work in NegPy and
-          the archive keeps up on its own.
+          Only if your scans must stay on a NAS: the archive mounts it here, and folders on it can be
+          linked. It needs the two capability lines in <code className="type-numeric">docker-compose.yml</code>,
+          which are off by default since the archive serves a share of its own.
         </p>
       </div>
 
@@ -351,102 +331,6 @@ export function ShareSettings({ onChanged }: { onChanged?: () => void }) {
         </p>
       </div>
 
-      {/* ------------------------------------------------------------- live mode */}
-      <div className="space-y-4 rounded-lg border border-border bg-card p-4" data-testid="live-mode">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <h3 className="type-section text-base">Work live in NegPy</h3>
-            <p className="mt-1 type-meta">
-              {live?.ready
-                ? "Set up. Edit a scan in NegPy and this archive picks the edit up within 30 seconds."
-                : "One button: makes the folders on the share, watches them, and points NegPy’s gear and presets at them."}
-            </p>
-          </div>
-          <Button
-            className="min-h-11"
-            onClick={setUpLive}
-            disabled={!mounted || busy === "live"}
-            data-testid="live-setup"
-          >
-            {busy === "live" ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Sparkles className="mr-2 h-4 w-4" />}
-            {busy === "live" ? "Setting up…" : live?.ready ? "Check again" : "Set up live mode"}
-          </Button>
-        </div>
-
-        {!mounted ? (
-          <p className="type-meta text-muted-foreground">Mount the share first.</p>
-        ) : (
-          <ol className="space-y-3 border-t border-border pt-4 type-body">
-            <li className="space-y-1.5">
-              <span className="font-medium">1 · Mount the same share on the Mac</span>
-              <span className="block type-meta">In Finder press ⌘K and connect to:</span>
-              <CopyLine value={smbUrl} label="the share address" />
-            </li>
-            <li className="space-y-1.5">
-              <span className="font-medium">2 · Point NegPy at the scans</span>
-              <span className="block type-meta">
-                Add this as a library root in NegPy. Everything you shoot lives here, and you edit it
-                in place — the archive links these files, it never copies them.
-              </span>
-              <CopyLine value={`${macBase}/rolls`} label="the scans folder" />
-            </li>
-            <li className="space-y-1.5">
-              <span className="font-medium">3 · Turn on sidecars in NegPy</span>
-              <span className="block type-meta">
-                NegPy → Settings → write <code className="type-numeric">.negpy</code> files next to the
-                originals. This is the one setting the whole thing depends on: the sidecar is how an
-                edit travels from your Mac to the archive.
-              </span>
-            </li>
-            <li className="space-y-1.5">
-              <span className="font-medium">4 · Share NegPy’s gear and presets</span>
-              <span className="block type-meta">
-                Paste both lines into Terminal once. Your cameras, lenses and films then appear in
-                NegPy, and every roll you prepare here shows up as a preset.
-              </span>
-              <CopyLine
-                value={`ln -sfn "${macBase}/negpy-user/gear" ~/.negpy/gear`}
-                label="the gear link command"
-              />
-              <CopyLine
-                value={`mkdir -p ~/.negpy/presets && ln -sfn "${macBase}/negpy-user/presets/metadata" ~/.negpy/presets/metadata`}
-                label="the presets link command"
-              />
-              <span className="block type-meta">
-                NegPy’s own <code className="type-numeric">edits.db</code> stays on the Mac on purpose —
-                a database on a network share is how databases get corrupted.
-              </span>
-            </li>
-            <li className="space-y-1.5">
-              <span className="font-medium">5 · Send NegPy’s exports back</span>
-              <span className="block type-meta">
-                In NegPy’s export settings, set the output folder and the filename pattern below.
-                Finished positives then file themselves onto the right roll.
-              </span>
-              <CopyLine value={`${macBase}/exports`} label="the exports folder" />
-              <CopyLine value={live?.client.filename_pattern ?? "{{ roll }}_{{ frame|pad(3) }}_{{ film }}"} label="the filename pattern" />
-            </li>
-            <li className="space-y-1.5">
-              <span className="font-medium">6 · Scan straight into the archive (camera scanning)</span>
-              <span className="block type-meta">
-                If you scan with a camera, point NegPy’s Live View &amp; Scan at the folder below and name each
-                roll after the archive’s serial — every roll page shows the exact two lines to paste. The raws
-                are filed onto that roll as they land; nothing is copied.
-              </span>
-              <CopyLine value={`${macBase}/rolls`} label="the scan output folder" />
-            </li>
-          </ol>
-        )}
-
-        {live && mounted ? (
-          <p className="type-meta" data-testid="live-readout">
-            {live.folders
-              .map((folder) => `${folder.path.split("/").pop()}: ${folder.watched ? "watched" : "not watched"}`)
-              .join(" · ")}
-            {live.watch_enabled ? " · background checks on" : " · background checks OFF"}
-          </p>
-        ) : null}
-      </div>
     </section>
   )
 }

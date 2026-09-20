@@ -90,6 +90,9 @@ services:
       SHARE_NAME: ${SHARE_NAME:-negarchive}
       SHARE_USER: ${SHARE_USER:-negarchive}
       SHARE_PORT: ${SHARE_PORT:-445}
+      # M6.3: the address Finder connects to, when the box has a better name than
+      # its LAN IP. Also settable in Settings; empty means "work it out".
+      SHARE_HOST: ${SHARE_HOST:-}
       UI_PORT: ${UI_PORT:-8021}
     # M6 — mounting the share NegPy and NegArchive both work in.
     #
@@ -102,20 +105,22 @@ services:
     # **Set NEGARCHIVE_PASSWORD if you turn this on.** The API has no login by
     # default, and these lines give it the ability to mount.
     #
-    # Comment the whole block out (and `docker compose up -d`) to switch the
-    # feature off; the Settings card then says the container may not mount and why.
-    cap_add:
-      # The mount() syscall itself.
-      - SYS_ADMIN
-      # mount.cifs's own first move is to clear its capabilities and re-add the
-      # three it wants, this one among them — and nothing may add a capability it
-      # does not already hold. Without it mount.cifs exits immediately with
-      # "Unable to apply new capability set." and never contacts the NAS.
-      - DAC_READ_SEARCH
-    security_opt:
-      # Ubuntu and Debian hosts ship an AppArmor profile that blocks mount() even
-      # with the capabilities. Harmless where AppArmor is not in use (macOS, Fedora).
-      - apparmor:unconfined
+    # **Off by default since M6.2**: the stack serves a share of its own (the
+    # `smb` service below), which needs none of this. Uncomment the block (and
+    # `docker compose up -d`) only if you want to mount a NAS *into* the archive
+    # instead; the Settings card under "Advanced" says whether it is on.
+    # cap_add:
+    #   # The mount() syscall itself.
+    #   - SYS_ADMIN
+    #   # mount.cifs's own first move is to clear its capabilities and re-add the
+    #   # three it wants, this one among them — and nothing may add a capability it
+    #   # does not already hold. Without it mount.cifs exits immediately with
+    #   # "Unable to apply new capability set." and never contacts the NAS.
+    #   - DAC_READ_SEARCH
+    # security_opt:
+    #   # Ubuntu and Debian hosts ship an AppArmor profile that blocks mount() even
+    #   # with the capabilities. Harmless where AppArmor is not in use (macOS, Fedora).
+    #   - apparmor:unconfined
     volumes:
       - ${DATA_DIR:-./data}:/data
       # Your scan library, for import by reference. Read-only: NegArchive never
@@ -135,13 +140,17 @@ services:
       start_period: 40s
     command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
 
-  # M6.2 — the archive's own share. One folder, `./data/inbox`, served over SMB
-  # by the stack itself, so NegPy on your laptop exports straight into the
-  # archive: Finder ⌘K → smb://<this host>/negarchive, then set NegPy's export
-  # folder to /Volumes/negarchive. Every WATCH_INTERVAL_SECONDS the archive takes
-  # what landed there onto its rolls and deletes it from the inbox, so the folder
-  # never fills up. Settings → "NegPy exports" shows the address and what is
-  # waiting.
+  # M6.2 — the archive's own share: `./data/share`, served over SMB by the stack
+  # itself. Finder ⌘K → smb://<this host>/negarchive, and everything NegPy and the
+  # archive exchange is on it:
+  #
+  #   inbox/        NegPy's exports; taken onto their rolls and deleted every
+  #                 WATCH_INTERVAL_SECONDS, so the folder never fills up
+  #   rolls/        camera scans, a folder per roll; linked, edited in place
+  #   negpy-user/   gear and presets the archive writes and NegPy reads
+  #   handoff/      a prepared roll, when you want one
+  #
+  # Settings → "The share" shows the address, the folders and what is waiting.
   #
   # Nothing privileged here (unlike the client mount above): it is a normal
   # container listening on one port. If this host already runs an SMB server,
@@ -156,7 +165,7 @@ services:
     ports:
       - "${SHARE_PORT:-445}:445"
     volumes:
-      - ${DATA_DIR:-./data}/inbox:/shared
+      - ${DATA_DIR:-./data}/share:/shared
 
   frontend:
     image: ghcr.io/${NEGARCHIVE_IMAGE_OWNER:-dahunni}/negarchive-frontend:${NEGARCHIVE_TAG:-latest}
