@@ -24,6 +24,7 @@ import {
 import { developmentLine, formatDateRange, formatDateTime, formatStorage, pluralize } from "@/lib/format"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { Checkbox } from "@/components/ui/checkbox"
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog"
 import { FrameGrid } from "@/components/frame-grid"
 import { FrameViewer } from "@/components/frame-viewer"
@@ -75,6 +76,15 @@ export function RollWorkspace({
   const [generating, setGenerating] = useState(false)
   const [sheetIndex, setSheetIndex] = useState<number | null>(null)
   const [showMoves, setShowMoves] = useState(false)
+  // M6.1: "these uploads are finished positives". Off by default; remembered per browser.
+  const [uploadPositives, setUploadPositives] = useState(false)
+  useEffect(() => {
+    try {
+      if (window.localStorage.getItem("negarchive.uploadPositives") === "1") setUploadPositives(true)
+    } catch {
+      /* storage off */
+    }
+  }, [])
 
   // The server component is the source of truth; the local copy only exists so a
   // status click shows immediately instead of after the refresh round trip.
@@ -289,14 +299,34 @@ export function RollWorkspace({
       </section>
 
       <section className="space-y-3">
-        <h2 className="type-section">Add scans</h2>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <h2 className="type-section">Add scans</h2>
+          {/* M6.1: finished positives — NegPy exports, scans of prints — are shown as
+              they are and never printed. A NegPy export says so itself (its XMP);
+              this is for files that lost theirs. Remembered in this browser. */}
+          <label className="flex cursor-pointer items-center gap-2 type-meta" data-testid="upload-positives">
+            <Checkbox
+              checked={uploadPositives}
+              onCheckedChange={(value) => {
+                const next = value === true
+                setUploadPositives(next)
+                try {
+                  window.localStorage.setItem("negarchive.uploadPositives", next ? "1" : "0")
+                } catch {
+                  /* storage off: the choice lasts for this page */
+                }
+              }}
+            />
+            These are finished positives (NegPy exports) — show them as they are
+          </label>
+        </div>
         <UploadZone
-          upload={(file, onProgress) => uploadRollFile(film.id, file, onProgress)}
+          upload={(file, onProgress) => uploadRollFile(film.id, file, onProgress, { positive: uploadPositives })}
           onUploaded={(images) => {
             toast({ title: `${pluralize(images.length, "frame")} added` })
             router.refresh()
           }}
-          hint={`Drop this roll's scans here`}
+          hint={uploadPositives ? `Drop this roll's finished positives here` : `Drop this roll's scans here`}
         />
       </section>
 

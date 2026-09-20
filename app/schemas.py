@@ -162,6 +162,8 @@ class ImageWrite(Model):
     frame_number: Optional[Any] = None
     notes: Optional[str] = None
     capture_date: Optional[str] = None
+    #: M6.1: true = already a positive, false = a negative, null = decide from the film.
+    positive: Optional[Any] = None
 
 
 class ImageCreate(ImageWrite):
@@ -185,6 +187,7 @@ class ImageOut(Model):
     source_path: Optional[str] = None
     content_hash: Optional[str] = None
     frame_number: Optional[int] = None
+    positive: Optional[bool] = None
     notes: Optional[str] = None
     capture_date: Optional[date] = None
     #: M5, NegPy: what the file said about itself when it was ingested, and the

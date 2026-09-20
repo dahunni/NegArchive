@@ -602,6 +602,14 @@ def ingest_image(
             result.fields.append("film_roll_id")
 
     result.fields.extend(apply_to_image(image, meta))
+    # M6.1: a file carrying NegPy's own XMP namespace is a NegPy *export* — the
+    # converted positive — because NegPy writes that namespace on export and nowhere
+    # else (a scanner's TIFF never has it, and a `.negpy` sidecar beside a scan is
+    # not the file's packet). Recorded so the preview shows it as it is instead of
+    # printing it a second time. Fills a blank only, like every other field here.
+    if image.positive is None and "negpy" in meta.raw:
+        image.positive = True
+        result.fields.append("positive")
     if roll is not None:
         result.roll_fields.extend(apply_to_roll(db, roll, meta, create_gear=create_gear))
 
