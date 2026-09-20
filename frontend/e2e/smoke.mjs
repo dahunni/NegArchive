@@ -307,7 +307,9 @@ async function main() {
   )
 
   // ---------------------------------------------------------------- bulk bar
-  await page.getByRole("checkbox").first().click()
+  // The first checkbox *in the grid*: the page has one above it now ("These are
+  // finished positives", M6.1), and that one selects nothing.
+  await page.getByTestId("frame-grid").getByRole("checkbox").first().click()
   check("selecting a frame opens the bulk bar", await visible(page.getByTestId("bulk-bar")))
   await page.getByRole("button", { name: "Clear" }).click()
 
@@ -676,6 +678,9 @@ async function main() {
   check("M5: the file's own XMP set the frame number", negpyUpload?.frame_number === 42, JSON.stringify(negpyUpload?.frame_number))
   check("M5: the capture date came from the file", negpyUpload?.capture_date === "2024-09-03", negpyUpload?.capture_date ?? "none")
   check("M5: the .negpy sidecar was kept", Boolean(negpyUpload?.sidecar_path), negpyUpload?.sidecar_path ?? "none")
+  // M6.1: NegPy writes its XMP namespace on export and nowhere else, so a file
+  // carrying it is a finished positive — flagged on arrival, never printed again.
+  check("M6.1: a file carrying NegPy's XMP comes in as a positive", negpyUpload?.positive === true, String(negpyUpload?.positive))
 
   await page.reload({ waitUntil: "load" })
   await visible(page.getByTestId("frame-cell"))
@@ -684,6 +689,7 @@ async function main() {
   const negpyPanel = (await page.getByTestId("viewer-negpy").textContent()) || ""
   check("M5: the recipe is summarised, not interpreted", /inverted/.test(negpyPanel), negpyPanel.slice(0, 120))
   check("M5: the panel says where the metadata came from", /xmp/.test(negpyPanel))
+  check("M6.1: the viewer offers 'Shown as' on a frame", await visible(page.getByTestId("viewer-positive")))
   await shot(page, 16, "a frame edited in NegPy")
   await page.keyboard.press("Escape")
 
@@ -725,10 +731,14 @@ async function main() {
   await page.keyboard.press("Escape")
 
   // M5: printing the negative. The scan stays the scan; the preview is derived.
+  // On a *plain* scan: the NegPy upload above is an export, and an export is a
+  // positive the archive refuses to print (M6.1) — checked right after.
+  const rollImages = (await (await page.request.get(`${BASE_URL}/api/films/${rollId}`)).json()).images
+  const plainScan = rollImages.find((image) => image.id !== negpyUpload.id && image.type === "scan")
   const renderModes = {}
   for (const wanted of ["raw", "positive"]) {
     const res = await page.request.get(
-      `${BASE_URL}/api/images/${negpyUpload.id}/preview?width=200&render=${wanted}`,
+      `${BASE_URL}/api/images/${plainScan.id}/preview?width=200&render=${wanted}`,
     )
     renderModes[wanted] = { status: res.status(), header: res.headers()["x-preview-render"] }
   }
@@ -737,10 +747,18 @@ async function main() {
     renderModes.raw.header === "raw" && renderModes.positive.header === "positive",
     JSON.stringify(renderModes),
   )
+  const exportPrinted = await page.request.get(
+    `${BASE_URL}/api/images/${negpyUpload.id}/preview?width=200&render=positive`,
+  )
+  check(
+    "M6.1: an export is shown as it is even when asked to print it",
+    exportPrinted.headers()["x-preview-render"] === "raw",
+    String(exportPrinted.headers()["x-preview-render"]),
+  )
 
   await page.goto(`${BASE_URL}/films/${rollId}`, { waitUntil: "load" })
   await visible(page.getByTestId("frame-cell"))
-  await page.getByTestId("frame-cell").last().click()
+  await page.getByTestId("frame-cell").first().click()
   check("M5: the viewer has a render toggle", await visible(page.getByTestId("viewer-render-toggle")))
   const srcBefore = await page.getByTestId("viewer-image").getAttribute("src")
   await page.getByTestId("viewer-render-toggle").click()
