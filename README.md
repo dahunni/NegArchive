@@ -472,7 +472,9 @@ frame also carries `source_path` (where the original really is) and `content_has
 `/api/images/{id}/download`, because the file is outside `/static` on purpose. Every managed
 upload is hashed too, which is how an import knows the archive already has a file.
 
-Uploads must be `jpg jpeg png tif tiff webp dng`, by extension *and* by their leading bytes, and
+Uploads must be `jpg jpeg png tif tiff webp dng` or a camera raw (`arw nef cr2 cr3 raf orf rw2
+pef` and the rest of LibRaw's list — the files NegPy's scan mode saves), by extension *and* by
+their leading bytes, and
 smaller than `MAX_UPLOAD_MB`. A bulk upload is all-or-nothing. Nothing under `/static/uploads` is
 ever served as `text/html`.
 
@@ -902,7 +904,7 @@ handoff/        a prepared roll, for the times you still want one
 
 It creates nothing that exists and turns nothing off, so it is safe to run again.
 
-**The Mac side is five steps, printed in the page with your own paths and a copy button on each:**
+**The Mac side is five steps — six if you camera-scan — printed in the page with your own paths and a copy button on each:**
 mount the share in Finder, add `rolls/` as a NegPy library root, **turn on `.negpy` sidecars in
 NegPy** (the one setting the whole thing depends on), symlink NegPy's `gear` and `presets/metadata`
 onto the share, and set NegPy's export folder and filename pattern.
@@ -911,8 +913,18 @@ After that you just work. Edit a frame in NegPy, and within 30 seconds the archi
 edited with a one-line summary of the recipe — because the sidecar lands next to the file the
 archive linked, and the watch sweep compares its mtime.
 
+**Camera scanning.** If you scan with a camera through NegPy's *Live View & Scan*, every roll page
+has a "Scan with NegPy" card with the two things to paste: the share's `rolls/` folder as the
+output, and the roll's serial as NegPy's roll name. NegPy then writes
+`rolls/NEG-2026-0007/NEG-2026-0007_Frame001.ARW` and so on, and the next sweep files the raws onto
+that very roll — linked, never copied — and marks it scanned. Raws (ARW, NEF, CR2/CR3, RAF, ORF,
+RW2, PEF, DNG, …) are previewed through LibRaw and printed as positives like any other scan.
+
 **What it costs.** Mounting a filesystem is privileged, so `docker-compose.yml` grants the `web`
-service `CAP_SYS_ADMIN` (opt-in, with a comment saying why). **Set `NEGARCHIVE_PASSWORD` if you use
+service `CAP_SYS_ADMIN` and `CAP_DAC_READ_SEARCH` (opt-in, with a comment saying why). Both are
+needed: the first is the `mount()` syscall, the second is one `mount.cifs` puts in its own permitted
+set before it does anything else — with `SYS_ADMIN` alone it exits with `Unable to apply new
+capability set.` and never reaches the NAS. **Set `NEGARCHIVE_PASSWORD` if you use
 this** — the API has no login by default and these endpoints can mount filesystems. The SMB
 password is kept in `$DATA_DIR/.smb/credentials` (mode 0600), never in the database and never in a
 backup export.

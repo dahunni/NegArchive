@@ -29,6 +29,7 @@ import { FrameGrid } from "@/components/frame-grid"
 import { FrameViewer } from "@/components/frame-viewer"
 import { MoveRollDialog } from "@/components/move-roll-dialog"
 import { NegpyHandoffButton } from "@/components/negpy-handoff-button"
+import { NegpyScanCard } from "@/components/negpy-scan-card"
 import { PrintMenu } from "@/components/print-menu"
 import { RollEditSheet } from "@/components/roll-edit-sheet"
 import { StatusStepper } from "@/components/status-stepper"
@@ -186,6 +187,14 @@ export function RollWorkspace({
           </Button>
         </div>
       </div>
+
+      {/* M6.1: scan this roll with NegPy's camera-scan mode; the raws are filed here as they land. */}
+      <NegpyScanCard
+        rollId={film.id}
+        status={film.status ?? ""}
+        frameCount={frames.length}
+        onScanned={() => router.refresh()}
+      />
 
       {/* ------------------------------------------------------------ M4: paper */}
       <section className="grid gap-3 rounded-lg border border-border bg-card p-3 sm:grid-cols-[1fr_auto] sm:p-4" data-testid="roll-physical">

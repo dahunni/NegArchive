@@ -43,7 +43,7 @@ from ..models import (
     Location,
 )
 from ..seed import seed_catalog
-from ..services import lifecycle, serials, settings_store
+from ..services import lifecycle, rawdecode, serials, settings_store
 from ..services import locations as loc_svc
 from ..services import preview as preview_render
 from ..services import strips as strips_svc
@@ -79,10 +79,16 @@ COVER_STRIP = 4  # thumbnails shown per row in the roll list
 
 # --- upload allowlist (R#18) --------------------------------------------------
 
-ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".webp", ".dng"}
+#: What a browser can show and Pillow can open.
+COMMON_EXTENSIONS = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".webp", ".dng"}
+
+#: Plus the camera raws NegPy's scan mode produces (app/services/rawdecode.py):
+#: the camera's own .ARW / .NEF / .CR3, which *are* the scans in that workflow.
+ALLOWED_EXTENSIONS = COMMON_EXTENSIONS | rawdecode.RAW_EXTENSIONS
 
 #: Leading bytes we accept, checked *in addition* to the extension. DNG is a TIFF
-#: dialect, so it shares the TIFF magic.
+#: dialect, so it shares the TIFF magic — and so do most camera raws (ARW, NEF,
+#: CR2, PEF, …); the ones with a magic of their own are in `rawdecode.RAW_MAGIC`.
 MAGIC_PREFIXES: Tuple[bytes, ...] = (
     b"\xff\xd8\xff",  # JPEG
     b"\x89PNG\r\n\x1a\n",  # PNG
@@ -106,7 +112,16 @@ def _looks_like_image(head: bytes) -> bool:
     if head.startswith(MAGIC_PREFIXES):
         return True
     # WEBP is "RIFF" + 4 size bytes + "WEBP"
-    return head[:4] == b"RIFF" and head[8:12] == b"WEBP"
+    if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+        return True
+    return rawdecode.looks_like_raw(head)
+
+
+def accepted_formats() -> str:
+    """The allowlist as a phrase for an error message: the common formats spelled
+    out, the raws by example — thirty extensions in a toast helps nobody."""
+    common = ", ".join(sorted(e.lstrip(".") for e in COMMON_EXTENSIONS))
+    return f"{common}, or a camera raw such as {', '.join(rawdecode.RAW_EXAMPLES)}"
 
 
 # --- frame numbers from filenames (R#7, R#24) ---------------------------------
@@ -517,8 +532,7 @@ def store_upload(file: UploadFile, subdir: str) -> Tuple[str, str]:
     if ext not in ALLOWED_EXTENSIONS:
         raise ApiError(
             "unsupported_file_type",
-            f"“{original}” is not an accepted image "
-            f"({', '.join(sorted(e.lstrip('.') for e in ALLOWED_EXTENSIONS))}).",
+            f"“{original}” is not an accepted image ({accepted_formats()}).",
             415,
             "file",
         )
@@ -1209,6 +1223,53 @@ def _apply_render(array, settings: preview_render.RenderSettings):
         return array, "raw"
 
 
+def _open_for_thumbnail(abs_path: str, size: int):
+    """An RGB Pillow image of any accepted file, sized for a thumbnail.
+
+    A camera raw comes through LibRaw (its embedded JPEG, so this is cheap); when
+    LibRaw cannot open it — a linear DNG from a flatbed, say — Pillow gets its turn.
+    """
+    ext = os.path.splitext(abs_path)[1].lower()
+    if ext in rawdecode.RAW_EXTENSIONS and rawdecode.available():
+        try:
+            return rawdecode.pil_image(abs_path, size * 2)
+        except Exception:  # noqa: BLE001 - fall back to Pillow below
+            pass
+    return PILImage.open(abs_path).convert("RGB")
+
+
+def _raw_preview(
+    abs_path: str,
+    width: int,
+    decode_width: int,
+    mode: str,
+    render_settings: Optional[preview_render.RenderSettings],
+) -> Tuple[bytes, str]:
+    """A camera raw as JPEG bytes, and which rendering it is.
+
+    Served raw, it is the camera's embedded JPEG — the negative as the photographer
+    saw it. Printed (M5), it is a linear demosaic through the print renderer, which
+    is the only input that renderer is calibrated for: it takes the log itself.
+    """
+    import numpy as np
+
+    served = mode
+    if render_settings is not None:
+        linear = rawdecode.decode_linear(abs_path, decode_width)
+        rendered, served = _apply_render(linear, render_settings)
+        if served == "positive":
+            img = PILImage.fromarray(np.asarray(rendered, dtype="uint8"), mode="RGB")
+        else:
+            img = rawdecode.pil_image(abs_path, decode_width)  # the maths gave up; show the scan
+    else:
+        img = rawdecode.pil_image(abs_path, decode_width)
+    if img.width > width:
+        img = img.resize((width, max(1, int(img.height * (width / img.width)))), PILImage.LANCZOS)
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=85)
+    return buf.getvalue(), served
+
+
 @router.get("/images/{image_id}/preview", responses={404: {"model": schemas.ErrorOut}})
 def get_image_preview(
     image_id: int,
@@ -1241,6 +1302,28 @@ def get_image_preview(
             return _cached_response(cache_path, mode)
     except OSError:
         cache_path = None
+
+    # A camera raw first (NegPy's scan mode saves the camera's own file, M6.1).
+    # Neither Pillow nor OpenCV can open one; LibRaw can. Decoded at preview width
+    # and cached like everything else, so the 0.3 s demosaic happens once per size.
+    # Anything LibRaw refuses falls through to the generic decoders and their 415.
+    if ext in rawdecode.RAW_EXTENSIONS and rawdecode.available():
+        try:
+            data, served = _raw_preview(abs_path, width, decode_width, mode, render_settings)
+        except Exception:  # noqa: BLE001 - not a raw LibRaw knows; try the others
+            data, served = None, mode
+        if data is not None:
+            if cache_path:
+                _write_cache(cache_path, data)
+            return StreamingResponse(
+                io.BytesIO(data),
+                media_type="image/jpeg",
+                headers={
+                    "Cache-Control": "public, max-age=31536000, immutable",
+                    "X-Preview-Cache": "miss",
+                    "X-Preview-Render": served,
+                },
+            )
 
     # Enable loading truncated images in Pillow
     PILImageFile.LOAD_TRUNCATED_IMAGES = True
@@ -1636,7 +1719,7 @@ def create_contact_sheet(
     thumbs: List[PILImage.Image] = []
     for i in scans:
         try:
-            img = PILImage.open(_abs(i.path)).convert("RGB")
+            img = _open_for_thumbnail(_abs(i.path), thumb_size)
             img.thumbnail((thumb_size, thumb_size))
             # Center on square canvas
             canvas = PILImage.new("RGB", (thumb_size, thumb_size), color=(255, 255, 255))

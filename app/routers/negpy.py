@@ -3,6 +3,7 @@
     GET  /api/negpy/status                 where the files go, what is on, last sync
     POST /api/negpy/gear/sync              write cameras/lenses/film_stocks.json
     POST /api/negpy/rolls/{id}/handoff     prepare a roll folder plus a preset
+    GET  /api/negpy/rolls/{id}/scan        what to type into NegPy's scan mode (M6.1)
     POST /api/negpy/ingest                 re-read metadata for frames already here
     POST /api/negpy/edits/match            match frames against NegPy's edits.db
     GET  /api/negpy/lookup                 find a frame by NegPy content hash or path
@@ -27,8 +28,8 @@ from sqlalchemy.orm import Session
 from ..db import get_db
 from ..errors import ApiError, error_response, from_exc, not_found, read_json
 from ..models import FilmRoll, ImageAsset, ImageType
+from ..services import livemode, settings_store
 from ..services import locations as loc_svc
-from ..services import settings_store
 from ..services.negpy import dirs, edits, gear, handoff, naming
 from ..services.negpy import metadata as negpy_metadata
 
@@ -125,6 +126,20 @@ async def prepare_handoff(film_id: int, request: Request, db: Session = Depends(
     except OSError as exc:
         return error_response("write_failed", f"Could not prepare the folder: {exc}", 500)
     return {"ok": True, "handoff": result.to_dict()}
+
+
+@router.get("/rolls/{film_id}/scan")
+def scan_plan(film_id: int, db: Session = Depends(get_db)):
+    """“Scan with NegPy”: the output folder and roll name to type into *Live View & Scan*.
+
+    Read-only. NegPy names its files ``<roll name>_Frame001.ARW`` in a folder called
+    ``<roll name>``; with the archive's serial as the roll name and the share's
+    ``rolls/`` as the output, the watcher files the frames onto this very roll.
+    """
+    roll = db.get(FilmRoll, film_id)
+    if not roll:
+        return not_found("Roll")
+    return {"ok": True, "scan": livemode.scan_plan(db, roll)}
 
 
 @router.post("/ingest")

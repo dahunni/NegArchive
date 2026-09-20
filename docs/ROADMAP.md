@@ -117,7 +117,7 @@ and "not found" was an HTTP 200. All of that is fixed here.
       `POST /api/maintenance/sweep_orphans` lists files with no record and records with no
       file, dry run unless `?apply=true`. A `storage_mode = 'linked'` row is never deleted —
       the column ships here so M3's import-by-reference can rely on it. **R#9**
-- [x] Uploads are limited to `jpg jpeg png tif tiff webp dng` by extension *and* by a
+- [x] Uploads are limited to `jpg jpeg png tif tiff webp dng` (M6.1: plus camera raws) by extension *and* by a
       magic-byte sniff, with a configurable `MAX_UPLOAD_MB` (default 512); nothing under
       `/static/uploads` can come back as `text/html`, and everything is `nosniff`. **R#18**
 - [x] Faces are gone: `services/face.py`, the `Face` and `Person` models and their tables, and
@@ -368,7 +368,7 @@ deployment people actually have. Reasoning and security notes:
 - [x] **Live mode, one button**: makes `rolls/`, `exports/`, `negpy-user/` and `handoff/` on the
       share, registers the first two as watched roots, points `negpy_user_dir` and
       `negpy_handoff_dir` at the share, turns the watcher on and syncs the gear catalog. Idempotent.
-- [x] **The five Mac steps are in the page**, with the real `/Volumes/...` paths computed from the
+- [x] **The five Mac steps are in the page** (M6.1 adds an optional sixth for camera scanning), with the real `/Volumes/...` paths computed from the
       saved share and a copy button on each — including the one setting the whole thing depends on,
       `.negpy` sidecars in NegPy.
 - [x] Remount at startup: a mount does not survive the container it was made in.
@@ -376,6 +376,35 @@ deployment people actually have. Reasoning and security notes:
 Deliberately not done: more than one share, more than one editing machine, and moving NegPy's
 `edits.db` onto the share (a SQLite file written by a desktop app over SMB is the textbook
 corruption case — sidecars carry the same information and travel with the file).
+
+## M6.1 — camera scanning with NegPy
+
+NegPy's *Live View & Scan* photographs the negative with a tethered camera and saves the camera's
+own raw, untouched, as `<roll>/<roll>_Frame001.ARW` — no conversion, no sidecar, no metadata. In
+that workflow **the raw is the scan**, and the archive has to treat it as one.
+
+- [x] **Camera raws are accepted** everywhere an image is: upload, ZIP, bulk, and folders linked
+      from a library root or the share. The list is NegPy's own still-camera set
+      (`app/services/rawdecode.py`), sniffed by leading bytes like everything else — TIFF magic
+      for the ARW/NEF/CR2/DNG family, LibRaw's signatures for RAF, ORF, RW2, CR3, CRW, MRW, X3F.
+- [x] **Previewed through LibRaw** (`rawpy`, in the image): served raw, the camera's embedded
+      JPEG — the negative as the photographer saw it, free; printed (M5), a half-size linear
+      demosaic through the print renderer, which is the only input it is calibrated for. Cached per
+      width like every preview. Contact sheets use the same path. Where LibRaw cannot open a
+      file it falls through to Pillow and OpenCV as before, so a linear DNG from a flatbed still
+      works and nothing turns into a 500.
+- [x] `Roll001_Frame023.ARW` reads as frame 23 (the explicit-frame rule already did; now tested).
+- [x] **Scan into the roll you are holding** (decided: the raws are the frames, linked from the
+      share and never copied; exports stay derived prints). The roll page's "Scan with NegPy" card
+      names the two things to paste into NegPy — the share's `rolls/` folder and the roll's serial
+      as the roll name — and offers "Check now". A folder carrying the serial of a roll that has no
+      source folder yet *adopts* that roll (`_roll_for_folder`, `rolls_adopted` in the scan
+      result) instead of minting a draft beside it; the first frame marks it scanned. A roll that
+      already has a folder is never hijacked. `GET /api/negpy/rolls/{id}/scan`;
+      `livemode.scan_plan`.
+- [x] A sixth Mac-side live-mode step for scan mode (output folder → `rolls/`), in Settings.
+- [ ] Trichrome (RGB scanlight) sessions write a merged 16-bit TIFF beside the three raws — decide
+      whether the triplet is hidden behind the merge, the way NegPy hides `_IR` sidecar TIFFs.
 
 ## M7 — Immich connector (optional photo layer)
 

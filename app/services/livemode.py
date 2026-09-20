@@ -31,14 +31,15 @@ run reports that there was nothing to do.
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from sqlalchemy.orm import Session
 
 from ..errors import ApiError
-from ..models import LibraryRoot
+from ..models import FilmRoll, LibraryRoot
 from . import settings_store, smb
 from .negpy import gear as negpy_gear
 
@@ -113,6 +114,61 @@ def client_steps(mountpoint: str) -> Dict[str, Any]:
         "user": f"{mountpoint}/{USER_DIR}",
         "filename_pattern": "{{ roll }}_{{ frame|pad(3) }}_{{ film }}",
     }
+
+
+def scan_plan(db: Session, roll: FilmRoll) -> Dict[str, Any]:
+    """What to type into NegPy's *Live View & Scan* so the frames land on *this* roll.
+
+    NegPy's scan mode writes ``<output>/<roll name>/<roll name>_Frame001.ARW``
+    (roadmap M6.1). Point its output at the share's ``rolls/`` folder and name the
+    roll after the archive's serial, and :func:`app.services.importer.scan_root`
+    adopts the folder onto the roll that already carries that serial — film,
+    camera and lifecycle included — on the next sweep. Nothing here is remembered:
+    the mount, the root and the watcher are checked when asked, like :func:`state`.
+    """
+    base = smb.mount_base()
+    mounted = smb.is_mounted(base)
+    rolls_root = str(base / ROLLS_DIR)
+    root = db.query(LibraryRoot).filter(LibraryRoot.path == rolls_root).first()
+    serial = roll.archive_serial or ""
+    watching = bool(root and root.watch) and bool(settings_store.get(db, "watch_enabled"))
+    return {
+        "roll_id": roll.id,
+        # The two things to type into NegPy, in the order its panel asks for them.
+        "output_dir": rolls_root,
+        "roll_name": serial or None,
+        # What will appear, so the page can say it before it happens.
+        "folder": f"{rolls_root}/{serial}" if serial else None,
+        "example_file": f"{serial}_Frame001.ARW" if serial else None,
+        # Whether the folder will be picked up by itself, and how soon.
+        "root_id": root.id if root else None,
+        "mounted": mounted,
+        "watched": watching,
+        "interval_seconds": _watch_interval_seconds(),
+        "ready": bool(mounted and root is not None and watching and serial),
+        # A roll that already has a folder keeps it; the page says so instead of
+        # inviting a second one.
+        "source_dir": roll.source_dir,
+        "already_linked": bool(roll.source_dir),
+    }
+
+
+def _watch_interval_seconds() -> Optional[int]:
+    """The watcher's sweep interval, read exactly as ``app.routers.system`` reads it.
+
+    Same rules, same reasons: **unset means off**, an unparseable value means the
+    default. A service does not import a router, so the lines are repeated rather
+    than the edge reversed; if they drift apart the roll page and Settings would
+    disagree about whether the watcher is on, and a test pins them together.
+    """
+    raw = (os.getenv("WATCH_INTERVAL_SECONDS") or "").strip()
+    if not raw or raw.lower() in {"0", "off", "false", "none"}:
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        return 30
+    return value if value > 0 else None
 
 
 def _require_share(db: Session) -> Path:
