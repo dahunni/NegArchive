@@ -11,6 +11,7 @@ import {
   bulkUpdateImages,
   errorMessage,
   getPreviewUrl,
+  previewVersion,
   updateImage,
 } from "@/lib/api"
 import { formatDate, formatStripPosition } from "@/lib/format"
@@ -210,7 +211,7 @@ export function FrameGrid({
                 >
                   {/* eslint-disable-next-line @next/next/no-img-element */}
                   <img
-                    src={getPreviewUrl(frame.id, 480)}
+                    src={getPreviewUrl(frame.id, 480, undefined, previewVersion(frame))}
                     alt=""
                     loading="lazy"
                     decoding="async"

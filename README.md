@@ -913,6 +913,13 @@ After that you just work. Edit a frame in NegPy, and within 30 seconds the archi
 edited with a one-line summary of the recipe — because the sidecar lands next to the file the
 archive linked, and the watch sweep compares its mtime.
 
+**Finished positives.** The simplest workflow of all: convert in NegPy, export a JPEG or TIFF, drop
+it on the roll. A NegPy export carries NegPy's own XMP, so the archive knows it is *already a
+positive* and shows it as it is — it is never printed a second time, whatever the roll's film stock
+or the preview setting says. For exports that lost their metadata there is a checkbox on the roll's
+upload box ("These are finished positives"), and every frame has a *Shown as* choice in the viewer:
+decide from the film, already a positive, or a negative to print.
+
 **Camera scanning.** If you scan with a camera through NegPy's *Live View & Scan*, every roll page
 has a "Scan with NegPy" card with the two things to paste: the share's `rolls/` folder as the
 output, and the roll's serial as NegPy's roll name. NegPy then writes

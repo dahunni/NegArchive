@@ -195,6 +195,12 @@ export interface Image {
     total: number
     summary: string
   } | null
+  /**
+   * M6.1: `true` — already a positive (a NegPy export, a scan of a print), shown as
+   * it is and never printed; `false` — a negative even if the film is unknown;
+   * `null` — decide from the roll's film stock, as before.
+   */
+  positive?: boolean | null
   created_at: string
 }
 
@@ -675,9 +681,23 @@ export type PreviewRender = "auto" | "raw" | "positive"
  * Either way the file on disk is untouched: a rendering lives in the disposable
  * preview cache.
  */
-export function getPreviewUrl(imageId: number, width: number, render?: PreviewRender): string {
+export function getPreviewUrl(
+  imageId: number,
+  width: number,
+  render?: PreviewRender,
+  version?: string | null,
+): string {
   const suffix = render && render !== "auto" ? `&render=${render}` : ""
-  return backendUrl(`/api/images/${imageId}/preview?width=${width}${suffix}`)
+  // Previews are served immutable, so anything that changes what "auto" means for
+  // a frame has to change the URL too. The backend ignores the parameter.
+  const bust = version ? `&v=${encodeURIComponent(version)}` : ""
+  return backendUrl(`/api/images/${imageId}/preview?width=${width}${suffix}${bust}`)
+}
+
+/** The part of a frame that changes its preview without changing its file (M6.1). */
+export function previewVersion(image: Pick<Image, "positive">): string | undefined {
+  if (image.positive == null) return undefined
+  return image.positive ? "pos" : "neg"
 }
 
 export function getImageUrl(image: Image): string {
@@ -745,6 +765,7 @@ export function uploadRollFile(
   filmId: number,
   file: File,
   onProgress: (fraction: number) => void,
+  options: { positive?: boolean } = {},
 ): Promise<{ images: Image[] }> {
   const isZip = file.name.toLowerCase().endsWith(".zip") || file.type === "application/zip"
   const formData = new FormData()
@@ -753,6 +774,8 @@ export function uploadRollFile(
     return uploadWithProgress(`/api/films/${filmId}/images/bulk_zip`, formData, onProgress)
   }
   formData.append("files", file)
+  // M6.1: finished positives (NegPy exports) are shown as they are, never printed.
+  if (options.positive) formData.append("positive", "true")
   return uploadWithProgress(`/api/films/${filmId}/images/bulk`, formData, onProgress)
 }
 

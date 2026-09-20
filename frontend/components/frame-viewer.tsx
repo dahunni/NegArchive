@@ -20,6 +20,7 @@ import {
   errorMessage,
   getImageDownloadUrl,
   getPreviewUrl,
+  previewVersion,
   updateImage,
 } from "@/lib/api"
 import { formatDate, frameLabel } from "@/lib/format"
@@ -177,7 +178,7 @@ export function FrameViewer({
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img
               key={`${frame.id}-${render}`}
-              src={getPreviewUrl(frame.id, 1600, render)}
+              src={getPreviewUrl(frame.id, 1600, render, previewVersion(frame))}
               alt={frameLabel(frame)}
               data-testid="viewer-image"
               className="max-h-full max-w-full object-contain select-none"
@@ -256,18 +257,22 @@ export function FrameViewer({
               >
                 <ZoomIn className="h-4 w-4" />
               </Button>
-              {/* M5: print the negative, or show the scan as it was stored. */}
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-10 w-10"
-                aria-label={render === "raw" ? "Show the positive preview" : "Show the scan as stored"}
-                title={render === "raw" ? "Show the positive preview" : "Show the scan as stored"}
-                data-testid="viewer-render-toggle"
-                onClick={() => chooseRender(render === "raw" ? "positive" : "raw")}
-              >
-                <Contrast className="h-4 w-4" />
-              </Button>
+              {/* M5: print the negative, or show the scan as it was stored. Not
+                  offered for a frame that is already a positive (M6.1): there is
+                  nothing to print, and the server would show it as is regardless. */}
+              {frame.positive !== true ? (
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-10 w-10"
+                  aria-label={render === "raw" ? "Show the positive preview" : "Show the scan as stored"}
+                  title={render === "raw" ? "Show the positive preview" : "Show the scan as stored"}
+                  data-testid="viewer-render-toggle"
+                  onClick={() => chooseRender(render === "raw" ? "positive" : "raw")}
+                >
+                  <Contrast className="h-4 w-4" />
+                </Button>
+              ) : null}
               <Button
                 variant="ghost"
                 size="icon"
@@ -379,6 +384,42 @@ export function FrameViewer({
                   </Button>
                 ) : null}
               </div>
+
+              {/* M6.1: is this file a negative to be printed, or a finished positive
+                  (a NegPy export, a scan of a print) to be shown as it is? Saved at
+                  once — it is a fact about the file, not part of the draft. */}
+              {frame.type === "scan" ? (
+                <div className="space-y-1.5 border-t border-border pt-3">
+                  <Label htmlFor="viewer-positive">Shown as</Label>
+                  <Select
+                    value={frame.positive == null ? "auto" : frame.positive ? "positive" : "negative"}
+                    onValueChange={async (value) => {
+                      try {
+                        const updated = await updateImage(frame.id, {
+                          positive: value === "auto" ? null : value === "positive",
+                        })
+                        onChanged?.(updated)
+                      } catch (error) {
+                        toast({ title: "Could not save", description: errorMessage(error), variant: "destructive" })
+                      }
+                    }}
+                  >
+                    <SelectTrigger id="viewer-positive" className="h-11 w-full" data-testid="viewer-positive">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="auto">Decide from the film (print a negative)</SelectItem>
+                      <SelectItem value="positive">Already a positive — show as it is</SelectItem>
+                      <SelectItem value="negative">A negative — print it</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  {frame.positive === true ? (
+                    <p className="type-meta">
+                      A finished image — a NegPy export, or a scan of a print. It is never printed a second time.
+                    </p>
+                  ) : null}
+                </div>
+              ) : null}
 
               <dl className="space-y-1 border-t border-border pt-3">
                 <div className="flex justify-between gap-4">

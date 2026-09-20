@@ -403,6 +403,14 @@ that workflow **the raw is the scan**, and the archive has to treat it as one.
       already has a folder is never hijacked. `GET /api/negpy/rolls/{id}/scan`;
       `livemode.scan_plan`.
 - [x] A sixth Mac-side live-mode step for scan mode (output folder → `rolls/`), in Settings.
+- [x] **A frame that is already a positive** (`image_assets.positive`, `0007_m6_positive`). The
+      export-and-upload workflow — convert in NegPy, export a JPEG, drop it on the roll — printed
+      the export a second time because the roll's film is a negative. `true` means "show as it
+      is", and then nothing prints it: not the film, not the `preview_render` setting, not the
+      query. Set from NegPy's `negpy:` XMP on ingest (NegPy writes it on export and nowhere else;
+      fills a blank, never overwrites), by a checkbox on the roll's upload box (`positive=true` on
+      the upload endpoints), or per frame in the viewer (*Shown as*; `PUT /api/images/{id}`
+      `positive: true | false | null`). `false` prints a frame whose film is unknown.
 - [ ] Trichrome (RGB scanlight) sessions write a merged 16-bit TIFF beside the three raws — decide
       whether the triplet is hidden behind the merge, the way NegPy hides `_IR` sidecar TIFFs.
 

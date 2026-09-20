@@ -129,6 +129,15 @@ the share you saved — `/Volumes/<share>/<folder>/rolls` is what Finder will ha
    `{{ roll }}_{{ frame|pad(3) }}_{{ film }}`, so finished positives file themselves onto the right
    roll ([NEGPY_INTEGRATION.md](NEGPY_INTEGRATION.md) explains why that pattern is parsed strictly).
 
+## The simplest version: upload the exports
+
+If linking raws is more than you want, skip it. Convert in NegPy, export a JPEG or TIFF, and drop
+the export on the roll (or into the watched `exports/` folder). A NegPy export carries NegPy's own
+`negpy:` XMP, and a file that carries it is a converted positive — so the archive marks the frame
+*already a positive* and shows it as it is. It is never printed a second time, whatever the roll's
+film stock or the preview setting says. Exports that lost their metadata: tick "These are finished
+positives" on the upload box, or set *Shown as* on the frame in the viewer.
+
 ## Scanning straight into the archive (M6.1)
 
 NegPy's *Live View & Scan* photographs the negative with a tethered camera and saves **the camera's

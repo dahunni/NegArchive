@@ -236,6 +236,11 @@ class ImageAsset(Base):
     negpy_edited_at: Mapped[datetime | None] = mapped_column(DateTime)
     #: The parsed sidecar plus a one-line summary of it (services/negpy/sidecar.py).
     negpy_recipe: Mapped[dict | None] = mapped_column(JSONB)
+    #: M6.1: is this file already a positive? NULL = decide from the film stock (the
+    #: old behaviour); True = a finished positive — a NegPy export, a scan of a print —
+    #: shown as it is and never printed a second time; False = a negative even when
+    #: the roll's film is unknown. Set from NegPy's XMP on ingest, or by hand.
+    positive: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 

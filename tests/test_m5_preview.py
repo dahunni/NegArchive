@@ -362,3 +362,96 @@ def test_the_frame_reports_what_its_recipe_could_not_render(client):
     assert "local_masks" in frame["negpy_render"]["ignored"]
     assert "toning.split" in frame["negpy_render"]["ignored"]
     assert frame["negpy_render"]["summary"]
+
+
+# --- M6.1: a frame that is already a positive ------------------------------------------
+#
+# The workflow that made this necessary: scan with NegPy, export a finished JPEG,
+# upload the JPEG. The roll's film is a colour negative, so "auto" printed the
+# export — a positive — a second time and turned it inside out. A frame can now say
+# it is already a positive, and then nothing prints it: not the film, not the
+# global setting, not the query.
+
+
+def test_a_frame_marked_positive_is_shown_as_it_is_whatever_anyone_says(client):
+    roll = make_roll_with_stock(client)  # a colour negative: auto would print this
+    res = client.post(
+        f"/api/films/{roll['id']}/images/bulk",
+        files=[("files", ("export_001.png", negative_png(), "image/png"))],
+        data={"positive": "true"},
+    )
+    assert res.status_code == 200, res.text
+    image = res.json()["images"][0]
+    assert image["positive"] is True
+
+    _, auto_mode = fetch(client, image["id"])
+    _, forced_mode = fetch(client, image["id"], render="positive")
+    assert (auto_mode, forced_mode) == ("raw", "raw")
+
+    # The global "always print" setting does not reach it either.
+    client.put("/api/settings", json={"preview_render": "positive"})
+    try:
+        assert fetch(client, image["id"])[1] == "raw"
+    finally:
+        client.put("/api/settings", json={"preview_render": "auto"})
+
+    # Taking the flag away hands the decision back to the film stock.
+    res = client.put(f"/api/images/{image['id']}", json={"positive": None})
+    assert res.status_code == 200 and res.json()["image"]["positive"] is None
+    assert fetch(client, image["id"])[1] == "positive"
+
+
+def test_a_frame_marked_negative_is_printed_even_when_the_film_is_unknown(client):
+    roll = client.post("/api/films", json={"title": unique("No film")}).json()["film"]
+    image = upload_scan(client, roll["id"], negative_png())
+    assert fetch(client, image["id"])[1] == "raw"  # unknown film: left alone (M5)
+
+    res = client.put(f"/api/images/{image['id']}", json={"positive": False})
+    assert res.status_code == 200 and res.json()["image"]["positive"] is False
+    assert fetch(client, image["id"])[1] == "positive"
+
+
+def test_the_flag_refuses_nonsense():
+    from app.errors import ApiError
+    from app.routers.api import parse_positive
+
+    assert parse_positive("true") is True and parse_positive("0") is False
+    assert parse_positive("") is None and parse_positive("auto") is None and parse_positive(None) is None
+    with pytest.raises(ApiError):
+        parse_positive("maybe")
+
+
+def test_a_negpy_export_is_recognised_as_a_positive_by_its_xmp(client):
+    """No checkbox needed for the common case: NegPy writes its `negpy:` namespace on
+    export and nowhere else, so a file carrying it is a converted positive."""
+    from test_m5_negpy import jpeg_bytes, xmp_packet
+
+    roll = make_roll_with_stock(client)
+    export = jpeg_bytes(xmp=xmp_packet(CaptureRoll="whatever", CaptureFrame="7"))
+    res = client.post(
+        f"/api/films/{roll['id']}/images/bulk",
+        files=[("files", ("NEG-2026-0001_007_Gold 200.jpg", export, "image/jpeg"))],
+    )
+    assert res.status_code == 200, res.text
+    image = res.json()["images"][0]
+    assert image["positive"] is True
+    assert fetch(client, image["id"])[1] == "raw"
+
+    # A plain scan on the same roll — no negpy XMP — is still a negative to print.
+    scan = upload_scan(client, roll["id"], negative_png())
+    assert scan["positive"] is None
+    assert fetch(client, scan["id"])[1] == "positive"
+
+
+def test_ingest_does_not_overwrite_a_flag_somebody_set(client):
+    """Fills blanks, never overwrites — the M5 rule, applied to the new field."""
+    from test_m5_negpy import jpeg_bytes, xmp_packet
+
+    roll = make_roll_with_stock(client)
+    export = jpeg_bytes(xmp=xmp_packet(CaptureRoll="x", CaptureFrame="1"))
+    res = client.post(
+        f"/api/films/{roll['id']}/images/bulk",
+        files=[("files", ("odd.jpg", export, "image/jpeg"))],
+        data={"positive": "false"},
+    )
+    assert res.json()["images"][0]["positive"] is False

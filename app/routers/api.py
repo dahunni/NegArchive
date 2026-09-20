@@ -315,6 +315,8 @@ def image_to_dict(i: ImageAsset) -> dict:
         # and the names of the settings it cannot. The viewer shows both, because
         # an approximation that hides its edges is worse than no approximation.
         "negpy_render": negpy_recipe.report(i.negpy_recipe) if i.negpy_recipe else None,
+        # M6.1: already a positive (true), a negative (false), or decide from the film (null).
+        "positive": i.positive,
         "created_at": i.created_at.isoformat(),
     }
 
@@ -636,6 +638,7 @@ def _new_image(
     frame_number: Optional[int] = None,
     notes: Optional[str] = None,
     capture_date=None,
+    positive: Optional[bool] = None,
 ) -> ImageAsset:
     """One place builds an ImageAsset, so every path keeps the filename and the
     frame number parsed from it (R#7, R#24), and every file gets its content hash.
@@ -650,6 +653,7 @@ def _new_image(
         type=image_type,
         path=rel_path,
         original_filename=original_filename,
+        positive=positive,
         storage_mode="managed",
         content_hash=safe_content_hash(_abs(rel_path)),
         frame_number=frame_number,
@@ -1195,10 +1199,16 @@ def render_plan(db: Session, image: ImageAsset, requested: Optional[str]) -> Tup
     kind = film_kind_of(image)
     polarity = preview_render.polarity_for(kind, image.type.value if image.type else "scan")
 
+    # M6.1: a frame that is already a positive is shown as it is, whatever the
+    # film stock, the setting or the query say. There is nothing to print.
+    if image.positive is True:
+        return "raw", None
     if mode == "raw":
         return "raw", None
     if mode == "auto":
-        knows_it_is_a_negative = polarity in {"negative", "mono"} and kind is not None
+        knows_it_is_a_negative = image.positive is False or (
+            polarity in {"negative", "mono"} and kind is not None
+        )
         if not (knows_it_is_a_negative or image.negpy_recipe):
             return "raw", None
     if image.type == ImageType.contact_sheet:
@@ -1510,11 +1520,28 @@ def update_image(image_id: int, body: schemas.ImageUpdate, db: Session = Depends
             i.capture_date = parse_date(body.capture_date, "capture_date")
         if body.given("original_filename"):
             i.original_filename = body.original_filename or None
+        if body.given("positive"):
+            i.positive = parse_positive(body.positive)
     except ApiError as exc:
         db.rollback()
         return from_exc(exc)
     db.commit()
     return {"ok": True, "image": image_to_dict(i)}
+
+
+def parse_positive(value) -> Optional[bool]:
+    """``true`` / ``false`` / ``null`` (or ``auto``) for the M6.1 positive flag, from
+    JSON or from a form field, since it arrives both ways."""
+    if value is None or isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in {"", "null", "none", "auto"}:
+        return None
+    if text in {"1", "true", "yes", "on", "positive"}:
+        return True
+    if text in {"0", "false", "no", "off", "negative"}:
+        return False
+    raise ApiError("invalid_positive", "positive must be true, false or null.", 400, "positive")
 
 
 def _require_roll(db: Session, film_roll_id) -> Optional[int]:
@@ -1649,6 +1676,8 @@ def upload_image(
     frame_number: Optional[str] = Form(None),
     notes: Optional[str] = Form(None),
     capture_date: Optional[str] = Form(None),
+    # M6.1: "these are finished positives" — a NegPy export, a scan of a print.
+    positive: Optional[str] = Form(None),
     db: Session = Depends(get_db),
 ):
     try:
@@ -1656,6 +1685,7 @@ def upload_image(
         roll_id = _require_roll(db, film_roll_id)
         number = parse_int(frame_number, "frame_number", minimum=0)
         captured = parse_date(capture_date, "capture_date")
+        is_positive = parse_positive(positive)
         subdir = "uploads/scans" if image_type == ImageType.scan else "uploads/contact_sheets"
         rel_path, original = store_upload(file, subdir)
     except ApiError as exc:
@@ -1668,6 +1698,7 @@ def upload_image(
         frame_number=number,
         notes=notes or None,
         capture_date=captured,
+        positive=is_positive,
     )
     db.add(img)
     roll = db.get(FilmRoll, roll_id) if roll_id else None
@@ -1770,13 +1801,21 @@ def create_contact_sheet(
     },
 )
 def bulk_upload_images(
-    film_id: int, files: List[UploadFile] = File(...), db: Session = Depends(get_db)
+    film_id: int,
+    files: List[UploadFile] = File(...),
+    positive: Optional[str] = Form(None),
+    db: Session = Depends(get_db),
 ):
     """Many scans into one roll. Each file keeps its name and, when the name says so,
-    gets its frame number from it (R#7, R#24)."""
+    gets its frame number from it (R#7, R#24). ``positive=true`` says the files are
+    finished positives (M6.1) — NegPy exports, say — and are to be shown as they are."""
     f = db.get(FilmRoll, film_id)
     if not f:
         return not_found("Roll")
+    try:
+        is_positive = parse_positive(positive)
+    except ApiError as exc:
+        return from_exc(exc)
     images, sidecars = _pull_sidecars(files)
     ingest_on, create_gear = negpy_metadata.ingest_settings(db)
     edits_index = negpy_edits.open_index(db) if ingest_on else None
@@ -1789,6 +1828,7 @@ def bulk_upload_images(
                 image_type=ImageType.scan,
                 rel_path=rel_path,
                 original_filename=original,
+                positive=is_positive,
             )
             db.add(img)
             created.append(img)
