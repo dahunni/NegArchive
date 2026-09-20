@@ -13,11 +13,16 @@ because the whole point is that you can point the archive at your NAS without
 editing a Compose file and recreating containers.
 
 **What this needs from the deployment.** ``mount.cifs`` (the ``cifs-utils``
-package, in the image since M6) and ``CAP_SYS_ADMIN`` on the container — mounting
-a filesystem is a privileged operation and no amount of userspace cleverness
-changes that. The Compose file adds the capability with a comment saying why;
-:func:`capabilities` checks for it up front so the UI can explain a failure
-instead of printing ``mount: permission denied``.
+package, in the image since M6) and two capabilities on the container.
+``CAP_SYS_ADMIN``, because mounting a filesystem is privileged and no amount of
+userspace cleverness changes that. And ``CAP_DAC_READ_SEARCH``, which is less
+obvious: ``mount.cifs`` begins by clearing its own capabilities and re-adding the
+three it wants, and since no process may *add* a capability it does not already
+hold, a container without this one makes that call fail — ``Unable to apply new
+capability set.`` — before the NAS is ever contacted. Docker grants neither by
+default. The Compose file adds both with a comment saying why;
+:func:`capabilities` checks for both up front so the UI can explain a failure
+instead of printing libcap-ng's message.
 
 **Where the password lives.** Not in the database and not in an export: it is
 written to ``$DATA_DIR/.smb/credentials`` with mode 0600, which is the file
@@ -67,8 +72,14 @@ SMB_PORT = 445
 #: for a modern NAS and wrong for an old one that needs to be told.
 VERSIONS = ("3.1.1", "3.0", "2.1", "default")
 
-#: CAP_SYS_ADMIN. `mount()` needs it; without it the syscall fails with EPERM.
+#: The capabilities a CIFS mount needs, as bit positions in ``CapEff``. Both are
+#: outside Docker's default set, and a mount needs *both*: see the module
+#: docstring for why the second one is not optional.
 CAP_SYS_ADMIN_BIT = 21
+CAP_DAC_READ_SEARCH_BIT = 2
+
+#: What to call them in a sentence aimed at a person editing docker-compose.yml.
+REQUIRED_CAPS = (("sys_admin", "SYS_ADMIN"), ("dac_read_search", "DAC_READ_SEARCH"))
 
 _HOST_RE = re.compile(r"^[A-Za-z0-9._-]{1,253}$")
 _SHARE_RE = re.compile(r"^[^/\\:*?\"<>|,\n\r\t]{1,80}$")
@@ -123,34 +134,44 @@ def capabilities() -> Dict[str, Any]:
     return {
         "cifs_utils": bool(helper),
         "cifs_utils_path": helper,
-        "sys_admin": _has_sys_admin(),
+        "sys_admin": _has_cap(CAP_SYS_ADMIN_BIT),
+        "dac_read_search": _has_cap(CAP_DAC_READ_SEARCH_BIT),
         "mount_base": str(mount_base()),
     }
 
 
-def _has_sys_admin() -> bool:
+def _has_cap(bit: int) -> bool:
+    """Is that capability in this process's effective set?
+
+    Asked of the kernel via ``/proc/self/status`` rather than inferred from the
+    Compose file, because a Compose file that was edited but never applied is
+    precisely the case this is here to catch.
+    """
     try:
         with open("/proc/self/status", "r", encoding="utf-8") as handle:
             for line in handle:
                 if line.startswith("CapEff:"):
-                    return bool(int(line.split()[1], 16) & (1 << CAP_SYS_ADMIN_BIT))
+                    return bool(int(line.split()[1], 16) & (1 << bit))
     except (OSError, ValueError, IndexError):
         return False
     return False
 
 
 def explain_missing(caps: Dict[str, Any]) -> Optional[str]:
-    if not caps["cifs_utils"]:
+    if not caps.get("cifs_utils"):
         return (
             "This image has no mount.cifs. Pull the current negarchive-web image "
             "(cifs-utils is in it since M6) or rebuild with `docker compose build web`."
         )
-    if not caps["sys_admin"]:
+    absent = [name for key, name in REQUIRED_CAPS if not caps.get(key)]
+    if absent:
         return (
-            "The container may not mount filesystems. Add the two lines the Compose "
-            "file has commented for this — `cap_add: [SYS_ADMIN]` and "
-            "`security_opt: [apparmor:unconfined]` on the `web` service — then "
-            "`docker compose up -d`."
+            "The container may not mount filesystems: it is missing "
+            + " and ".join(f"CAP_{name}" for name in absent)
+            + ". Give the `web` service in docker-compose.yml `cap_add: "
+            "[SYS_ADMIN, DAC_READ_SEARCH]` and `security_opt: [apparmor:unconfined]`, "
+            "then `docker compose up -d`. Both are needed — SYS_ADMIN for the mount "
+            "itself, DAC_READ_SEARCH because mount.cifs asks for it before it starts."
         )
     return None
 
@@ -491,6 +512,17 @@ def _explain_failure(completed: subprocess.CompletedProcess, config: Config) -> 
     """Turn mount.cifs's output into something with a next step in it."""
     text = " ".join(part for part in (completed.stderr or "", completed.stdout or "") if part).strip()
     lowered = text.lower()
+    if "capability set" in lowered:
+        # mount.cifs gave up on its own capabilities, which it does before it looks
+        # at the network: the container is missing CAP_DAC_READ_SEARCH. Worth
+        # catching even though `capabilities()` checks for it, because an older
+        # Compose file grants SYS_ADMIN alone and this is the only visible symptom.
+        return (
+            "mount.cifs could not set up the capabilities it needs, so it stopped "
+            "before contacting the NAS — the container has CAP_SYS_ADMIN but not "
+            "CAP_DAC_READ_SEARCH. Change the `web` service in docker-compose.yml to "
+            "`cap_add: [SYS_ADMIN, DAC_READ_SEARCH]` and run `docker compose up -d`."
+        )
     if "permission denied" in lowered or "mount error(13)" in lowered:
         who = config.username or "guest"
         return (
@@ -512,8 +544,10 @@ def _explain_failure(completed: subprocess.CompletedProcess, config: Config) -> 
         )
     if "operation not permitted" in lowered:
         return (
-            "The container may not mount filesystems. Add `cap_add: [SYS_ADMIN]` to the "
-            "`web` service in docker-compose.yml and run `docker compose up -d`."
+            "The container may not mount filesystems. Give the `web` service in "
+            "docker-compose.yml `cap_add: [SYS_ADMIN, DAC_READ_SEARCH]` and run "
+            "`docker compose up -d`. On a Debian or Ubuntu host add "
+            "`security_opt: [apparmor:unconfined]` as well."
         )
     return text or "mount failed without saying why. Check the container log."
 

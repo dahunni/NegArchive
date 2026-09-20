@@ -26,6 +26,7 @@ code, running against a real directory, which is the part that can be wrong.
 
 import os
 import stat
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -362,12 +363,66 @@ def test_status_explains_a_container_that_cannot_mount(client, monkeypatch):
     """A failure people will hit. It must name the fix, not print errno 1."""
     monkeypatch.setattr(smb, "capabilities", lambda: {
         "cifs_utils": True, "cifs_utils_path": "/sbin/mount.cifs",
-        "sys_admin": False, "mount_base": "/mnt/negarchive",
+        "sys_admin": False, "dac_read_search": False, "mount_base": "/mnt/negarchive",
     })
     reason = smb.explain_missing(smb.capabilities())
     assert "cap_add" in reason and "SYS_ADMIN" in reason
 
 
+def test_status_explains_the_capability_everybody_forgets():
+    """`cap_add: [SYS_ADMIN]` alone is the obvious Compose file and the wrong one:
+    mount.cifs also needs CAP_DAC_READ_SEARCH, and says so only as "Unable to
+    apply new capability set." So the check has to name it before the attempt."""
+    reason = smb.explain_missing({
+        "cifs_utils": True, "cifs_utils_path": "/sbin/mount.cifs",
+        "sys_admin": True, "dac_read_search": False,
+    })
+    assert reason is not None
+    assert "DAC_READ_SEARCH" in reason
+    # And it must not blame SYS_ADMIN, which this container has.
+    assert "missing CAP_DAC_READ_SEARCH" in reason
+
+
+def test_status_is_satisfied_when_both_capabilities_are_present():
+    assert smb.explain_missing({
+        "cifs_utils": True, "cifs_utils_path": "/sbin/mount.cifs",
+        "sys_admin": True, "dac_read_search": True,
+    }) is None
+
+
+def test_a_failed_mount_translates_libcap_ngs_message(monkeypatch):
+    """The raw text is true and useless; the reply must carry the Compose fix."""
+    completed = subprocess.CompletedProcess(
+        args=["mount"], returncode=1, stdout="", stderr="Unable to apply new capability set.\n"
+    )
+    config = smb.Config(host="nas.local", share="photo")
+    message = smb._explain_failure(completed, config)
+    assert "DAC_READ_SEARCH" in message and "docker compose up -d" in message
+
+
 def test_status_explains_an_image_without_mount_cifs():
-    reason = smb.explain_missing({"cifs_utils": False, "sys_admin": True})
+    reason = smb.explain_missing({"cifs_utils": False, "sys_admin": True, "dac_read_search": True})
     assert "mount.cifs" in reason
+
+
+# --- M6.1: what to type into NegPy's scan mode --------------------------------------
+
+
+def test_the_scan_plan_names_the_folder_and_the_roll(client):
+    roll = client.post("/api/films", json={"title": "Scan me"}).json()["film"]
+    res = client.get(f"/api/negpy/rolls/{roll['id']}/scan")
+    assert res.status_code == 200, res.text
+    plan = res.json()["scan"]
+    serial = roll["archive_serial"]
+    assert plan["roll_name"] == serial
+    assert plan["output_dir"].endswith("/" + livemode.ROLLS_DIR)
+    assert plan["folder"] == f"{plan['output_dir']}/{serial}"
+    assert plan["example_file"] == f"{serial}_Frame001.ARW"
+    assert plan["already_linked"] is False
+    # Nothing is mounted in CI, and the plan says so rather than pretending.
+    assert plan["mounted"] is False
+    assert plan["ready"] is False
+
+
+def test_the_scan_plan_for_a_roll_that_does_not_exist_is_a_404(client):
+    assert client.get("/api/negpy/rolls/999999/scan").status_code == 404

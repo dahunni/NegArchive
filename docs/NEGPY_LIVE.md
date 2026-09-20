@@ -45,10 +45,23 @@ both of which the Settings card checks for and explains if they are missing:
 | Needs | Where it comes from |
 |---|---|
 | `mount.cifs` | `cifs-utils`, in the image since M6 |
-| `CAP_SYS_ADMIN` | `cap_add: [SYS_ADMIN]` on the `web` service, plus `security_opt: [apparmor:unconfined]` on Debian/Ubuntu hosts |
+| `CAP_SYS_ADMIN` | `cap_add: [SYS_ADMIN, DAC_READ_SEARCH]` on the `web` service, plus `security_opt: [apparmor:unconfined]` on Debian/Ubuntu hosts |
+| `CAP_DAC_READ_SEARCH` | the same `cap_add` line — see below |
 
-Mounting a filesystem is privileged and no userspace trick changes that. The capability is opt-in
-in `docker-compose.yml` rather than hidden in the image, with a comment saying what it costs.
+Mounting a filesystem is privileged and no userspace trick changes that. The capabilities are opt-in
+in `docker-compose.yml` rather than hidden in the image, with a comment saying what they cost.
+
+`CAP_DAC_READ_SEARCH` is the one nobody expects. `mount.cifs` starts by clearing its own capability
+set and re-adding the three it wants (`SYS_ADMIN`, `DAC_OVERRIDE`, `DAC_READ_SEARCH`), and no
+process may *add* a capability it does not already hold. Docker's default set has `DAC_OVERRIDE`
+but not `DAC_READ_SEARCH`, so a container with `cap_add: [SYS_ADMIN]` alone fails on
+`mount.cifs`'s first line with:
+
+```
+Unable to apply new capability set.
+```
+
+That happens before any network traffic, which is why the message says nothing about the NAS.
 
 **Set `NEGARCHIVE_PASSWORD` if you turn this on.** The API has no login by default, and these
 endpoints can mount filesystems.
@@ -97,7 +110,7 @@ It registers `rolls/` and `exports/` as watched library roots, points `negpy_use
 nothing that exists and turns nothing off, so running it twice reports that there was nothing to
 do.
 
-## The five steps on the Mac
+## The five steps on the Mac (and a sixth for camera scanning)
 
 These are shown in Settings with the real paths filled in and a copy button on each, computed from
 the share you saved — `/Volumes/<share>/<folder>/rolls` is what Finder will have mounted.
@@ -115,6 +128,48 @@ the share you saved — `/Volumes/<share>/<folder>/rolls` is what Finder will ha
 5. **Send exports back.** Set NegPy's output folder to `.../exports` and its filename pattern to
    `{{ roll }}_{{ frame|pad(3) }}_{{ film }}`, so finished positives file themselves onto the right
    roll ([NEGPY_INTEGRATION.md](NEGPY_INTEGRATION.md) explains why that pattern is parsed strictly).
+
+## Scanning straight into the archive (M6.1)
+
+NegPy's *Live View & Scan* photographs the negative with a tethered camera and saves **the camera's
+own raw, untouched** — `<output>/<roll name>/<roll name>_Frame001.ARW`, then `_Frame002.ARW`, and so
+on. No conversion, no sidecar, no metadata: in that workflow the raw *is* the scan, and the archive
+treats it as one.
+
+Two strings make it land on the right roll, and every roll page shows them with a copy button
+("Scan with NegPy"):
+
+| In NegPy | Value | Why |
+|---|---|---|
+| Output folder | `/Volumes/<share>/…/rolls` — the share's `rolls/` folder | it is a watched root, so the sweep sees the new folder |
+| Roll name | the roll's archive serial, e.g. `NEG-2026-0007` | the importer adopts a folder carrying the serial of a roll that has no folder yet |
+
+What happens on the next sweep (`WATCH_INTERVAL_SECONDS`, 30 in the Compose stack — or "Check now"
+on the roll page):
+
+1. `rolls/NEG-2026-0007/` is found. `parse_folder_name` reads the serial; `_roll_for_folder`
+   finds the roll that already carries it and, because that roll has no `source_dir` yet, **adopts**
+   it instead of creating a draft beside it. Title, film, camera, lens and location stay as they were.
+2. Each `NEG-2026-0007_Frame00N.ARW` is linked — never copied — as frame *N* (the explicit
+   `Frame` rule in `frame_number_from_filename`), with its content hash.
+3. The first frame marks the roll **scanned** (`lifecycle.touch_scanned`).
+4. Previews come through LibRaw (`app/services/rawdecode.py`): the camera's embedded JPEG when
+   served raw, a linear demosaic through the print renderer when printed. A roll whose film stock
+   is a negative is printed as a positive, exactly as an uploaded TIFF would be.
+5. Editing a frame in NegPy afterwards writes `NEG-2026-0007_Frame00N.ARW.negpy` beside it, and the
+   same sweep attaches the recipe — nothing about M5 changes because the file is a raw.
+
+The guard rails, and why they are where they are:
+
+- **A roll that already has a folder is never hijacked.** A second folder with the same serial gets
+  a fresh serial of its own, as M4 always did: two folders are not one roll. The roll page says so
+  when a roll is already linked elsewhere.
+- **NegPy's default roll name still works.** A folder called `Roll001` has no serial and becomes a
+  draft roll titled `Roll001`, as any other folder would. The workflow above is an offer, not a
+  requirement.
+- **Trichrome sessions** (RGB scanlight) write three raws plus a merged 16-bit TIFF into the same
+  folder; all four are accepted today and all four appear as frames. Hiding the triplet behind the
+  merge is on the roadmap.
 
 ## What this does not do
 

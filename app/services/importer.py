@@ -15,6 +15,9 @@ Folder layout the scanner expects — the one everybody's scanner software produ
       Kyoto rain/             → one roll, title "Kyoto rain", no serial
         ...
       loose_scan.tif          → goes into a roll named after <root> itself
+      NEG-2026-0007/          → M6.1: the roll that already HAS this serial, if it
+        NEG-2026-0007_Frame001.ARW   has no folder yet (NegPy's scan mode, told
+                                      to name its roll after the archive's serial)
 
 **Rescans are idempotent.** A file is identified first by its absolute path and
 then by its content hash, so scanning twice changes nothing, a file edited in
@@ -160,6 +163,8 @@ class ScanResult:
     """What one sweep of a root did, for the API response and the settings page."""
 
     rolls_created: int = 0
+
+    rolls_adopted: int = 0  # M6.1: existing rolls a serial-named folder attached to
     frames_added: int = 0
     frames_rehomed: int = 0
     frames_updated: int = 0
@@ -174,12 +179,15 @@ class ScanResult:
         return (
             f"{self.frames_added} new, {self.frames_rehomed} re-homed, "
             f"{self.frames_updated} updated, {self.frames_unchanged} unchanged, "
-            f"{self.rolls_created} new rolls{sidecars}"
+            f"{self.rolls_created} new rolls"
+            + (f", {self.rolls_adopted} adopted" if self.rolls_adopted else "")
+            + f"{sidecars}"
         )
 
     def to_dict(self) -> dict:
         return {
             "rolls_created": self.rolls_created,
+            "rolls_adopted": self.rolls_adopted,
             "frames_added": self.frames_added,
             "frames_rehomed": self.frames_rehomed,
             "frames_updated": self.frames_updated,
@@ -225,6 +233,19 @@ def _roll_for_folder(db: Session, folder: Path, result: ScanResult) -> FilmRoll:
     if roll:
         return roll
     title, serial = parse_folder_name(folder.name)
+    # M6.1: a folder carrying the serial of a roll the archive already has *is* that
+    # roll — the one you are scanning, named the way the roll page told you to name
+    # it in NegPy — provided the roll has no source folder yet. The frames land on
+    # the record that already knows the film, the camera and where the roll is in
+    # its life, instead of on a draft with a fresh serial sitting next to it. A roll
+    # that already has a folder is left alone: two folders are not one roll.
+    if serial:
+        existing = serials.find_by_serial(db, serial)
+        if existing is not None and not existing.source_dir:
+            existing.source_dir = key
+            result.rolls_adopted += 1
+            result.roll_ids.append(existing.id)
+            return existing
     roll = FilmRoll(title=title, source_dir=key)
     # M4: the folder's serial if it carries one and it is free, else a fresh one.
     if serial and not serials.is_taken(db, serial):

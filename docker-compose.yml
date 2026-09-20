@@ -89,20 +89,27 @@ services:
     # M6 — mounting the share NegPy and NegArchive both work in.
     #
     # Mounting a filesystem is privileged: no amount of userspace cleverness gets
-    # around it, so the container that does it needs CAP_SYS_ADMIN. That is a real
-    # escalation — with it, this container can mount things — so it is opt-in and
-    # written here rather than hidden in the image.
+    # around it, so the container that does it needs capabilities Docker does not
+    # hand out by default. That is a real escalation — with them, this container
+    # can mount things — so it is opt-in and written here rather than hidden in
+    # the image.
     #
     # **Set NEGARCHIVE_PASSWORD if you turn this on.** The API has no login by
-    # default, and these two lines give it the ability to mount.
+    # default, and these lines give it the ability to mount.
     #
-    # Comment both out (and `docker compose up -d`) to switch the feature off; the
-    # Settings card then says the container may not mount and why.
+    # Comment the whole block out (and `docker compose up -d`) to switch the
+    # feature off; the Settings card then says the container may not mount and why.
     cap_add:
+      # The mount() syscall itself.
       - SYS_ADMIN
+      # mount.cifs's own first move is to clear its capabilities and re-add the
+      # three it wants, this one among them — and nothing may add a capability it
+      # does not already hold. Without it mount.cifs exits immediately with
+      # "Unable to apply new capability set." and never contacts the NAS.
+      - DAC_READ_SEARCH
     security_opt:
       # Ubuntu and Debian hosts ship an AppArmor profile that blocks mount() even
-      # with the capability. Harmless where AppArmor is not in use (macOS, Fedora).
+      # with the capabilities. Harmless where AppArmor is not in use (macOS, Fedora).
       - apparmor:unconfined
     volumes:
       - ${DATA_DIR:-./data}:/data

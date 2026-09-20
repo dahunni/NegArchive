@@ -232,6 +232,15 @@ def test_every_allowed_extension_gets_in(client):
         ("a.tiff", tiff),
         ("a.dng", tiff),
         ("a.webp", b"RIFF\x00\x00\x00\x00WEBP" + b"\x00" * 16),
+        # M6.1: camera raws. The TIFF family shares the TIFF magic; the rest have their own.
+        ("Roll001_Frame001.ARW", tiff),
+        ("a.nef", b"MM\x00*" + b"\x00" * 64),
+        ("a.cr2", tiff),
+        ("a.raf", b"FUJIFILMCCD-RAW 0201FF" + b"\x00" * 48),
+        ("a.cr3", b"\x00\x00\x00\x18ftypcrx " + b"\x00" * 52),
+        ("a.orf", b"IIRO\x08\x00\x00\x00" + b"\x00" * 56),
+        ("a.rw2", b"IIU\x00\x18\x00\x00\x00" + b"\x00" * 56),
+        ("a.crw", b"II\x1a\x00\x00\x00HEAPCCDR" + b"\x00" * 50),
     ]:
         res = client.post(
             "/api/images/upload",

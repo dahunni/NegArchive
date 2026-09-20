@@ -322,3 +322,63 @@ def test_the_watch_sweep_respects_the_settings_toggle(client, library, monkeypat
         assert not any(r["title"] == "Ignored while off" for r in client.get("/api/films").json())
     finally:
         client.put("/api/system/settings", json={"watch_enabled": True})
+
+
+# --- M6.1: a folder named with a roll's serial is that roll --------------------------
+#
+# NegPy's camera-scan mode writes <output>/<roll name>/<roll name>_Frame001.ARW. Name
+# the roll after the archive's serial and the frames must land on the roll that
+# already exists — film, camera, lifecycle and all — not on a draft beside it.
+
+
+def test_a_folder_named_with_a_rolls_serial_adopts_that_roll(client, library):
+    roll = client.post("/api/films", json={"title": "Harbour, camera-scanned"}).json()["film"]
+    serial = roll["archive_serial"]
+    assert serial  # M4 hands every roll one
+
+    make_roll_folder(
+        library,
+        serial,
+        {
+            f"{serial}_Frame001.ARW": PNG_1x1 + b"cam-1",
+            f"{serial}_Frame002.ARW": PNG_1x1 + b"cam-2",
+        },
+    )
+    root = register(client, library).json()["root"]
+    result = scan(client, root["id"])
+
+    assert result["rolls_created"] == 0
+    assert result["rolls_adopted"] == 1
+    assert result["frames_added"] == 2
+
+    after = client.get(f"/api/films/{roll['id']}").json()
+    assert after["film"]["archive_serial"] == serial  # the same roll, not a neighbour
+    assert after["film"]["title"] == "Harbour, camera-scanned"  # its own title kept
+    assert after["film"]["status"] == "scanned"  # the first frame marks it scanned
+    assert [f["frame_number"] for f in after["images"]] == [1, 2]
+    assert all(f["storage_mode"] == "linked" for f in after["images"])
+
+    # No second roll with that serial appeared anywhere.
+    with_serial = [r for r in client.get("/api/films").json() if r["archive_serial"] == serial]
+    assert len(with_serial) == 1
+
+    # And a rescan is still a rescan.
+    again = scan(client, root["id"])
+    assert again["rolls_adopted"] == 0 and again["rolls_created"] == 0 and again["frames_added"] == 0
+
+
+def test_a_roll_that_already_has_a_folder_is_not_hijacked(client, library):
+    """Two folders are not one roll: a second folder with the same serial gets a
+    fresh serial of its own, as M4 always did."""
+    make_roll_folder(library, "2024-0031 First", {"a_001.tif": PNG_1x1 + b"first"})
+    root = register(client, library).json()["root"]
+    scan(client, root["id"])
+    first = next(r for r in client.get("/api/films").json() if r["title"] == "First")
+    assert first["archive_serial"] == "2024-0031"
+
+    make_roll_folder(library, "2024-0031 Second", {"b_001.tif": PNG_1x1 + b"second"})
+    result = scan(client, root["id"])
+    assert result["rolls_created"] == 1 and result["rolls_adopted"] == 0
+    second = next(r for r in client.get("/api/films").json() if r["title"] == "Second")
+    assert second["archive_serial"] != "2024-0031"
+    assert client.get(f"/api/films/{first['id']}").json()["film"]["image_count"] == 1

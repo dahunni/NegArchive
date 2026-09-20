@@ -81,8 +81,13 @@ export function backendUrl(path: string): string {
 /**
  * What an upload may be, matching the backend's allowlist (M2, R#18). Anything else
  * is refused with a 415, so the file picker does not offer it in the first place.
+ * The second line is the camera raws NegPy's scan mode produces (M6.1); keep it in
+ * step with `RAW_EXTENSIONS` in app/services/rawdecode.py.
  */
-export const ACCEPTED_IMAGE_TYPES = ".jpg,.jpeg,.png,.tif,.tiff,.webp,.dng"
+export const ACCEPTED_IMAGE_TYPES =
+  ".jpg,.jpeg,.png,.tif,.tiff,.webp,.dng," +
+  ".arw,.sr2,.srf,.nef,.nrw,.cr2,.cr3,.crw,.raf,.orf,.rw2,.rwl,.raw,.pef,.srw," +
+  ".3fr,.fff,.iiq,.mef,.mos,.mrw,.dcr,.kdc,.erf,.x3f"
 
 /** Catalog image URL for a camera, lens or filmstock; null when it has no image. */
 export function getCatalogImageUrl(item: {
@@ -1469,6 +1474,31 @@ export async function prepareNegpyHandoff(rollId: number, mode?: "link" | "copy"
   return (await res.json()).handoff
 }
 
+/** What to type into NegPy's Live View & Scan so the frames land on one roll (M6.1). */
+export interface ScanPlan {
+  roll_id: number
+  /** The share's rolls/ folder, as the container sees it. */
+  output_dir: string
+  /** The archive's serial — NegPy's "roll name" field. Null until the roll has one. */
+  roll_name: string | null
+  folder: string | null
+  example_file: string | null
+  root_id: number | null
+  mounted: boolean
+  watched: boolean
+  /** Seconds between watcher sweeps; null when the watcher is off. */
+  interval_seconds: number | null
+  ready: boolean
+  source_dir: string | null
+  already_linked: boolean
+}
+
+export async function getNegpyScanPlan(rollId: number): Promise<ScanPlan> {
+  const res = await apiFetch(`/api/negpy/rolls/${rollId}/scan`)
+  await assertOk(res, "Could not work out the scan folder for this roll.")
+  return (await res.json()).scan
+}
+
 export interface IngestReport {
   examined: number
   changed: number
@@ -1534,8 +1564,11 @@ export interface SmbCapabilities {
   /** Is `mount.cifs` in the image? */
   cifs_utils: boolean
   cifs_utils_path: string | null
-  /** Does the container have CAP_SYS_ADMIN? Without it, mounting fails. */
+  /** Does the container have CAP_SYS_ADMIN? Without it, mount() is EPERM. */
   sys_admin: boolean
+  /** CAP_DAC_READ_SEARCH, which `mount.cifs` asks for before it starts. Missing
+   *  it looks like "Unable to apply new capability set." and nothing else. */
+  dac_read_search: boolean
   mount_base: string
 }
 

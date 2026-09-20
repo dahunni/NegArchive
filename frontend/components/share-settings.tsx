@@ -426,6 +426,15 @@ export function ShareSettings({ onChanged }: { onChanged?: () => void }) {
               <CopyLine value={`${macBase}/exports`} label="the exports folder" />
               <CopyLine value={live?.client.filename_pattern ?? "{{ roll }}_{{ frame|pad(3) }}_{{ film }}"} label="the filename pattern" />
             </li>
+            <li className="space-y-1.5">
+              <span className="font-medium">6 · Scan straight into the archive (camera scanning)</span>
+              <span className="block type-meta">
+                If you scan with a camera, point NegPy’s Live View &amp; Scan at the folder below and name each
+                roll after the archive’s serial — every roll page shows the exact two lines to paste. The raws
+                are filed onto that roll as they land; nothing is copied.
+              </span>
+              <CopyLine value={`${macBase}/rolls`} label="the scan output folder" />
+            </li>
           </ol>
         )}
 

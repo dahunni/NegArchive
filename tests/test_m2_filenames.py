@@ -63,6 +63,8 @@ def upload(client, filename: str, roll_id=None, **data) -> dict:
         ("007.jpg", 7),
         ("img_0007.png", 7),
         ("IMG-0042.dng", 42),
+        ("Roll001_Frame023.ARW", 23),  # NegPy's camera-scan mode (M6.1)
+        ("NEG-2026-0007_Frame023.ARW", 23),  # the same, with the archive's serial as the roll
         ("/somewhere/else/Roll12_009.tiff", 9),
         ("Roll12.tif", None),  # a number glued to a word is part of the word
         ("untitled.jpg", None),
