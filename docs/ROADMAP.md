@@ -403,6 +403,17 @@ that workflow **the raw is the scan**, and the archive has to treat it as one.
       already has a folder is never hijacked. `GET /api/negpy/rolls/{id}/scan`;
       `livemode.scan_plan`.
 - [x] A sixth Mac-side live-mode step for scan mode (output folder → `rolls/`), in Settings.
+- [x] **The archive's own share, and the inbox that empties itself (M6.2).** The owner did not
+      want a NAS in the loop, and an export folder watched by reference fills up for ever. So the
+      stack serves one folder over SMB itself (`smb` service, `dockurr/samba`, `./data/inbox`,
+      `SHARE_NAME/USER/PASSWORD/PORT` in `.env`; nothing privileged), and
+      `app/services/inbox.py` sweeps it on every watcher tick, toggle or not: each finished file
+      is copied into managed storage, hashed, ingested like an upload, filed on the roll a
+      subfolder / its XMP / its export filename names (never created), marked a positive (a raw
+      excepted), committed — and then deleted from the inbox. Half-written files wait
+      (`SETTLE_SECONDS`), duplicates are removed and counted, rejects stay and are named,
+      emptied subfolders and macOS `._` twins are cleared. `GET /api/inbox`, `POST /api/inbox/sweep`;
+      Settings → *NegPy exports* prints the `smb://` address (same host logic as the footer).
 - [x] **A frame that is already a positive** (`image_assets.positive`, `0007_m6_positive`). The
       export-and-upload workflow — convert in NegPy, export a JPEG, drop it on the roll — printed
       the export a second time because the roll's film is a negative. `true` means "show as it

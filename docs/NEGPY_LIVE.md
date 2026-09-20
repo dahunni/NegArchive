@@ -129,14 +129,35 @@ the share you saved — `/Volumes/<share>/<folder>/rolls` is what Finder will ha
    `{{ roll }}_{{ frame|pad(3) }}_{{ film }}`, so finished positives file themselves onto the right
    roll ([NEGPY_INTEGRATION.md](NEGPY_INTEGRATION.md) explains why that pattern is parsed strictly).
 
-## The simplest version: upload the exports
+## The simplest version: the archive's own share (M6.2)
 
-If linking raws is more than you want, skip it. Convert in NegPy, export a JPEG or TIFF, and drop
-the export on the roll (or into the watched `exports/` folder). A NegPy export carries NegPy's own
-`negpy:` XMP, and a file that carries it is a converted positive — so the archive marks the frame
-*already a positive* and shows it as it is. It is never printed a second time, whatever the roll's
-film stock or the preview setting says. Exports that lost their metadata: tick "These are finished
-positives" on the upload box, or set *Shown as* on the frame in the viewer.
+Everything below this section is about mounting *somebody else's* share. Most people do not need
+it. The stack serves a share of its own — one folder, `./data/inbox`, the `smb` service in
+`docker-compose.yml` — and NegPy exports straight into it:
+
+1. Finder → Go → Connect to Server: `smb://<your server>/negarchive`, user and password from `.env`
+   (`SHARE_USER` / `SHARE_PASSWORD`, `negarchive` / `negarchive` until you change them). Settings →
+   *NegPy exports* prints the exact address and has a copy button.
+2. NegPy → Export: output folder `/Volumes/negarchive`, filename pattern
+   `{{ roll }}_{{ frame|pad(3) }}_{{ film }}`.
+3. Export.
+
+On the next sweep (`WATCH_INTERVAL_SECONDS`, or *Import now*) `app/services/inbox.py` takes each
+finished file **into** the archive exactly as an upload would — copied into managed storage,
+hashed, EXIF and `negpy:` XMP read — files it on the roll (a subfolder named after a roll's serial
+or title wins; otherwise `negpy:CaptureRoll` or the export filename; otherwise the frame waits
+unassigned on the Frames page — the inbox never creates a roll), marks it *already a positive*,
+commits, and **deletes it from the inbox**. The folder is a letterbox: it never fills up.
+
+What stays, and why: a file still being written (younger than ten seconds) waits for the next
+sweep; a file the archive cannot take — not an image, truncated, too large — stays and is named on
+the card; a file whose bytes the archive already holds is removed and counted as a duplicate.
+Emptied subfolders and macOS's `._` twins are cleared. The share is a plain container on one port,
+so nothing privileged is involved; if the host already runs an SMB server, set `SHARE_PORT`.
+
+Exports uploaded through the browser are handled the same way: a NegPy export is recognised by its
+XMP, the roll's upload box has a "These are finished positives" checkbox, and every frame has a
+*Shown as* choice in the viewer.
 
 ## Scanning straight into the archive (M6.1)
 

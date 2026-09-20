@@ -35,6 +35,7 @@ import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog"
+import { InboxCard } from "@/components/inbox-card"
 import { ShareSettings } from "@/components/share-settings"
 import { EmptyState } from "@/components/empty-state"
 import { useToast } from "@/hooks/use-toast"
@@ -256,6 +257,11 @@ export function SettingsWorkspace() {
           <Fact label="Password" value={info?.auth_required ? "set" : "not set (open on this network)"} />
         </dl>
       </section>
+
+      {/* ---------------------------------------------- M6.2: the archive's own share */}
+      {/* First, because it is the whole NegPy setup for most people: export into the
+          folder the stack serves, and the archive does the rest. */}
+      <InboxCard onChanged={reload} />
 
       {/* ------------------------------------------------- the share, and live mode */}
       {/* M6. Above the linked folders on purpose: on a two-machine setup the
