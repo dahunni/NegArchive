@@ -1608,6 +1608,53 @@ export interface SmbStatus {
   versions: string[]
 }
 
+/** The archive's own share, and what is waiting in it (M6.2). */
+export interface InboxStatus {
+  dir: string
+  exists: boolean
+  share: {
+    name: string
+    user: string
+    port: number
+    /** smb:// addresses for Finder, best first; empty when no LAN address is known. */
+    urls: string[]
+    url: string | null
+    /** What Finder mounts it as — NegPy's export folder. */
+    mac_path: string
+  }
+  pending: { count: number; files: { name: string; size: number; age_seconds: number; accepted: boolean }[] }
+  last_sweep_at: string | null
+  last_summary: string | null
+  /** Seconds between sweeps; null when the watcher is off. */
+  interval_seconds: number | null
+  filename_pattern: string
+}
+
+export interface InboxSweep {
+  imported: number
+  filed: number
+  unassigned: number
+  duplicates: number
+  settling: number
+  rejected: { name: string; reason: string }[]
+  folders_removed: number
+  roll_ids: number[]
+  image_ids: number[]
+  summary: string
+}
+
+export async function getInbox(): Promise<InboxStatus> {
+  const res = await apiFetch("/api/inbox")
+  await assertOk(res, "Could not read the inbox.")
+  return res.json()
+}
+
+export async function sweepInbox(): Promise<InboxStatus & { result: InboxSweep }> {
+  const res = await apiFetch("/api/inbox/sweep", { method: "POST" })
+  await assertOk(res, "Could not import from the inbox.")
+  return res.json()
+}
+
 /** The half of live mode that happens on the laptop. Comes from the backend so
  *  the folder names in the instructions are the ones it actually made. */
 export interface LiveClientSteps {

@@ -31,21 +31,30 @@ from typing import Optional
 
 from ..db import SessionLocal
 from ..models import LibraryRoot
-from . import importer, settings_store
+from . import importer, inbox, settings_store
 
 log = logging.getLogger("negarchive.watch")
 
 
 def _sweep_once() -> Optional[str]:
-    """One pass over the watched roots. Returns a log line, or None if idle."""
+    """One pass: the inbox, then the watched roots. Returns a log line, or None if idle."""
     db = SessionLocal()
     try:
+        changed = []
+        # M6.2: the inbox is not a library root and has no toggle — it exists to be
+        # emptied, so it is swept whenever the poller runs at all.
+        try:
+            taken = inbox.sweep(db)
+            if taken.changed:
+                changed.append(f"inbox: {taken.summary()}")
+        except Exception:  # noqa: BLE001 - the roots below must still be swept
+            log.exception("inbox sweep failed")
+            db.rollback()
         if not settings_store.get(db, "watch_enabled"):
-            return None
+            return "; ".join(changed) if changed else None
         roots = db.query(LibraryRoot).filter(LibraryRoot.watch.is_(True)).all()
         if not roots:
-            return None
-        changed = []
+            return "; ".join(changed) if changed else None
         for root in roots:
             result = importer.scan_root(db, root)
             if result.frames_added or result.rolls_created or result.frames_rehomed:

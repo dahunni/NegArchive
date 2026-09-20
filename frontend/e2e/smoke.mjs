@@ -774,6 +774,13 @@ async function main() {
   // Settings: the NegPy section, and writing the gear library NegPy reads.
   await page.goto(`${BASE_URL}/settings`, { waitUntil: "load" })
   check("M5: the settings page has a NegPy section", await visible(page.getByTestId("negpy-settings")))
+  // M6.2: the archive's own share, first thing on the page: the address, the
+  // export folder, and what is waiting.
+  check("M6.2: the settings page shows the inbox share", await visible(page.getByTestId("inbox-card")))
+  const inboxText = (await page.getByTestId("inbox-card").textContent()) || ""
+  check("M6.2: the inbox card names the export folder", inboxText.includes("/Volumes/"))
+  check("M6.2: the inbox card gives the filename pattern", inboxText.includes("{{ roll }}_{{ frame|pad(3) }}_{{ film }}"))
+  check("M6.2: the inbox reports what is waiting", await visible(page.getByTestId("inbox-readout")))
   check("M5: metadata ingest is on by default", await visible(page.getByTestId("negpy-ingest-toggle")))
   await page.getByTestId("negpy-sync-gear").click()
   await page.waitForTimeout(1500)

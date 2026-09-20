@@ -913,12 +913,19 @@ After that you just work. Edit a frame in NegPy, and within 30 seconds the archi
 edited with a one-line summary of the recipe — because the sidecar lands next to the file the
 archive linked, and the watch sweep compares its mtime.
 
-**Finished positives.** The simplest workflow of all: convert in NegPy, export a JPEG or TIFF, drop
-it on the roll. A NegPy export carries NegPy's own XMP, so the archive knows it is *already a
-positive* and shows it as it is — it is never printed a second time, whatever the roll's film stock
-or the preview setting says. For exports that lost their metadata there is a checkbox on the roll's
-upload box ("These are finished positives"), and every frame has a *Shown as* choice in the viewer:
-decide from the film, already a positive, or a negative to print.
+**The simplest workflow: export into the archive's own share.** The stack serves one folder over
+SMB itself (`./data/inbox`, the `smb` service in `docker-compose.yml`) — no NAS, nothing privileged.
+Mount it on the Mac once (Finder ⌘K → `smb://<your server>/negarchive`, user and password from
+`.env`), set NegPy's export folder to `/Volumes/negarchive` with the filename pattern
+`{{ roll }}_{{ frame|pad(3) }}_{{ film }}`, and export. Every 30 seconds the archive takes what
+landed there **into** the archive — filed on the roll the file names (its serial in the name or in
+NegPy's XMP, or a subfolder named after the roll), marked as the finished positive it is, never
+printed a second time — and deletes it from the inbox, so the folder never fills up. Duplicates are
+dropped; anything the archive cannot take stays put and is named in Settings → *NegPy exports*.
+
+Uploads of finished positives work the same way from the browser: a NegPy export is recognised by
+its XMP, the roll's upload box has a "These are finished positives" checkbox for exports that lost
+their metadata, and every frame has a *Shown as* choice in the viewer.
 
 **Camera scanning.** If you scan with a camera through NegPy's *Live View & Scan*, every roll page
 has a "Scan with NegPy" card with the two things to paste: the share's `rolls/` folder as the

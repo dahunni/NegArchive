@@ -85,6 +85,11 @@ services:
       # automatically a place library roots and NegPy's folders may live, so
       # LIBRARY_ROOTS_ALLOW above is not needed for it.
       SMB_MOUNT_BASE: ${SMB_MOUNT_BASE:-/mnt/negarchive}
+      # M6.2: how the `smb` service below is reachable, so Settings can print the
+      # address to paste into Finder. The password stays with that service.
+      SHARE_NAME: ${SHARE_NAME:-negarchive}
+      SHARE_USER: ${SHARE_USER:-negarchive}
+      SHARE_PORT: ${SHARE_PORT:-445}
       UI_PORT: ${UI_PORT:-8021}
     # M6 — mounting the share NegPy and NegArchive both work in.
     #
@@ -129,6 +134,29 @@ services:
       retries: 6
       start_period: 40s
     command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+
+  # M6.2 — the archive's own share. One folder, `./data/inbox`, served over SMB
+  # by the stack itself, so NegPy on your laptop exports straight into the
+  # archive: Finder ⌘K → smb://<this host>/negarchive, then set NegPy's export
+  # folder to /Volumes/negarchive. Every WATCH_INTERVAL_SECONDS the archive takes
+  # what landed there onto its rolls and deletes it from the inbox, so the folder
+  # never fills up. Settings → "NegPy exports" shows the address and what is
+  # waiting.
+  #
+  # Nothing privileged here (unlike the client mount above): it is a normal
+  # container listening on one port. If this host already runs an SMB server,
+  # set SHARE_PORT to something else (Finder accepts smb://host:port/share).
+  smb:
+    image: dockurr/samba
+    restart: unless-stopped
+    environment:
+      NAME: ${SHARE_NAME:-negarchive}
+      USER: ${SHARE_USER:-negarchive}
+      PASS: ${SHARE_PASSWORD:-negarchive}
+    ports:
+      - "${SHARE_PORT:-445}:445"
+    volumes:
+      - ${DATA_DIR:-./data}/inbox:/shared
 
   frontend:
     image: ghcr.io/${NEGARCHIVE_IMAGE_OWNER:-dahunni}/negarchive-frontend:${NEGARCHIVE_TAG:-latest}

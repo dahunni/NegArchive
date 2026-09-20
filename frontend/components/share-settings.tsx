@@ -45,7 +45,7 @@ function formatBytes(bytes: number): string {
 }
 
 /** A one-line command with a copy button. The steps are useless if they are retyped. */
-function CopyLine({ value, label }: { value: string; label: string }) {
+export function CopyLine({ value, label }: { value: string; label: string }) {
   const [copied, setCopied] = useState(false)
   return (
     <div className="flex items-stretch gap-2">
