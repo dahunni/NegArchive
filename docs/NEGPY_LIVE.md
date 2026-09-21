@@ -96,19 +96,20 @@ that is asleep costs you a no-op, not your links.
 
 ## The layout live mode makes
 
-One button in Settings (`POST /api/smb/live`) creates this on the share and wires it up:
+One button in Settings (`POST /api/share/setup`, and the older `POST /api/smb/live`) creates this
+on the share and wires it up:
 
 ```
+inbox/          what NegPy exports; taken into the archive and deleted (app/services/inbox.py)
 rolls/          scans live here forever; NegArchive links them, NegPy edits them in place
-exports/        what NegPy exports; watched too, so finished positives come back on their own
 negpy-user/     gear/ and presets/metadata/ — NegArchive writes, NegPy reads
 handoff/        a prepared roll, for the times you still want one
 ```
 
-It registers `rolls/` and `exports/` as watched library roots, points `negpy_user_dir` and
-`negpy_handoff_dir` at the share, turns the watcher on, and syncs the gear catalog. It creates
-nothing that exists and turns nothing off, so running it twice reports that there was nothing to
-do.
+It registers `rolls/` as a watched library root (the inbox is not a root: it is emptied, not
+indexed), points `negpy_user_dir` and `negpy_handoff_dir` at the share, turns the watcher on, and
+syncs the gear catalog. It creates nothing that exists and turns nothing off, so running it twice
+reports that there was nothing to do.
 
 ## The five steps on the Mac (and a sixth for camera scanning)
 
@@ -125,7 +126,7 @@ the share you saved — `/Volumes/<share>/<folder>/rolls` is what Finder will ha
    mkdir -p ~/.negpy/presets && ln -sfn "/Volumes/photo/film/negpy-user/presets/metadata" ~/.negpy/presets/metadata
    ```
    Symlinks rather than relocating `NEGPY_USER_DIR` wholesale, so `edits.db` stays on local disk.
-5. **Send exports back.** Set NegPy's output folder to `.../exports` and its filename pattern to
+5. **Send exports back.** Set NegPy's output folder to `.../inbox` and its filename pattern to
    `{{ roll }}_{{ frame|pad(3) }}_{{ film }}`, so finished positives file themselves onto the right
    roll ([NEGPY_INTEGRATION.md](NEGPY_INTEGRATION.md) explains why that pattern is parsed strictly).
 

@@ -1,9 +1,6 @@
-import { Suspense } from "react"
-
 import { getCameras, getFilmsPage, getFilmstocks, getLenses, getLocations, getWork } from "@/lib/api"
 import { type RollSearchParams, queryFromSearchParams } from "@/lib/roll-query"
 import { RollBrowser } from "@/components/roll-browser"
-import { RollListSkeleton } from "@/components/skeletons"
 
 /**
  * Rolls are the home page: a roll is the unit of work, so it is what you land on.
@@ -32,18 +29,16 @@ export default async function RollsHomePage({
   ])
 
   return (
-    <Suspense fallback={<RollListSkeleton />}>
-      <RollBrowser
-        initial={films}
-        initialQuery={query}
-        openWizard={params.new === "1"}
-        focusSearch={params.focus === "search"}
-        cameras={cameras}
-        lenses={lenses}
-        filmstocks={filmstocks}
-        locations={locations}
-        work={work}
-      />
-    </Suspense>
+    <RollBrowser
+      initial={films}
+      initialQuery={query}
+      openWizard={params.new === "1"}
+      focusSearch={params.focus === "search"}
+      cameras={cameras}
+      lenses={lenses}
+      filmstocks={filmstocks}
+      locations={locations}
+      work={work}
+    />
   )
 }

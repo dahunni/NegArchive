@@ -33,10 +33,9 @@ def public_base(db: Session) -> str:
 
 
 def _roll_payload(db: Session, roll: FilmRoll) -> dict:
-    from .api import film_to_dict, roll_summaries
+    from .api import NO_SCANS, film_to_dict, roll_summaries
 
-    count, strip = roll_summaries(db, [roll.id]).get(roll.id, (0, []))
-    return film_to_dict(roll, count, strip)
+    return film_to_dict(roll, *roll_summaries(db, [roll.id]).get(roll.id, NO_SCANS))
 
 
 @router.post("/scan/resolve")
@@ -56,12 +55,18 @@ def resolve(body: schemas.ScanToken, db: Session = Depends(get_db)):
             return error_response("unknown_location", f"No location has the code LOC-{parsed['id']}.", 404)
         return {"kind": "location", "location": loc_svc.to_dict(node), "url": f"/locations/{node.id}", "input": body.code}
     if parsed["kind"] == "roll":
-        roll = serials.find_by_serial(db, parsed["serial"])
-        if roll is None and parsed.get("loose"):
-            # A typed word rather than a serial: try the title.
-            roll = db.query(FilmRoll).filter(FilmRoll.title.ilike(parsed["serial"])).first()
-        if roll is None:
-            return error_response("unknown_serial", f"No roll carries the serial {parsed['serial']}.", 404)
+        if "id" in parsed:
+            # The roll page's own URL (`/films/12`), scanned or pasted.
+            roll = db.get(FilmRoll, parsed["id"])
+            if roll is None:
+                return error_response("unknown_roll", f"No roll has the id {parsed['id']}.", 404)
+        else:
+            roll = serials.find_by_serial(db, parsed["serial"])
+            if roll is None and parsed.get("loose"):
+                # A typed word rather than a serial: try the title.
+                roll = db.query(FilmRoll).filter(FilmRoll.title.ilike(parsed["serial"])).first()
+            if roll is None:
+                return error_response("unknown_serial", f"No roll carries the serial {parsed['serial']}.", 404)
         return {
             "kind": "roll",
             "roll": _roll_payload(db, roll),
@@ -114,8 +119,8 @@ def codes_for_roll(film_id: int, db: Session = Depends(get_db)):
         "serial": roll.archive_serial,
         "qr_text": codes.roll_url(base, roll.archive_serial),
         "barcode_text": roll.archive_serial,
-        "qr_svg_url": f"/api/codes/qr.svg?text={codes.roll_url(base, roll.archive_serial)}",
-        "barcode_svg_url": f"/api/codes/code128.svg?text={roll.archive_serial}",
+        "qr_svg_url": codes.svg_url("qr", codes.roll_url(base, roll.archive_serial)),
+        "barcode_svg_url": codes.svg_url("code128", roll.archive_serial),
         "public_base": base,
     }
 
@@ -130,8 +135,8 @@ def codes_for_location(location_id: int, db: Session = Depends(get_db)):
         "code": f"LOC-{node.id}",
         "qr_text": codes.location_url(base, node.id),
         "barcode_text": f"LOC-{node.id}",
-        "qr_svg_url": f"/api/codes/qr.svg?text={codes.location_url(base, node.id)}",
-        "barcode_svg_url": f"/api/codes/code128.svg?text=LOC-{node.id}",
+        "qr_svg_url": codes.svg_url("qr", codes.location_url(base, node.id)),
+        "barcode_svg_url": codes.svg_url("code128", f"LOC-{node.id}"),
         "public_base": base,
     }
 
@@ -163,7 +168,7 @@ def print_queue(
     per roll; it used to read every row of ``location_moves`` into a dict, which is
     every move the archive has ever recorded.
     """
-    from .api import film_to_dict, roll_summaries
+    from .api import NO_SCANS, film_to_dict, roll_summaries
 
     latest_move = (
         db.query(LocationMove.roll_id.label("roll_id"), func.max(LocationMove.moved_at).label("moved_at"))
@@ -201,7 +206,7 @@ def print_queue(
     summaries = roll_summaries(db, [roll.id for roll, _ in rows])
     items = [
         {
-            **film_to_dict(roll, *summaries.get(roll.id, (0, []))),
+            **film_to_dict(roll, *summaries.get(roll.id, NO_SCANS)),
             "reason": "never_printed" if roll.label_printed_at is None else "moved_since_print",
         }
         for roll, _ in rows

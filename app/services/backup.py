@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
 from uuid import uuid4
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from .. import paths
@@ -142,13 +143,16 @@ def iter_export_zip(db: Session, chunk_bytes: int = 1024 * 1024) -> Iterator[byt
     """Yield the export ZIP piece by piece."""
     payload = table_payload(db)
     managed: List[tuple[str, Path]] = []
+    seen: set[str] = set()
     for row in payload["tables"]["image_assets"]:
         if (row.get("storage_mode") or "managed") != "managed":
             continue
         resolved = paths.resolve(row.get("path"))
-        if resolved and resolved.is_file():
-            managed.append((FILES_PREFIX + paths.relative_part(row["path"]), resolved))
-    payload["file_count"] = len(managed)
+        arcname = FILES_PREFIX + paths.relative_part(row.get("path") or "")
+        # Two records can point at one file; the ZIP holds it once.
+        if resolved and resolved.is_file() and arcname not in seen:
+            seen.add(arcname)
+            managed.append((arcname, resolved))
 
     # M5: a managed file's `.negpy` sidecar travels with it. It is the record of
     # an edit somebody made in NegPy, it is tiny, and an export that dropped it
@@ -174,7 +178,10 @@ def iter_export_zip(db: Session, chunk_bytes: int = 1024 * 1024) -> Iterator[byt
                 continue  # a file that vanished mid-export must not abort it
             with handle:
                 # Images are already compressed; storing them is much faster.
-                with archive.open(zipfile.ZipInfo(arcname), "w") as target:
+                # force_zip64: zipfile decides from `file_size`, which is 0 on a
+                # streamed member, and would otherwise raise once a single scan
+                # passes 2 GiB — mid-stream, after the client has half the ZIP.
+                with archive.open(zipfile.ZipInfo(arcname), "w", force_zip64=True) as target:
                     while True:
                         data = handle.read(chunk_bytes)
                         if not data:
@@ -242,8 +249,6 @@ CSV_COLUMNS = [
 
 def rolls_csv(db: Session) -> str:
     """One line per roll, the columns you would actually put in a binder index."""
-    from sqlalchemy import func
-
     from . import locations as loc_svc
 
     counts = dict(
@@ -355,7 +360,11 @@ def import_archive(db: Session, archive_path: str, dry_run: bool = False) -> Imp
         for table, model, fields in (
             ("cameras", Camera, ("name", "image_path", "mount", "notes")),
             ("lenses", Lens, ("name", "mount", "image_path", "notes")),
-            ("film_stocks", FilmStock, ("name", "iso", "kind", "expired", "expiration_date", "image_path")),
+            (
+                "film_stocks",
+                FilmStock,
+                ("name", "manufacturer", "format", "iso", "kind", "expired", "expiration_date", "image_path"),
+            ),
         ):
             mapping: Dict[int, int] = {}
             for row in tables.get(table, []):
@@ -377,13 +386,90 @@ def import_archive(db: Session, archive_path: str, dry_run: bool = False) -> Imp
                 mapping[row["id"]] = obj.id
             gear_maps[table] = mapping
 
+        def gear_id(table: str, old: Any) -> Optional[int]:
+            return gear_maps.get(table, {}).get(old) if old is not None else None
+
+        # --- sleeve layouts, matched by name (M4) -----------------------------
+        layout_map: Dict[int, int] = {}
+        has_default = db.query(SleeveLayout).filter(SleeveLayout.is_default.is_(True)).first() is not None
+        for row in tables.get("sleeve_layouts", []):
+            existing = db.query(SleeveLayout).filter(SleeveLayout.name == row.get("name")).first()
+            if existing is not None:
+                layout_map[row["id"]] = existing.id
+                report.bump("sleeve_layouts_skipped")
+                continue
+            report.bump("sleeve_layouts_added")
+            if dry_run:
+                continue
+            layout = SleeveLayout(
+                name=row.get("name") or f"Layout {row['id']}",
+                rows=int(row.get("rows") or 1),
+                frames_per_row=int(row.get("frames_per_row") or 1),
+                film_format=row.get("film_format"),
+                # This archive's default stays its default.
+                is_default=bool(row.get("is_default")) and not has_default,
+            )
+            db.add(layout)
+            db.flush()
+            has_default = has_default or layout.is_default
+            layout_map[row["id"]] = layout.id
+
+        # --- locations, matched by parent + kind + name, parents first (M4) ----
+        location_map: Dict[int, int] = {}
+        pending = list(tables.get("locations", []))
+        while pending:
+            progressed = False
+            for row in list(pending):
+                parent_old = row.get("parent_id")
+                if parent_old is not None and parent_old not in location_map:
+                    if any(r["id"] == parent_old for r in pending):
+                        continue  # its parent comes later in the list
+                    parent_old = None  # parent missing from the export: becomes a root
+                pending.remove(row)
+                progressed = True
+                parent_new = location_map.get(parent_old) if parent_old is not None else None
+                existing = (
+                    db.query(Location)
+                    .filter(
+                        Location.parent_id == parent_new if parent_new is not None else Location.parent_id.is_(None),
+                        Location.kind == row.get("kind"),
+                        Location.name == row.get("name"),
+                    )
+                    .first()
+                )
+                if existing is not None:
+                    location_map[row["id"]] = existing.id
+                    report.bump("locations_skipped")
+                    continue
+                report.bump("locations_added")
+                if dry_run:
+                    continue
+                node = Location(
+                    parent_id=parent_new,
+                    kind=row.get("kind") or "other",
+                    name=row.get("name") or "Untitled",
+                    code=row.get("code"),
+                    sort_order=int(row.get("sort_order") or 0),
+                    notes=row.get("notes"),
+                    capacity=row.get("capacity"),
+                    sleeve_layout_id=layout_map.get(row.get("sleeve_layout_id")),
+                    created_at=_parse_datetime(row.get("created_at")) or datetime.utcnow(),
+                )
+                db.add(node)
+                db.flush()
+                location_map[row["id"]] = node.id
+            if not progressed:
+                break  # a cycle in the export: whatever is left is not importable
+
         # --- rolls, matched by archive serial, then by title + creation time ---
         roll_map: Dict[int, int] = {}
+        added_rolls: set[int] = set()
         for row in tables.get("film_rolls", []):
             serial = (row.get("archive_serial") or "").strip()
             existing = None
             if serial:
-                existing = db.query(FilmRoll).filter(FilmRoll.archive_serial == serial).first()
+                # The unique index is on upper(): match the way it does.
+                existing = db.query(FilmRoll).filter(func.upper(FilmRoll.archive_serial) == serial.upper()).first()
             else:
                 # Not every roll has a serial yet (M4 introduces the scheme), and
                 # re-importing must still not duplicate them. Title plus the exact
@@ -402,18 +488,40 @@ def import_archive(db: Session, archive_path: str, dry_run: bool = False) -> Imp
             report.bump("film_rolls_added")
             if dry_run:
                 continue
+            strips = row.get("strips")
             roll = FilmRoll(
                 created_at=_parse_datetime(row.get("created_at")) or datetime.utcnow(),
                 title=row.get("title") or "Untitled roll",
+                # Gear by id where the catalog entry came across, the legacy name either way.
+                camera_id=gear_id("cameras", row.get("camera_id")),
+                lens_id=gear_id("lenses", row.get("lens_id")),
+                film_stock_id=gear_id("film_stocks", row.get("film_stock_id")),
                 camera=row.get("camera"),
                 lens=row.get("lens"),
                 film_type=row.get("film_type"),
+                format=row.get("format"),
                 notes=row.get("notes"),
+                developer=row.get("developer"),
+                development_dilution=row.get("development_dilution"),
+                push_pull=row.get("push_pull"),
+                development_time=row.get("development_time"),
                 start_date=_parse_date(row.get("start_date")),
                 end_date=_parse_date(row.get("end_date")),
                 building=row.get("building"),
                 folder=row.get("folder"),
                 archive_serial=row.get("archive_serial"),
+                # M4: where it is and where it is in its life.
+                location_id=location_map.get(row.get("location_id")),
+                strips=[int(n) for n in strips] if isinstance(strips, list) else None,
+                status=row.get("status") or "back",
+                loaded_at=_parse_datetime(row.get("loaded_at")),
+                shot_at=_parse_datetime(row.get("shot_at")),
+                lab_sent_at=_parse_datetime(row.get("lab_sent_at")),
+                lab_back_at=_parse_datetime(row.get("lab_back_at")),
+                scanned_at=_parse_datetime(row.get("scanned_at")),
+                sleeved_at=_parse_datetime(row.get("sleeved_at")),
+                loaded_camera_id=gear_id("cameras", row.get("loaded_camera_id")),
+                label_printed_at=_parse_datetime(row.get("label_printed_at")),
                 # source_dir is a path on the exporting machine; it is unique, so
                 # importing it would break the next import from the same source.
                 source_dir=None,
@@ -421,6 +529,24 @@ def import_archive(db: Session, archive_path: str, dry_run: bool = False) -> Imp
             db.add(roll)
             db.flush()
             roll_map[row["id"]] = roll.id
+            added_rolls.add(row["id"])
+
+        # --- the moves of the rolls that were just added (M4) ------------------
+        for row in tables.get("location_moves", []):
+            if row.get("roll_id") not in added_rolls:
+                continue  # the roll was here already: its history is its own
+            report.bump("location_moves_added")
+            if dry_run:
+                continue
+            db.add(
+                LocationMove(
+                    roll_id=roll_map[row["roll_id"]],
+                    from_location_id=location_map.get(row.get("from_location_id")),
+                    to_location_id=location_map.get(row.get("to_location_id")),
+                    moved_at=_parse_datetime(row.get("moved_at")) or datetime.utcnow(),
+                    note=row.get("note"),
+                )
+            )
 
         # --- frames, matched by content hash ----------------------------------
         for row in tables.get("image_assets", []):
@@ -443,6 +569,7 @@ def import_archive(db: Session, archive_path: str, dry_run: bool = False) -> Imp
             stored_path = row.get("path") or ""
             member = FILES_PREFIX + paths.relative_part(stored_path)
             new_path = stored_path
+            sidecar_path = row.get("sidecar_path")
 
             if storage_mode == "managed":
                 if member in names:
@@ -451,16 +578,18 @@ def import_archive(db: Session, archive_path: str, dry_run: bool = False) -> Imp
                     target_dir.mkdir(parents=True, exist_ok=True)
                     suffix = Path(stored_path).suffix or ".jpg"
                     filename = f"{uuid4().hex}{suffix}"
-                    with archive.open(member) as source, open(target_dir / filename, "wb") as target:
-                        while True:
-                            data = source.read(1024 * 1024)
-                            if not data:
-                                break
-                            target.write(data)
+                    _extract(archive, member, target_dir / filename)
                     new_path = paths.public_path("uploads", subdir, filename)
                     report.bump("files_copied")
+                    # M5: the `.negpy` the export put beside the file comes along.
+                    sidecar_path = None
+                    if member + ".negpy" in names:
+                        _extract(archive, member + ".negpy", target_dir / (filename + ".negpy"))
+                        sidecar_path = str(target_dir / (filename + ".negpy"))
+                        report.bump("sidecars_copied")
                 else:
                     report.bump("files_missing")
+                    sidecar_path = None
 
             db.add(
                 ImageAsset(
@@ -475,6 +604,12 @@ def import_archive(db: Session, archive_path: str, dry_run: bool = False) -> Imp
                     storage_mode=storage_mode,
                     source_path=row.get("source_path"),
                     content_hash=digest,
+                    # M5/M6: what the file said, what NegPy did to it, what it is.
+                    capture_metadata=row.get("capture_metadata"),
+                    sidecar_path=sidecar_path,
+                    negpy_edited_at=_parse_datetime(row.get("negpy_edited_at")),
+                    negpy_recipe=row.get("negpy_recipe"),
+                    positive=row.get("positive"),
                 )
             )
 
@@ -485,6 +620,16 @@ def import_archive(db: Session, archive_path: str, dry_run: bool = False) -> Imp
     else:
         db.commit()
     return report
+
+
+def _extract(archive: zipfile.ZipFile, member: str, target: Path) -> None:
+    """Copy one member out of the ZIP, a megabyte at a time."""
+    with archive.open(member) as source, open(target, "wb") as sink:
+        while True:
+            data = source.read(1024 * 1024)
+            if not data:
+                break
+            sink.write(data)
 
 
 def newest_backup() -> Optional[str]:

@@ -234,8 +234,12 @@ export function GearFields({
 }) {
   const selectedCamera = cameras.find((c) => String(c.id) === values.camera_id) || null
   // Lenses that cannot go on the chosen camera are noise; show all when nothing is chosen.
+  // …but the lens already on the roll stays in the list whatever its mount says
+  // (R#78), because a select whose value is missing from its items shows nothing.
   const usableLenses = selectedCamera?.mount
-    ? lenses.filter((lens) => !lens.mount || lens.mount === selectedCamera.mount)
+    ? lenses.filter(
+        (lens) => !lens.mount || lens.mount === selectedCamera.mount || String(lens.id) === values.lens_id,
+      )
     : lenses
 
   return (

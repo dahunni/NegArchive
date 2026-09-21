@@ -31,12 +31,22 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from .. import rawdecode
+
 #: The extension NegPy uses.
 SUFFIX = ".negpy"
+
+#: Extensions an image next to a sidecar can have, for the replaced-suffix spelling.
+_IMAGE_SUFFIXES = frozenset({".jpg", ".jpeg", ".png", ".tif", ".tiff", ".webp"}) | rawdecode.RAW_EXTENSIONS
+
+#: Top-level keys that are bookkeeping, not settings, when a sidecar has no wrapper.
+_METADATA_KEYS = frozenset(
+    {"version", "file_path", "file_hash", "hash", "path", "source", "saved_at", "updated_at", "modified_at"}
+)
 
 #: Sidecars are small. A "sidecar" that is not is not one.
 MAX_SIDECAR_BYTES = 4 * 1024 * 1024
@@ -88,7 +98,7 @@ class Sidecar:
                 if isinstance(parsed, dict):
                     return parsed
         # A sidecar that *is* the settings object, with no wrapper.
-        return {k: v for k, v in self.data.items() if k not in {"version", "file_path", "file_hash", "saved_at", "updated_at"}}
+        return {k: v for k, v in self.data.items() if k not in _METADATA_KEYS}
 
     def summary(self) -> str:
         """One line a person can read, e.g. ``12 settings · inverted · cropped``."""
@@ -161,7 +171,9 @@ def image_stem(filename: str) -> str:
     name = Path(str(filename)).name
     if name.lower().endswith(SUFFIX):
         name = name[: -len(SUFFIX)]
-    return Path(name).stem if Path(name).suffix else name
+    # Only an *image* extension is stripped: ``my.photo.negpy`` belongs to
+    # ``my.photo.tif``, not to ``my``.
+    return Path(name).stem if Path(name).suffix.lower() in _IMAGE_SUFFIXES else name
 
 
 def read(path: str | Path) -> Optional[Sidecar]:
@@ -183,11 +195,26 @@ def read(path: str | Path) -> Optional[Sidecar]:
 
     stated = data.get("saved_at") or data.get("updated_at") or data.get("modified_at")
     if isinstance(stated, str):
-        try:
-            edited_at = datetime.fromisoformat(stated.replace("Z", "+00:00")).replace(tzinfo=None)
-        except ValueError:
-            pass
+        parsed = parse_utc(stated)
+        if parsed is not None:
+            edited_at = parsed
     return Sidecar(path=str(target), edited_at=edited_at, data=data)
+
+
+def parse_utc(value: str) -> Optional[datetime]:
+    """An ISO timestamp as a naive UTC datetime, the way file mtimes are kept.
+
+    An offset is *converted*, not dropped: ``12:00+02:00`` is 10:00 UTC, and
+    comparing it with a UTC mtime as if it were 12:00 would hide the next two
+    hours of edits.
+    """
+    try:
+        parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
+    return parsed
 
 
 def read_for(image_path: str | Path) -> Optional[Sidecar]:

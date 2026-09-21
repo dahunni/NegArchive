@@ -19,6 +19,7 @@ import { Button } from "@/components/ui/button"
 import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import { useToast } from "@/hooks/use-toast"
 import {
+  EMPTY_ROLL,
   GearFields,
   type RollFormValues,
   StorageFields,
@@ -50,16 +51,21 @@ export function RollEditSheet({
 }) {
   const router = useRouter()
   const { toast } = useToast()
-  const [values, setValues] = useState<RollFormValues>(() => (film ? fromFilm(film) : ({} as RollFormValues)))
+  // Never `{}`: every input below is controlled, and an undefined value makes React
+  // hand it an uncontrolled field it then complains about on the first keystroke (R#75).
+  const [values, setValues] = useState<RollFormValues>(() => (film ? fromFilm(film) : EMPTY_ROLL))
   const [errors, setErrors] = useState<Record<string, string>>({})
   const [saving, setSaving] = useState(false)
 
+  // Keyed on the roll's **id**, not the object: a background refresh hands down a new
+  // Film with the same id, and resetting on that would throw away what is being typed.
+  const filmId = film?.id ?? null
   useEffect(() => {
-    if (open && film) {
-      setValues(fromFilm(film))
-      setErrors({})
-    }
-  }, [open, film])
+    if (!open || !film) return
+    setValues(fromFilm(film))
+    setErrors({})
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, filmId])
 
   const change = (patch: Partial<RollFormValues>) => {
     setValues((current) => ({ ...current, ...patch }))

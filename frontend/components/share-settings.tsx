@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useState } from "react"
-import { Check, Copy, HardDrive, Loader2, Plug, Unplug } from "lucide-react"
+import { HardDrive, Loader2, Plug, Unplug } from "lucide-react"
 
 import {
   type SmbStatus,
@@ -18,6 +18,7 @@ import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { CopyValue } from "@/components/copy-value"
 import { useToast } from "@/hooks/use-toast"
 
 /**
@@ -43,33 +44,7 @@ function formatBytes(bytes: number): string {
 
 /** A one-line command with a copy button. The steps are useless if they are retyped. */
 export function CopyLine({ value, label }: { value: string; label: string }) {
-  const [copied, setCopied] = useState(false)
-  return (
-    <div className="flex items-stretch gap-2">
-      <code className="min-w-0 flex-1 overflow-x-auto whitespace-pre rounded-md border border-border bg-muted/50 px-2 py-1.5 type-numeric text-xs">
-        {value}
-      </code>
-      <Button
-        type="button"
-        variant="outline"
-        size="sm"
-        className="shrink-0"
-        aria-label={`Copy ${label}`}
-        onClick={async () => {
-          try {
-            await navigator.clipboard.writeText(value)
-            setCopied(true)
-            setTimeout(() => setCopied(false), 1500)
-          } catch {
-            // A browser that refuses the clipboard is not an error worth a toast:
-            // the text is right there to select.
-          }
-        }}
-      >
-        {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
-      </Button>
-    </div>
-  )
+  return <CopyValue value={value} label={label} variant="command" />
 }
 
 export function ShareSettings({ onChanged }: { onChanged?: () => void }) {
@@ -87,10 +62,15 @@ export function ShareSettings({ onChanged }: { onChanged?: () => void }) {
   const [version, setVersion] = useState("3.0")
   const [readonly, setReadonly] = useState(false)
 
-  const reload = async () => {
+  /**
+   * `intoForm` is the whole point of the split: testing, mounting or forgetting a
+   * password must not overwrite what is half-typed in the fields. Only a save —
+   * and the first load — may put the stored config back into the inputs.
+   */
+  const reload = async (intoForm: boolean) => {
     const nextStatus = await getSmbStatus().catch(() => null)
     setStatus(nextStatus)
-    if (nextStatus) {
+    if (nextStatus && intoForm) {
       setHost(nextStatus.config.host)
       setShare(nextStatus.config.share)
       setSubpath(nextStatus.config.subpath)
@@ -101,16 +81,16 @@ export function ShareSettings({ onChanged }: { onChanged?: () => void }) {
   }
 
   useEffect(() => {
-    void reload()
+    void reload(true)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  const run = async (key: string, work: () => Promise<string>) => {
+  const run = async (key: string, work: () => Promise<string>, intoForm = false) => {
     setBusy(key)
     setError(null)
     try {
       const message = await work()
-      await reload()
+      await reload(intoForm)
       onChanged?.()
       if (message) toast({ title: message })
     } catch (caught) {
@@ -136,7 +116,7 @@ export function ShareSettings({ onChanged }: { onChanged?: () => void }) {
       })
       setPassword("")
       return "Share saved"
-    })
+    }, true)
 
   const test = () =>
     run("test", async () => {

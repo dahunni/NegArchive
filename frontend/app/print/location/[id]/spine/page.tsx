@@ -4,7 +4,11 @@ import { locationCodes, publicBase } from "@/components/print/data"
 import { loadLocationBundle, rollsUnder, serialRange, yearRange } from "@/components/print/location-data"
 import { PrintFrame } from "@/components/print/print-frame"
 
-/** Binder spine label (M4): 50 × 200 mm, four per A4 landscape strip, cut by hand. */
+/**
+ * Binder spine label (M4): 50 × 200 mm, two copies side by side on one A4 portrait
+ * sheet, cut by hand. Two labels and the note fill the 190 mm content box exactly
+ * (50 + 50 + 90); a third column would run off the paper and be clipped.
+ */
 export default async function SpinePage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params
   const [bundle, base] = await Promise.all([loadLocationBundle(Number(id)), publicBase()])
@@ -16,7 +20,7 @@ export default async function SpinePage({ params }: { params: Promise<{ id: stri
   return (
     <PrintFrame title={`Spine label ${node.label}`}>
       <section className="sheet" data-testid="spine-sheet">
-        <div className="label-sheet" style={{ gridTemplateColumns: "repeat(4, 50mm)", columnGap: "0", justifyContent: "start" }}>
+        <div className="label-sheet" style={{ gridTemplateColumns: "50mm 50mm 90mm", columnGap: "0", justifyContent: "start" }}>
           {[0, 1].map((copy) => (
             <div key={copy} className="label spine" data-testid="spine-label" style={{ display: "flex", flexDirection: "column", alignItems: "center", textAlign: "center" }}>
               {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -40,7 +44,7 @@ export default async function SpinePage({ params }: { params: Promise<{ id: stri
               </div>
             </div>
           ))}
-          <div className="meta" style={{ gridColumn: "3 / span 2", padding: "4mm", fontSize: "8pt" }}>
+          <div className="meta" style={{ padding: "4mm", fontSize: "8pt" }}>
             Two copies of the spine label for <b>{node.path}</b>. Cut along the dashed line; 50 × 200 mm fits a standard
             ring binder spine. The QR opens the binder page; the barcode reads LOC-{node.id} for the scanner console.
           </div>

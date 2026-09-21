@@ -89,6 +89,8 @@ class HandoffResult:
     copied: int = 0
     sidecars: int = 0
     skipped: List[str] = field(default_factory=list)
+    #: Files from an earlier prepare that no frame corresponds to any more.
+    removed: int = 0
     prepared_at: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
@@ -102,6 +104,7 @@ class HandoffResult:
             "copied": self.copied,
             "sidecars": self.sidecars,
             "skipped": list(self.skipped),
+            "removed": self.removed,
             "frames": self.linked + self.copied,
             "prepared_at": self.prepared_at,
             "filename_pattern": naming.FILENAME_PATTERN,
@@ -223,6 +226,17 @@ def prepare(
             try:
                 _place(found, folder / (name + sidecar_mod.SUFFIX), mode)
                 result.sidecars += 1
+            except OSError:
+                pass
+
+    # A frame renumbered or deleted since the last prepare left its old file
+    # here; NegPy would open both. Everything this run did not place goes.
+    keep = set(used_names) | {name + sidecar_mod.SUFFIX for name in used_names} | {"README.txt"}
+    for stale in folder.iterdir():
+        if stale.is_file() and stale.name not in keep and not stale.name.startswith("."):
+            try:
+                stale.unlink()
+                result.removed += 1
             except OSError:
                 pass
 

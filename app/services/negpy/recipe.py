@@ -51,7 +51,26 @@ KEYS: Dict[str, Tuple[str, ...]] = {
 
 #: Geometry, kept separate because it is exact rather than approximated.
 CROP_KEYS = ("crop_rect", "crop", "geometry_crop_rect")
+#: ``rotation``/``rotate`` are degrees; ``quarter_turns`` counts turns; ``orientation``
+#: is an EXIF orientation code. Each is read in its own units (:func:`_quarter_turns`).
 ROTATION_KEYS = ("rotation", "rotate", "orientation", "quarter_turns")
+#: EXIF orientation → clockwise quarter turns, for the four pure rotations.
+_EXIF_TURNS = {1: 0, 3: 2, 6: 1, 8: 3}
+
+
+def _quarter_turns(key: str, value: Optional[float]) -> Optional[int]:
+    """Clockwise quarter turns for a rotation key, 0 for none, None for "cannot"."""
+    if value is None:
+        return None
+    if key == "quarter_turns":
+        return int(round(value)) % 4
+    if key == "orientation":
+        return _EXIF_TURNS.get(int(round(value)))
+    if abs(value) < 1.0:
+        return 0
+    if abs(value % 90.0) > 0.5 and abs(value % 90.0) < 89.5:
+        return None  # a fine angle, which this renderer deliberately does not apply
+    return int(round(value / 90.0)) % 4
 ANGLE_KEYS = ("angle", "fine_rotation", "deskew", "straighten")
 FLIP_H_KEYS = ("flip_horizontal", "flip_h", "mirror_horizontal", "mirror")
 FLIP_V_KEYS = ("flip_vertical", "flip_v", "mirror_vertical")
@@ -242,9 +261,13 @@ def from_recipe(
 
     key, value = take(ROTATION_KEYS)
     if key is not None:
-        degrees = _number(value)
-        if degrees is not None and abs(degrees) >= 1.0:
-            settings.rotate_quarter_turns = int(round(degrees / 90.0)) % 4
+        turns = _quarter_turns(key, _number(value))
+        if turns is None:
+            # Not a rotation this renderer can do exactly (a fine angle under
+            # a degrees key, an unknown EXIF orientation): say so, do not fake it.
+            settings.ignored.append(key)
+        elif turns:
+            settings.rotate_quarter_turns = turns
             settings.applied.append(key)
         else:
             consumed.discard(key)

@@ -205,18 +205,12 @@ class Config:
 
     @property
     def source(self) -> str:
-        """What `mount` is pointed at: the share, plus the folder inside it.
+        """What `mount` is pointed at, and what to show a person: ``//nas/photo/film``.
 
         ``mount.cifs`` takes ``//nas/photo/film`` and mounts that subdirectory,
         which is better supported across servers than the ``prefixpath=`` option.
         """
         return f"{self.unc}/{self.subpath}" if self.subpath else self.unc
-
-    @property
-    def display(self) -> str:
-        """What to show a person: ``//nas.local/photo/film``."""
-        tail = f"/{self.subpath}" if self.subpath else ""
-        return f"{self.unc}{tail}"
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -230,7 +224,7 @@ class Config:
             "readonly": self.readonly,
             "automount": self.automount,
             "unc": self.unc if self.configured else "",
-            "display": self.display if self.configured else "",
+            "display": self.source if self.configured else "",
         }
 
 
@@ -353,8 +347,24 @@ def save(db: Session, payload: Dict[str, Any]) -> Config:
 
     if "password" in payload:
         write_credentials(username, validate_credential(payload.get("password") or "", "password"), domain)
+    elif has_credentials():
+        # The password is kept, but the file also carries the username and the
+        # domain — rewrite it, or a renamed user keeps logging in as the old one.
+        write_credentials(username, stored_password() or "", domain)
     db.commit()
     return load(db)
+
+
+def stored_password() -> Optional[str]:
+    """The password in the credentials file, or None when there is no file."""
+    try:
+        lines = credentials_path().read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    for line in lines:
+        if line.startswith("password="):
+            return line[len("password=") :]
+    return None
 
 
 def write_credentials(username: str, password: str, domain: str = "") -> Optional[Path]:
@@ -475,6 +485,16 @@ def mount(db: Session) -> Dict[str, Any]:
     missing = explain_missing(caps)
     if missing:
         raise ApiError("mount_unavailable", missing, 503)
+    if config.username and not has_credentials():
+        # Mounting as guest behind a username would fail with a message that
+        # blames the password nobody ever entered.
+        raise ApiError(
+            "no_password",
+            f"No password is stored for '{config.username}'. Enter it in the share settings, "
+            "or clear the username for a guest share.",
+            400,
+            "password",
+        )
 
     target = mount_base()
     if is_mounted(target):
@@ -504,7 +524,7 @@ def mount(db: Session) -> Dict[str, Any]:
 
     settings_store.set_value(db, "smb_enabled", True)
     db.commit()
-    log.info("mounted %s at %s", config.display, target)
+    log.info("mounted %s at %s", config.source, target)
     return {"ok": True, "mounted": True, "already": False, "mountpoint": str(target)}
 
 
@@ -552,7 +572,7 @@ def _explain_failure(completed: subprocess.CompletedProcess, config: Config) -> 
     return text or "mount failed without saying why. Check the container log."
 
 
-def unmount(db: Optional[Session] = None, lazy: bool = False) -> Dict[str, Any]:
+def unmount(lazy: bool = False) -> Dict[str, Any]:
     """Unmount the share. Not mounted is success, not an error."""
     target = mount_base()
     if not is_mounted(target):
@@ -596,7 +616,7 @@ def remount_at_startup() -> None:
         try:
             mount(db)
         except ApiError as exc:
-            log.warning("could not mount %s at startup: %s", config.display, exc.message)
+            log.warning("could not mount %s at startup: %s", config.source, exc.message)
     finally:
         db.close()
 

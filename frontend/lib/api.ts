@@ -24,7 +24,7 @@ export const TOKEN_COOKIE = "negarchive_token"
 /** The session token this browser holds, or null. */
 export function readTokenCookie(): string | null {
   if (typeof document === "undefined") return null
-  const match = document.cookie.match(/(?:^|;\s*)negarchive_token=([^;]*)/)
+  const match = document.cookie.match(new RegExp(`(?:^|;\\s*)${TOKEN_COOKIE}=([^;]*)`))
   return match ? decodeURIComponent(match[1]) : null
 }
 
@@ -129,6 +129,8 @@ export interface Film {
   cover_image_id: number | null
   /** Up to four leading frames, for the thumbnail strip on a roll row. */
   cover_image_ids: number[]
+  /** One `preview_version` per cover id (thumbnails are served immutable). */
+  cover_versions?: string[]
   // --- M4: where the negatives are, and where the roll is in its life ---
   location_id: number | null
   /** "Archive A / Shelf 2 / B03 · Binder 3 / P12 · Page 12", derived by the API. */
@@ -201,6 +203,12 @@ export interface Image {
    * `null` — decide from the roll's film stock, as before.
    */
   positive?: boolean | null
+  /**
+   * M6.1: a short token the backend changes whenever the file, its `.negpy`
+   * sidecar or `positive` changes. Previews are served immutable, so this is what
+   * busts their URL.
+   */
+  preview_version?: string | null
   created_at: string
 }
 
@@ -353,7 +361,12 @@ function unwrap<T>(json: unknown, key: string, fallback: string): T {
   if (typeof body.error === "string") {
     throw new ApiError(body.error, fallback, 404)
   }
-  return (body[key] ?? json) as T
+  // A 2xx whose body does not carry the key is a broken contract, not a value:
+  // handing the envelope back would let `undefined` fields travel into the UI.
+  if (!(key in body)) {
+    throw new ApiError("malformed_response", fallback, 500)
+  }
+  return body[key] as T
 }
 
 /** `?keep_files=true` when the user asked to leave the files on disk (M2, R#9). */
@@ -364,7 +377,7 @@ function keepFilesQuery(keepFiles: boolean): string {
 // Films API
 export async function getFilms(): Promise<Film[]> {
   const res = await apiFetch(`/api/films`, { cache: "no-store" })
-  if (!res.ok) throw new Error("Failed to fetch films")
+  await assertOk(res, "Could not load the rolls.")
   return res.json()
 }
 
@@ -413,7 +426,7 @@ export async function deleteFilm(id: number, keepFiles = false): Promise<void> {
 export async function getImages(filmId?: number): Promise<Image[]> {
   const path = filmId ? `/api/images?film_id=${filmId}&type=scan` : `/api/images?type=scan`
   const res = await apiFetch(path)
-  if (!res.ok) throw new Error("Failed to fetch images")
+  await assertOk(res, "Could not load the frames.")
   return res.json()
 }
 
@@ -421,16 +434,6 @@ export async function getImage(id: number): Promise<Image> {
   const res = await apiFetch(`/api/images/${id}`, { cache: "no-store" })
   await assertOk(res, "Could not load the frame.")
   return (await res.json()) as Image
-}
-
-export async function uploadImage(formData: FormData): Promise<Image> {
-  const res = await apiFetch(`/api/images/upload`, {
-    method: "POST",
-    body: formData,
-  })
-  await assertOk(res, "Could not upload the file.")
-  const json = await res.json()
-  return unwrap<Image>(json, "image", "Frame not found.")
 }
 
 // Bulk operations for film roll images
@@ -471,13 +474,7 @@ export async function deleteImage(id: number, keepFiles = false): Promise<void> 
 // Cameras API
 export async function getCameras(): Promise<Camera[]> {
   const res = await apiFetch(`/api/cameras`, { cache: "no-store" })
-  if (!res.ok) throw new Error("Failed to fetch cameras")
-  return res.json()
-}
-
-export async function getCamera(id: number): Promise<Camera> {
-  const res = await apiFetch(`/api/cameras/${id}`, { cache: "no-store" })
-  if (!res.ok) throw new Error("Failed to fetch camera")
+  await assertOk(res, "Could not load the cameras.")
   return res.json()
 }
 
@@ -529,13 +526,7 @@ export async function uploadCameraImage(id: number, file: File): Promise<Camera>
 // Lenses API
 export async function getLenses(): Promise<Lens[]> {
   const res = await apiFetch(`/api/lenses`, { cache: "no-store" })
-  if (!res.ok) throw new Error("Failed to fetch lenses")
-  return res.json()
-}
-
-export async function getLens(id: number): Promise<Lens> {
-  const res = await apiFetch(`/api/lenses/${id}`, { cache: "no-store" })
-  if (!res.ok) throw new Error("Failed to fetch lens")
+  await assertOk(res, "Could not load the lenses.")
   return res.json()
 }
 
@@ -584,13 +575,7 @@ export async function uploadLensImage(id: number, file: File): Promise<Lens> {
 // Filmstocks API
 export async function getFilmstocks(): Promise<Filmstock[]> {
   const res = await apiFetch(`/api/filmstocks`, { cache: "no-store" })
-  if (!res.ok) throw new Error("Failed to fetch filmstocks")
-  return res.json()
-}
-
-export async function getFilmstock(id: number): Promise<Filmstock> {
-  const res = await apiFetch(`/api/filmstocks/${id}`, { cache: "no-store" })
-  if (!res.ok) throw new Error("Failed to fetch filmstock")
+  await assertOk(res, "Could not load the film stocks.")
   return res.json()
 }
 
@@ -694,15 +679,17 @@ export function getPreviewUrl(
   return backendUrl(`/api/images/${imageId}/preview?width=${width}${suffix}${bust}`)
 }
 
-/** The part of a frame that changes its preview without changing its file (M6.1). */
-export function previewVersion(image: Pick<Image, "positive">): string | undefined {
+/**
+ * The part of a frame that changes its preview without changing its file (M6.1).
+ *
+ * The backend sends `preview_version`, which moves whenever the file, its `.negpy`
+ * sidecar or `positive` changes; the positive-derived token is the fallback for an
+ * archive whose backend does not send one yet.
+ */
+export function previewVersion(image: Pick<Image, "positive" | "preview_version">): string | undefined {
+  if (image.preview_version) return image.preview_version
   if (image.positive == null) return undefined
   return image.positive ? "pos" : "neg"
-}
-
-export function getImageUrl(image: Image): string {
-  // Always serve via preview to ensure browser-friendly format (handles TIFF/JPEG/PNG uniformly)
-  return backendUrl(`/api/images/${image.id}/preview`)
 }
 
 export function getImageDownloadUrl(image: Image): string {
@@ -731,7 +718,6 @@ function uploadWithProgress(
       if (event.lengthComputable) onProgress(event.loaded / event.total)
     }
     xhr.onerror = () => reject(new ApiError("network_error", "The upload could not reach the server.", 0))
-    xhr.onabort = () => reject(new ApiError("aborted", "The upload was cancelled.", 0))
     xhr.onload = () => {
       let body: Record<string, unknown> | null = null
       try {
@@ -741,13 +727,17 @@ function uploadWithProgress(
       }
       const failure = body?.error
       if (xhr.status >= 400 || typeof failure === "string") {
+        // The same body `assertOk` reads, so an upload failure names its field too.
         const structured =
-          failure && typeof failure === "object" ? (failure as { code?: string; message?: string }) : null
+          failure && typeof failure === "object"
+            ? (failure as { code?: string; message?: string; field?: string | null })
+            : null
         reject(
           new ApiError(
             structured?.code ?? (typeof failure === "string" ? failure : "upload_failed"),
             structured?.message ?? "The server rejected this file.",
             xhr.status,
+            structured?.field ?? null,
           ),
         )
         return
@@ -769,13 +759,14 @@ export function uploadRollFile(
 ): Promise<{ images: Image[] }> {
   const isZip = file.name.toLowerCase().endsWith(".zip") || file.type === "application/zip"
   const formData = new FormData()
+  // M6.1: finished positives (NegPy exports) are shown as they are, never printed.
+  // Both importers take the flag, so a ZIP of exports arrives marked as well.
+  if (options.positive) formData.append("positive", "true")
   if (isZip) {
     formData.append("file", file)
     return uploadWithProgress(`/api/films/${filmId}/images/bulk_zip`, formData, onProgress)
   }
   formData.append("files", file)
-  // M6.1: finished positives (NegPy exports) are shown as they are, never printed.
-  if (options.positive) formData.append("positive", "true")
   return uploadWithProgress(`/api/films/${filmId}/images/bulk`, formData, onProgress)
 }
 
@@ -914,6 +905,19 @@ export interface Settings {
   share_host?: string
   /** M5: "auto" | "raw" | "positive" — how previews are rendered. */
   preview_render?: PreviewRender
+  /** M6: the NAS share the archive mounts. Mirrors `app/services/settings_store.py`. */
+  smb_enabled?: boolean
+  smb_host?: string
+  smb_share?: string
+  smb_subpath?: string
+  smb_username?: string
+  smb_domain?: string
+  smb_version?: string
+  smb_readonly?: boolean
+  smb_automount?: boolean
+  /** M6.2: the last inbox sweep, as the settings store remembers it. */
+  inbox_last_sweep_at?: string
+  inbox_last_summary?: string
 }
 
 export async function getSettings(): Promise<{ settings: Settings; watch: WatchState }> {
@@ -970,7 +974,11 @@ export async function createLibraryRoot(data: {
   return unwrap<LibraryRoot>(await res.json(), "root", "Folder not found.")
 }
 
-export async function updateLibraryRoot(id: number, data: Partial<LibraryRoot>): Promise<LibraryRoot> {
+/** Only the label and the watch flag are editable; the path is what the root is. */
+export async function updateLibraryRoot(
+  id: number,
+  data: { label?: string | null; watch?: boolean },
+): Promise<LibraryRoot> {
   const res = await apiFetch(`/api/library/roots/${id}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
@@ -987,6 +995,10 @@ export async function deleteLibraryRoot(id: number, forgetFrames = false): Promi
 
 export interface ScanResult {
   rolls_created: number
+  /** Rolls that already existed and were taken over by this root. */
+  rolls_adopted: number
+  /** `.negpy` sidecars found beside the files. */
+  sidecars_seen: number
   frames_added: number
   frames_rehomed: number
   frames_updated: number
@@ -1227,6 +1239,8 @@ export interface LayoutCell {
   frame_number: number | null
   notes: string | null
   capture_date: string | null
+  /** See `Image.preview_version`. */
+  preview_version?: string | null
 }
 
 export interface RollLayout {
@@ -1274,12 +1288,6 @@ export async function loadFilm(
   })
   await assertOk(res, "Could not load the film.")
   return unwrap<Film>(await res.json(), "film", "Roll not found.")
-}
-
-export async function getLoadedRoll(cameraId: number): Promise<Film | null> {
-  const res = await apiFetch(`/api/cameras/${cameraId}/loaded`)
-  await assertOk(res, "Could not check the camera.")
-  return ((await res.json()).roll ?? null) as Film | null
 }
 
 export interface WorkLists {
@@ -1349,12 +1357,6 @@ export interface CodeInfo {
   public_base: string
   serial?: string
   code?: string
-}
-
-export async function getRollCodes(rollId: number): Promise<CodeInfo> {
-  const res = await apiFetch(`/api/codes/for_roll/${rollId}`)
-  await assertOk(res, "This roll has no serial yet.")
-  return res.json()
 }
 
 export async function getLocationCodes(locationId: number): Promise<CodeInfo> {
@@ -1679,12 +1681,6 @@ export async function setupShare(): Promise<{ report: LiveReport; live: LiveStat
   return res.json()
 }
 
-export async function getInbox(): Promise<InboxStatus> {
-  const res = await apiFetch("/api/inbox")
-  await assertOk(res, "Could not read the inbox.")
-  return res.json()
-}
-
 export async function sweepInbox(): Promise<InboxStatus & { result: InboxSweep }> {
   const res = await apiFetch("/api/inbox/sweep", { method: "POST" })
   await assertOk(res, "Could not import from the inbox.")
@@ -1801,15 +1797,3 @@ export async function forgetSmbPassword(): Promise<SmbStatus> {
   return res.json()
 }
 
-export async function getLiveState(): Promise<LiveState> {
-  const res = await apiFetch("/api/smb/live")
-  await assertOk(res, "Could not read the live setup.")
-  return (await res.json()).live as LiveState
-}
-
-/** Make the folders, watch them, point NegPy's folders at the share, sync gear. */
-export async function applyLiveMode(): Promise<LiveReport> {
-  const res = await apiFetch("/api/smb/live", { method: "POST" })
-  await assertOk(res, "Could not set live mode up.")
-  return (await res.json()).report as LiveReport
-}

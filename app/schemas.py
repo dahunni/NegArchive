@@ -126,6 +126,8 @@ class FilmRollOut(Model):
     image_count: int = 0
     cover_image_id: Optional[int] = None
     cover_image_ids: List[int] = Field(default_factory=list)
+    #: One ``preview_version`` per cover id, for the roll list's immutable thumbnails.
+    cover_versions: List[str] = Field(default_factory=list)
     # --- M4: where it is, and where it is in its life ---
     location_id: Optional[int] = None
     location_path: Optional[str] = None
@@ -199,6 +201,9 @@ class ImageOut(Model):
     negpy_summary: Optional[str] = None
     #: M5: how much of that recipe the positive preview renders, and what it does not.
     negpy_render: Optional[Dict[str, Any]] = None
+    #: Changes whenever the preview would: the file, its NegPy edit, its polarity.
+    #: Previews are served immutable, so the client puts this in the URL.
+    preview_version: Optional[str] = None
     created_at: datetime
 
 
@@ -210,6 +215,8 @@ class ImageEnvelope(Model):
 class ImageListEnvelope(Model):
     ok: bool = True
     images: List[ImageOut] = Field(default_factory=list)
+    #: Names a ZIP upload carried but did not take (wrong type, not an image, too big).
+    skipped: List[str] = Field(default_factory=list)
 
 
 class FilmDetailOut(Model):

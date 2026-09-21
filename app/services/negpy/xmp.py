@@ -116,9 +116,13 @@ def parse_namespace(data: Optional[bytes], namespace: str = NEGPY_NS) -> Dict[st
         start = data.find(b"<rdf:RDF")
     if start > 0:
         data = data[start:]
-    end = max(data.rfind(b"</x:xmpmeta>") + len(b"</x:xmpmeta>"), data.rfind(b"</rdf:RDF>") + len(b"</rdf:RDF>"))
-    if end > 0:
-        data = data[:end]
+    ends = [
+        data.rfind(tag) + len(tag)
+        for tag in (b"</x:xmpmeta>", b"</rdf:RDF>")
+        if data.rfind(tag) >= 0
+    ]
+    if ends:
+        data = data[: max(ends)]
 
     try:
         root = ElementTree.fromstring(data)

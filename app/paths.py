@@ -112,12 +112,3 @@ def resolve(stored: str | None) -> Path | None:
     if legacy.exists():
         return legacy
     return under_data
-
-
-def is_inside_data_dir(path: Path) -> bool:
-    """True when ``path`` is a managed file, i.e. one we may delete or move."""
-    try:
-        path.resolve().relative_to(data_dir())
-        return True
-    except (ValueError, OSError):
-        return False

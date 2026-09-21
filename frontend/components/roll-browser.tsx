@@ -1,7 +1,7 @@
 "use client"
 
 import Link from "next/link"
-import { useRouter } from "next/navigation"
+import { usePathname, useRouter, useSearchParams } from "next/navigation"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Film as FilmIcon, Images, MapPin, Pencil, Plus, Printer, Search, Trash2, X } from "lucide-react"
 
@@ -92,6 +92,8 @@ export function RollBrowser({
   work?: WorkLists | null
 }) {
   const router = useRouter()
+  const pathname = usePathname()
+  const searchParams = useSearchParams()
   const { toast } = useToast()
 
   const [query, setQuery] = useState(initialQuery.q ?? "")
@@ -121,6 +123,8 @@ export function RollBrowser({
   const [wizardOpen, setWizardOpen] = useState(openWizard)
   const [editing, setEditing] = useState<Film | null>(null)
   const [pendingDelete, setPendingDelete] = useState<Film | null>(null)
+  /** What the delete dialog says, kept while it fades out after `pendingDelete` clears (R#98). */
+  const [deleteLabel, setDeleteLabel] = useState({ title: "", frames: 0 })
 
   const filtersActive = Boolean(query || from || to || camera !== ANY || film !== ANY || status || bucket)
 
@@ -139,19 +143,35 @@ export function RollBrowser({
     [query, camera, film, from, to, status, bucket],
   )
 
+  /**
+   * R#71: typing is faster than the network. Every request takes a ticket, and an
+   * answer is only used while its ticket is still the newest one — so a slow page
+   * for "har" cannot overwrite the page for "harbour", and "Load more" only
+   * appends while the filters it was asked with are still the ones on screen.
+   */
+  const request = useRef(0)
+  const currentFilters = useRef(filters)
+  useEffect(() => {
+    currentFilters.current = filters
+  }, [filters])
+
   const fetchPage = useCallback(
     async (offset: number, append: boolean) => {
+      const ticket = (request.current += 1)
+      const asked = filters
       setLoading(true)
       try {
         const page = await getFilmsPage({ ...filters, offset })
+        if (ticket !== request.current || (append && currentFilters.current !== asked)) return
         setItems((current) => (append ? [...current, ...page.items] : page.items))
         setTotal(page.total)
         setHasMore(page.has_more)
         setLoadError(null)
       } catch (error) {
+        if (ticket !== request.current) return
         setLoadError(errorMessage(error, "Could not load the rolls."))
       } finally {
-        setLoading(false)
+        if (ticket === request.current) setLoading(false)
       }
     },
     [filters],
@@ -167,6 +187,33 @@ export function RollBrowser({
     const handle = window.setTimeout(() => fetchPage(0, false), DEBOUNCE_MS)
     return () => window.clearTimeout(handle)
   }, [fetchPage])
+
+  /**
+   * The doc comment above promises a filtered list is a link, and the first page is
+   * server-rendered from the query string — so every change goes back into the URL
+   * (R#87). `replace`, not `push`: a filter is not a place in the history. The
+   * string is compared before replacing, which is what keeps this from looping.
+   */
+  const serialized = useMemo(() => {
+    const next = new URLSearchParams()
+    if (query.trim()) next.set("q", query.trim())
+    if (camera !== ANY) next.set("camera", camera)
+    if (film !== ANY) next.set("film", film)
+    if (from) next.set("from", from)
+    if (to) next.set("to", to)
+    if (status) next.set("status", status)
+    if (bucket) next.set("bucket", bucket)
+    return next.toString()
+  }, [query, camera, film, from, to, status, bucket])
+
+  useEffect(() => {
+    if (serialized === searchParams.toString()) return
+    const handle = window.setTimeout(
+      () => router.replace(serialized ? `${pathname}?${serialized}` : pathname, { scroll: false }),
+      DEBOUNCE_MS,
+    )
+    return () => window.clearTimeout(handle)
+  }, [serialized, searchParams, pathname, router])
 
   const clearFilters = () => {
     setQuery("")
@@ -462,7 +509,10 @@ export function RollBrowser({
                         size="icon"
                         className="h-10 w-10"
                         aria-label={`Delete ${roll.title}`}
-                        onClick={() => setPendingDelete(roll)}
+                        onClick={() => {
+                          setDeleteLabel({ title: roll.title, frames: roll.image_count })
+                          setPendingDelete(roll)
+                        }}
                       >
                         <Trash2 className="h-4 w-4" />
                       </Button>
@@ -522,8 +572,8 @@ export function RollBrowser({
         onConfirm={confirmDelete}
         offerKeepFiles
         title="Delete this roll?"
-        description={`“${pendingDelete?.title}” and its ${pluralize(
-          pendingDelete?.image_count ?? 0,
+        description={`“${deleteLabel.title}” and its ${pluralize(
+          deleteLabel.frames,
           "frame record",
         )} are removed from the archive, and the scan files are deleted with them.`}
       />
@@ -571,7 +621,7 @@ function RollStrip({ roll }: { roll: Film }) {
           )}
         >
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src={getPreviewUrl(id, 240)} alt="" loading="lazy" decoding="async" />
+          <img src={getPreviewUrl(id, 240, undefined, roll.cover_versions?.[index])} alt="" loading="lazy" decoding="async" />
         </span>
       ))}
     </Link>

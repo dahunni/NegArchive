@@ -1,7 +1,7 @@
 "use client"
 
 import { useState } from "react"
-import { Check, Copy, FlaskConical, Loader2 } from "lucide-react"
+import { FlaskConical, Loader2 } from "lucide-react"
 
 import { type HandoffResult, errorMessage, prepareNegpyHandoff } from "@/lib/api"
 import { Button } from "@/components/ui/button"
@@ -13,6 +13,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
+import { CopyValue } from "@/components/copy-value"
 import { useToast } from "@/hooks/use-toast"
 
 /**
@@ -43,6 +44,27 @@ export function NegpyHandoffButton({ rollId, disabled }: { rollId: number; disab
       setBusy(false)
     }
   }
+
+  const steps: { label: string; value: string; copyLabel: string; note?: string }[] = result
+    ? [
+        { label: "Add this folder in NegPy", value: result.folder, copyLabel: "the folder" },
+        ...(result.preset_path
+          ? [
+              {
+                label: "Apply the metadata preset",
+                value: result.preset_path,
+                copyLabel: "the preset path",
+              },
+            ]
+          : []),
+        {
+          label: "Export with this filename pattern",
+          value: result.filename_pattern,
+          copyLabel: "the filename pattern",
+          note: "Export into a folder NegArchive watches and the edited scans come back with their roll and frame numbers intact.",
+        },
+      ]
+    : []
 
   return (
     <>
@@ -75,24 +97,17 @@ export function NegpyHandoffButton({ rollId, disabled }: { rollId: number; disab
               truncating inside it. */}
           {result ? (
             <ol className="min-w-0 space-y-3 type-body" data-testid="handoff-steps">
-              <li className="min-w-0">
-                <span className="type-meta uppercase tracking-wide">1 · Add this folder in NegPy</span>
-                <PathRow value={result.folder} />
-              </li>
-              {result.preset_path ? (
-                <li className="min-w-0">
-                  <span className="type-meta uppercase tracking-wide">2 · Apply the metadata preset</span>
-                  <PathRow value={result.preset_path} />
+              {/* Numbered from the steps there actually are: a roll without a preset
+                  has two, and "1 · … 3 · …" reads like a step went missing. */}
+              {steps.map((step, index) => (
+                <li key={step.label} className="min-w-0">
+                  <span className="type-meta uppercase tracking-wide">
+                    {index + 1} · {step.label}
+                  </span>
+                  <CopyValue value={step.value} label={step.copyLabel} />
+                  {step.note ? <p className="mt-1 type-meta">{step.note}</p> : null}
                 </li>
-              ) : null}
-              <li className="min-w-0">
-                <span className="type-meta uppercase tracking-wide">3 · Export with this filename pattern</span>
-                <PathRow value={result.filename_pattern} />
-                <p className="mt-1 type-meta">
-                  Export into a folder NegArchive watches and the edited scans come back with their roll and
-                  frame numbers intact.
-                </p>
-              </li>
+              ))}
               {result.skipped.length > 0 ? (
                 <li className="type-meta text-destructive">
                   {result.skipped.length} file(s) could not be read and were left out.
@@ -109,35 +124,5 @@ export function NegpyHandoffButton({ rollId, disabled }: { rollId: number; disab
         </DialogContent>
       </Dialog>
     </>
-  )
-}
-
-/** A path with a copy button: it has to be pasted into another application. */
-function PathRow({ value }: { value: string }) {
-  const [copied, setCopied] = useState(false)
-  return (
-    <div className="mt-1 flex min-w-0 items-center gap-2">
-      <code className="min-w-0 flex-1 truncate rounded bg-muted px-2 py-1.5 type-numeric text-sm" title={value}>
-        {value}
-      </code>
-      <Button
-        variant="ghost"
-        size="icon"
-        className="h-9 w-9 shrink-0"
-        aria-label={`Copy ${value}`}
-        onClick={async () => {
-          try {
-            await navigator.clipboard.writeText(value)
-            setCopied(true)
-            setTimeout(() => setCopied(false), 1500)
-          } catch {
-            // No clipboard permission (or no clipboard at all, over plain http on
-            // some browsers): the path is on screen and selectable anyway.
-          }
-        }}
-      >
-        {copied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
-      </Button>
-    </div>
   )
 }

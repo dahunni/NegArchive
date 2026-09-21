@@ -26,7 +26,7 @@ from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy.orm import Session
 
 from ..db import get_db
-from ..errors import ApiError, error_response, from_exc, not_found, read_json
+from ..errors import ApiError, error_response, from_exc, not_found, parse_int, read_json
 from ..models import FilmRoll, ImageAsset, ImageType
 from ..services import livemode, settings_store
 from ..services import locations as loc_svc
@@ -157,20 +157,6 @@ async def ingest(request: Request, db: Session = Depends(get_db)):
     except ApiError as exc:
         return from_exc(exc)
 
-    query = db.query(ImageAsset).filter(ImageAsset.type == ImageType.scan)
-    film_id = payload.get("film_id")
-    image_ids = payload.get("image_ids")
-    if film_id is not None:
-        query = query.filter(ImageAsset.film_roll_id == int(film_id))
-    if isinstance(image_ids, list) and image_ids:
-        query = query.filter(ImageAsset.id.in_([int(i) for i in image_ids]))
-    if not payload.get("all") and film_id is None and not image_ids:
-        # The default is the backlog: frames nothing has ever read.
-        query = query.filter(ImageAsset.capture_metadata.is_(None))
-
-    limit = max(1, min(int(payload.get("limit") or 500), 2000))
-    frames: List[ImageAsset] = query.order_by(ImageAsset.id.asc()).limit(limit).all()
-
     enabled, create_gear = negpy_metadata.ingest_settings(db)
     if not enabled:
         return error_response(
@@ -179,6 +165,20 @@ async def ingest(request: Request, db: Session = Depends(get_db)):
             409,
             "negpy_ingest",
         )
+
+    try:
+        film_id, image_ids, limit = _selection(payload, default_limit=500, max_limit=2000)
+    except ApiError as exc:
+        return from_exc(exc)
+    query = db.query(ImageAsset).filter(ImageAsset.type == ImageType.scan)
+    if film_id is not None:
+        query = query.filter(ImageAsset.film_roll_id == film_id)
+    if image_ids:
+        query = query.filter(ImageAsset.id.in_(image_ids))
+    if not payload.get("all") and film_id is None and not image_ids:
+        # The default is the backlog: frames nothing has ever read.
+        query = query.filter(ImageAsset.capture_metadata.is_(None))
+    frames: List[ImageAsset] = query.order_by(ImageAsset.id.asc()).limit(limit).all()
 
     changed = 0
     sidecars = 0
@@ -248,19 +248,17 @@ async def match_edits(request: Request, db: Session = Depends(get_db)):
         )
 
     try:
+        film_id, image_ids, limit = _selection(payload, default_limit=2000, max_limit=10000)
         query = db.query(ImageAsset).filter(
             ImageAsset.type == ImageType.scan, ImageAsset.content_hash.isnot(None)
         )
-        if payload.get("film_id") is not None:
-            query = query.filter(ImageAsset.film_roll_id == int(payload["film_id"]))
-        image_ids = payload.get("image_ids")
-        if isinstance(image_ids, list) and image_ids:
-            query = query.filter(ImageAsset.id.in_([int(i) for i in image_ids]))
+        if film_id is not None:
+            query = query.filter(ImageAsset.film_roll_id == film_id)
+        if image_ids:
+            query = query.filter(ImageAsset.id.in_(image_ids))
         if not payload.get("all"):
             # The default is the gap: frames nothing has recorded a recipe for.
             query = query.filter(ImageAsset.negpy_recipe.is_(None))
-
-        limit = max(1, min(int(payload.get("limit") or 2000), 10000))
         frames: List[ImageAsset] = query.order_by(ImageAsset.id.asc()).limit(limit).all()
 
         matched = 0
@@ -281,8 +279,26 @@ async def match_edits(request: Request, db: Session = Depends(get_db)):
             "matched": matched,
             "rows": index.row_count(),
         }
+    except ApiError as exc:
+        return from_exc(exc)
     finally:
         index.close()
+
+
+def _selection(payload: dict, *, default_limit: int, max_limit: int) -> tuple[Optional[int], List[int], int]:
+    """``film_id``, ``image_ids`` and ``limit`` from a body, as ints or as a 400."""
+    film_id = parse_int(payload.get("film_id"), "film_id", minimum=1)
+    raw_ids = payload.get("image_ids")
+    image_ids: List[int] = []
+    if raw_ids not in (None, "", []):
+        if not isinstance(raw_ids, list):
+            raise ApiError("invalid_ids", "image_ids must be a list of frame ids.", 400, "image_ids")
+        for value in raw_ids:
+            parsed = parse_int(value, "image_ids", minimum=1)
+            if parsed is not None:
+                image_ids.append(parsed)
+    limit = parse_int(payload.get("limit"), "limit", minimum=1) or default_limit
+    return film_id, image_ids, min(limit, max_limit)
 
 
 @router.get("/lookup")

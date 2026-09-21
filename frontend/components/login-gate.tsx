@@ -61,7 +61,8 @@ export function LoginGate() {
 
   return (
     <Sheet open onOpenChange={() => undefined}>
-      <SheetContent side="bottom" className="mx-auto max-w-md" data-testid="login-sheet">
+      {/* No close button: there is nothing behind this until the password is right. */}
+      <SheetContent side="bottom" showCloseButton={false} className="mx-auto max-w-md" data-testid="login-sheet">
         <SheetHeader className="text-left">
           <SheetTitle className="flex items-center gap-2">
             <Lock className="h-4 w-4" />

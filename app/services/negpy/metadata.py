@@ -201,10 +201,20 @@ def _exif_values(path: str | Path) -> Dict[str, Any]:
         ("ImageDescription", EXIF_IMAGE_DESCRIPTION),
     ):
         value = merged.get(tag)
+        if isinstance(value, (list, tuple)):
+            # ISOSpeedRatings is a tuple on some bodies; the first entry is the one.
+            value = value[0] if value else None
         cleaned = _clean(value) if not isinstance(value, (int, float)) else value
         if cleaned not in (None, ""):
             found[key] = cleaned
     return found
+
+
+def _note_xmp(meta: FrameMetadata, key: str, value: Any) -> None:
+    """Record that a value came out of the file's XMP, whichever namespace."""
+    if "xmp" not in meta.sources:
+        meta.sources.append("xmp")
+    meta.raw.setdefault("xmp", {})[key] = value
 
 
 def read(path: str | Path, filename: Optional[str] = None) -> FrameMetadata:
@@ -216,7 +226,8 @@ def read(path: str | Path, filename: Optional[str] = None) -> FrameMetadata:
     meta = FrameMetadata()
     target = Path(path)
 
-    negpy = parse_namespace(packet(target), NEGPY_NS)
+    raw_packet = packet(target)  # read once; every namespace below parses this
+    negpy = parse_namespace(raw_packet, NEGPY_NS)
     if negpy:
         meta.sources.append("xmp")
         meta.raw["negpy"] = dict(negpy)
@@ -235,28 +246,31 @@ def read(path: str | Path, filename: Optional[str] = None) -> FrameMetadata:
         meta.development_time = _clean(negpy.get("DevelopmentTime"))
 
     # Other XMP namespaces, for files that went through a converter which kept XMP
-    # but not the negpy properties.
-    if meta.capture_date is None:
-        raw_packet = packet(target)
-        for namespace, key in (
-            (PHOTOSHOP_NS, "DateCreated"),
-            (EXIF_NS, "DateTimeOriginal"),
-            (XMP_NS, "CreateDate"),
-        ):
-            found = parse_namespace(raw_packet, namespace)
-            if found.get(key):
-                meta.capture_date = _date(found[key])
-                if meta.capture_date and "xmp" not in meta.sources:
-                    meta.sources.append("xmp")
-                if meta.capture_date:
-                    meta.raw.setdefault("xmp", {})[key] = found[key]
-                    break
+    # but not the negpy properties. Each field falls back on its own: a packet
+    # with a date but no camera still gets to say which camera.
+    if raw_packet:
+        if meta.capture_date is None:
+            for namespace, key in (
+                (PHOTOSHOP_NS, "DateCreated"),
+                (EXIF_NS, "DateTimeOriginal"),
+                (XMP_NS, "CreateDate"),
+            ):
+                found = parse_namespace(raw_packet, namespace)
+                if found.get(key):
+                    meta.capture_date = _date(found[key])
+                    if meta.capture_date:
+                        _note_xmp(meta, key, found[key])
+                        break
         if meta.camera is None:
             tiff = parse_namespace(raw_packet, TIFF_NS)
             meta.camera = camera_name(tiff.get("Make"), tiff.get("Model"))
+            if meta.camera:
+                _note_xmp(meta, "tiff:Model", meta.camera)
         if meta.notes is None:
-            description = parse_namespace(raw_packet, DC_NS).get("description")
-            meta.notes = _clean(description)
+            description = _clean(parse_namespace(raw_packet, DC_NS).get("description"))
+            if description:
+                meta.notes = description
+                _note_xmp(meta, "dc:description", description)
 
     exif = _exif_values(target)
     if exif:
@@ -327,15 +341,21 @@ def _match_by_name(db: Session, model, value: Optional[str]):
         return exact
     # "NIKON F5" in the file, "Nikon F5" plus a serial in the catalog, and the
     # other way round: a scan that says "AF NIKKOR 50mm f/1.8D" against a lens
-    # catalogued as "Nikkor 50mm f/1.8".
+    # catalogued as "Nikkor 50mm f/1.8". The *longest* overlap wins, so "Nikon
+    # F50" beats "Nikon F" for a file that says "NIKON F50", and a one-word
+    # catalog entry cannot swallow every scan from that maker.
     lowered = wanted.lower()
-    for entry in db.query(model).all():
+    best = None
+    best_length = 0
+    for entry in db.query(model).order_by(model.id.asc()).all():
         name = (entry.name or "").strip().lower()
         if not name:
             continue
         if name in lowered or lowered in name:
-            return entry
-    return None
+            overlap = min(len(name), len(lowered))
+            if overlap > best_length:
+                best, best_length = entry, overlap
+    return best
 
 
 def match_camera(db: Session, value: Optional[str]) -> Optional[Camera]:
@@ -492,8 +512,12 @@ def apply_to_image(image: ImageAsset, meta: FrameMetadata) -> List[str]:
     if meta.notes and not (image.notes or "").strip():
         image.notes = meta.notes
         changed.append("notes")
-    if meta:
-        image.capture_metadata = meta.to_dict()
+    # Always recorded — an empty reading too, so the backlog ("frames nothing has
+    # ever read") moves on from a file with no metadata — but only *reported* as
+    # a change when it differs from what the frame already carries.
+    payload = meta.to_dict()
+    if image.capture_metadata != payload:
+        image.capture_metadata = payload
         changed.append("capture_metadata")
     return changed
 

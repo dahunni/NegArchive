@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import os
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, Request, Response
 from sqlalchemy import func
@@ -32,6 +32,7 @@ from ..db import get_db
 from ..errors import ApiError, error_response, from_exc, read_json
 from ..models import FilmRoll, ImageAsset, LibraryRoot
 from ..services import network, settings_store
+from ..services import smb as smb_service
 from ..services.negpy import dirs as negpy_dirs
 from ..services.negpy import handoff as negpy_handoff
 
@@ -94,15 +95,18 @@ def watch_interval_seconds() -> Optional[int]:
 @router.get("/system/info")
 def system_info(db: Session = Depends(get_db)):
     """Everything a phone at the shelf needs in order to find and trust this box."""
-    urls = network.ui_urls(db)
     try:
+        urls = network.ui_urls(db)  # reads the public_base_url setting
         counts = {
             "rolls": db.query(func.count(FilmRoll.id)).scalar() or 0,
             "frames": db.query(func.count(ImageAsset.id)).scalar() or 0,
         }
         watch = _watch_state(db)
     except Exception:
-        # Before the first migration this endpoint must still answer.
+        # Before the first migration, or with the database down, this endpoint
+        # must still answer: it is how the phone finds the box in the first place.
+        db.rollback()
+        urls = network.ui_urls()
         counts = {"rolls": 0, "frames": 0}
         watch = {"enabled": False, "interval_seconds": watch_interval_seconds()}
     return {
@@ -193,22 +197,54 @@ def get_settings(db: Session = Depends(get_db)):
     return {"settings": settings_store.get_all(db), "watch": _watch_state(db)}
 
 
-def _validate_setting(key: str, value) -> None:
-    """The two settings that are more than a string: a writable folder and a mode.
+def _validate_setting(key: str, value) -> Any:
+    """The settings that are more than a string, checked before they are stored.
 
     They are checked here rather than in the store, because the store's job is to
-    keep values and the answer to "may NegArchive write there" belongs to M5's
-    :mod:`app.services.negpy.dirs` (roadmap M5).
+    keep values: "may NegArchive write there" belongs to M5's
+    :mod:`app.services.negpy.dirs`, and the shape of a mount option belongs to
+    :mod:`app.services.smb` — the same validators ``PUT /api/smb/config`` runs, so
+    this endpoint cannot be used to slip an unchecked value past them.
+
+    Returns the value to store (validators normalise, e.g. strip slashes).
     """
-    if key in {"negpy_user_dir", "negpy_handoff_dir"} and str(value or "").strip():
+    text = str(value or "").strip()
+    if key in {"negpy_user_dir", "negpy_handoff_dir"} and text:
         negpy_dirs.validate(value, key)
-    if key == "negpy_handoff_mode" and str(value or "").strip() not in negpy_handoff.MODES:
-        raise ApiError(
-            "invalid_mode",
-            f"The handoff mode must be one of: {', '.join(negpy_handoff.MODES)}.",
-            400,
-            key,
-        )
+        return value
+    if key == "negpy_handoff_mode":
+        if text not in negpy_handoff.MODES:
+            raise ApiError(
+                "invalid_mode",
+                f"The handoff mode must be one of: {', '.join(negpy_handoff.MODES)}.",
+                400,
+                key,
+            )
+        return text
+    if key == "preview_render":
+        if text not in PREVIEW_RENDER_MODES:
+            raise ApiError(
+                "invalid_choice",
+                f"preview_render must be one of: {', '.join(PREVIEW_RENDER_MODES)}.",
+                400,
+                key,
+            )
+        return text
+    if key == "smb_host":
+        return smb_service.validate_host(text) if text else ""
+    if key == "smb_share":
+        return smb_service.validate_share(text) if text else ""
+    if key == "smb_subpath":
+        return smb_service.validate_subpath(text)
+    if key == "smb_version":
+        return smb_service.validate_version(text)
+    if key in {"smb_username", "smb_domain"}:
+        return smb_service.validate_credential(text, key)
+    return value
+
+
+#: What ``preview_render`` may be (app/routers/api.py, ``render_plan``).
+PREVIEW_RENDER_MODES = ("auto", "raw", "positive")
 
 
 @router.put("/system/settings")
@@ -220,8 +256,7 @@ async def put_settings(request: Request, db: Session = Depends(get_db)):
         if unknown:
             raise ApiError("unknown_setting", f"Unknown setting(s): {', '.join(unknown)}.")
         for key, value in payload.items():
-            _validate_setting(key, value)
-            settings_store.set_value(db, key, value)
+            settings_store.set_value(db, key, _validate_setting(key, value))
     except ApiError as exc:
         db.rollback()
         return from_exc(exc)

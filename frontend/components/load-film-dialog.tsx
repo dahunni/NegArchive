@@ -1,7 +1,7 @@
 "use client"
 
 import { useRouter } from "next/navigation"
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { Loader2 } from "lucide-react"
 
 import { ApiError, type Camera, type Filmstock, type Lens, errorMessage, loadFilm } from "@/lib/api"
@@ -40,7 +40,20 @@ export function LoadFilmDialog({
   const [busy, setBusy] = useState(false)
   const [occupied, setOccupied] = useState<string | null>(null)
 
-  const usableLenses = camera?.mount ? lenses.filter((l) => !l.mount || l.mount === camera.mount) : lenses
+  // The mount narrows the list, but never hides what is already chosen (R#78):
+  // a select whose value is not among its items shows nothing at all.
+  const usableLenses = camera?.mount
+    ? lenses.filter((l) => !l.mount || l.mount === camera.mount || String(l.id) === lens)
+    : lenses
+
+  // Every camera gets an empty form (R#69); nothing is carried over from the last one.
+  useEffect(() => {
+    if (!open) return
+    setTitle("")
+    setStock(NONE)
+    setLens(NONE)
+    setOccupied(null)
+  }, [open, camera])
 
   const submit = async (force = false) => {
     if (!camera) return
@@ -55,6 +68,8 @@ export function LoadFilmDialog({
       toast({ title: `${film.archive_serial} loaded in ${camera.name}` })
       onOpenChange(false)
       setTitle("")
+      setStock(NONE)
+      setLens(NONE)
       setOccupied(null)
       router.push(`/films/${film.id}`)
       router.refresh()

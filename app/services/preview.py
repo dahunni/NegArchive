@@ -156,7 +156,6 @@ class RenderSettings:
     #: fractions of the frame, so it survives being applied to a preview.
     crop: Optional[Tuple[float, float, float, float]] = None
     rotate_quarter_turns: int = 0
-    rotate_degrees: float = 0.0
     flip_horizontal: bool = False
     flip_vertical: bool = False
     #: Percentile bounds for the normalization.
@@ -261,12 +260,10 @@ def _normalized_log(data: np.ndarray, settings: RenderSettings) -> np.ndarray:
     span = np.maximum(high - low, 1e-4)
 
     normalized = (log_exposure - low) / span
-    if settings.polarity != "positive":
+    if settings.polarity == "positive":
         # A negative is already the right way round: clear film (a scene shadow)
         # passes the most light and so prints darkest. A positive has to be
         # flipped, so that its highlights print as highlights.
-        pass
-    else:
         normalized = 1.0 - normalized
     return np.clip(normalized, 0.0, 1.0).astype(np.float32)
 

@@ -575,7 +575,10 @@ async function main() {
   check("M4: the cover sheet is A4 wide (210mm ≈ 794px)", Math.abs(sheetWidth - 794) < 6, `${sheetWidth}px`)
   check("M4: the cover sheet carries the serial", ((await page.getByTestId("cover-sheet").textContent()) || "").includes(serialText))
   await page.goto(`${BASE_URL}/print/stickers?ids=${rollId}`, { waitUntil: "load" })
-  check("M4: stickers render", (await page.getByTestId("sticker").count()) === 1)
+  // `load` can fire while the streamed page body is still in React's hidden
+  // placeholder, where every box measures 0×0: wait for it to be laid out.
+  check("M4: stickers render", await visible(page.getByTestId("sticker")))
+  check("M4: exactly one sticker", (await page.getByTestId("sticker").count()) === 1)
   const stickerBox = await page.getByTestId("sticker").first().evaluate((el) => {
     const r = el.getBoundingClientRect()
     return [r.width, r.height]

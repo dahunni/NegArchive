@@ -2,7 +2,7 @@
 
 import Link from "next/link"
 import { useRouter } from "next/navigation"
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { AlertTriangle, ArrowLeft, ChevronRight, Loader2, MapPin, Pencil, Plus, Printer, QrCode } from "lucide-react"
 
 import {
@@ -14,7 +14,6 @@ import {
   barcodeUrl,
   errorMessage,
   getLocationCodes,
-  getPreviewUrl,
   moveRoll,
   qrUrl,
 } from "@/lib/api"
@@ -26,7 +25,6 @@ import { Input } from "@/components/ui/input"
 import { LocationDialog } from "@/components/location-dialog"
 import { StatusBadge } from "@/components/status-stepper"
 import { useToast } from "@/hooks/use-toast"
-import { useEffect } from "react"
 
 /**
  * One node of the storage tree (M4). A binder shows its pages in order with the
@@ -49,12 +47,30 @@ export function LocationDetail({
   const [adding, setAdding] = useState<{ parentId: number } | null>(null)
   const [pageCount, setPageCount] = useState("10")
   const [busy, setBusy] = useState(false)
-  const [codes, setCodes] = useState<{ qr: string; barcode: string; qrText: string } | null>(null)
+  const [codes, setCodes] = useState<{ qr: string; barcode: string; qrText: string; barcodeText: string } | null>(
+    null,
+  )
 
   useEffect(() => {
+    // Walking the tree fast enough and an older node's codes arrive last; they must
+    // not end up labelled as this one's (R#80).
+    let cancelled = false
     getLocationCodes(node.id)
-      .then((info) => setCodes({ qr: qrUrl(info.qr_text, 3), barcode: barcodeUrl(info.barcode_text, 10), qrText: info.qr_text }))
-      .catch(() => setCodes(null))
+      .then((info) => {
+        if (cancelled) return
+        setCodes({
+          qr: qrUrl(info.qr_text, 3),
+          barcode: barcodeUrl(info.barcode_text, 10),
+          qrText: info.qr_text,
+          barcodeText: info.barcode_text,
+        })
+      })
+      .catch(() => {
+        if (!cancelled) setCodes(null)
+      })
+    return () => {
+      cancelled = true
+    }
   }, [node.id])
 
   const addPages = async () => {
@@ -283,7 +299,7 @@ export function LocationDetail({
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img src={codes.qr} alt={`QR ${codes.qrText}`} className="h-24 w-24" data-testid="location-qr" />
             {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src={codes.barcode} alt={`Barcode ${node.scan_code}`} className="h-16" data-testid="location-barcode" />
+            <img src={codes.barcode} alt={`Barcode ${codes.barcodeText}`} className="h-16" data-testid="location-barcode" />
           </div>
         ) : null}
       </section>
@@ -337,6 +353,3 @@ function RollCard({ roll, onUnfile }: { roll: RollBrief; onUnfile: () => void })
     </div>
   )
 }
-
-// getPreviewUrl is kept imported for the cover strip once RollBrief carries image ids.
-void getPreviewUrl

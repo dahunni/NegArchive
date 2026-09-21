@@ -46,7 +46,6 @@
   break-after: page;
   overflow: hidden;
 }
-.sheet.landscape { width: var(--paper-h); min-height: var(--paper-w); }
 .sheet:last-child { page-break-after: auto; break-after: auto; }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-variant-numeric: tabular-nums; }
 .serial { font-size: 22pt; font-weight: 700; letter-spacing: 0.02em; }
@@ -115,5 +114,4 @@ table.index td.num { font-family: ui-monospace, Menlo, monospace; white-space: n
   .print-root { background: #fff; }
   .print-toolbar { display: none !important; }
   .sheet { margin: 0; box-shadow: none; width: 210mm; height: 297mm; }
-  .sheet.landscape { width: 297mm; height: 210mm; }
 }

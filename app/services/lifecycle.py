@@ -55,7 +55,7 @@ def set_status(roll: FilmRoll, status: str, at: Optional[datetime] = None) -> No
     column = STATUS_TIMESTAMP[status]
     if at is not None or getattr(roll, column) is None:
         setattr(roll, column, at or datetime.utcnow())
-    if status != "loaded" and roll.loaded_camera_id is not None and rank(status) >= rank("at_lab"):
+    if roll.loaded_camera_id is not None and rank(status) >= rank("at_lab"):
         # Once the roll left for the lab the camera is free again.
         roll.loaded_camera_id = None
 

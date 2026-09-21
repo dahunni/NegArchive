@@ -87,7 +87,9 @@ def connect(path: str | Path) -> Optional[sqlite3.Connection]:
         # immutable=1 also promises SQLite that nothing else is changing the file,
         # so it takes no locks at all — a NegPy that happens to be running is not
         # disturbed, and neither is its WAL.
-        connection = sqlite3.connect(f"file:{target}?mode=ro&immutable=1", uri=True, timeout=2.0)
+        # `as_uri()` percent-encodes the path, so a user directory with a `?`,
+        # `#` or `%` in it does not turn into a different (nonexistent) file.
+        connection = sqlite3.connect(f"{target.resolve().as_uri()}?mode=ro&immutable=1", uri=True, timeout=2.0)
         connection.row_factory = sqlite3.Row
         return connection
     except (sqlite3.Error, OSError, ValueError):
@@ -244,10 +246,9 @@ def _as_datetime(value: Any):
             return datetime.utcfromtimestamp(float(value))
         except (OverflowError, OSError, ValueError):
             return None
-    try:
-        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).replace(tzinfo=None)
-    except ValueError:
-        return None
+    from .sidecar import parse_utc
+
+    return parse_utc(str(value))
 
 
 def _file_mtime(path: Path):

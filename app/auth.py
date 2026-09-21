@@ -50,10 +50,10 @@ def is_enabled() -> bool:
 def token_for(password: str) -> str:
     """The session token a given password yields.
 
-    A plain salted SHA-256: deterministic (restart-safe), and useless to anyone
-    who does not already know the password. It is not a password *store* — the
-    real password is in the environment either way — so a slow KDF would buy
-    nothing here.
+    A SHA-256 over a fixed prefix and the password: deterministic (restart-safe),
+    and useless to anyone who does not already know the password. It is not a
+    password *store* — the real password is in the environment either way — so
+    neither a salt nor a slow KDF would buy anything here.
     """
     return hashlib.sha256(f"negarchive-session:{password}".encode("utf-8")).hexdigest()
 

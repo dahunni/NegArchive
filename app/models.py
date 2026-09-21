@@ -10,9 +10,9 @@ anywhere any more. Change a model *and* write a revision.
 import enum
 from datetime import date, datetime
 
-from sqlalchemy import Boolean, Date, DateTime, Enum, ForeignKey, Index, Integer, String, Text, text
+from sqlalchemy import Boolean, Date, DateTime, Enum, ForeignKey, Index, Integer, String, Text, func, select, text
 from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, column_property, mapped_column, relationship
 
 from .db import Base
 
@@ -351,3 +351,23 @@ class LocationMove(Base):
     to_location_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("locations.id", ondelete="SET NULL"))
     moved_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
     note: Mapped[str | None] = mapped_column(Text)
+
+
+#: When the roll was last moved, loaded with the roll. A label printed before the
+#: last move points at the wrong shelf, so ``needs_label`` (app/routers/api.py)
+#: and the print queue both ask this one question.
+FilmRoll.last_moved_at = column_property(
+    select(func.max(LocationMove.moved_at))
+    .where(LocationMove.roll_id == FilmRoll.id)
+    .correlate_except(LocationMove)
+    .scalar_subquery(),
+    deferred=False,
+)
+
+
+def needs_label(roll: "FilmRoll") -> bool:
+    """Never printed, or moved since the last print."""
+    if roll.label_printed_at is None:
+        return True
+    last = roll.last_moved_at
+    return last is not None and last > roll.label_printed_at

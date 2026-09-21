@@ -8,6 +8,7 @@ import { Camera, CheckCircle2, Keyboard, Loader2, MapPin, ScanLine, X, XCircle }
 import {
   type Film,
   type Location,
+  ROLL_STATUSES,
   type RollStatus,
   type ScanResolution,
   bulkMoveRolls,
@@ -97,7 +98,7 @@ export function ScannerConsole() {
   }, [])
 
   const applyCommand = useCallback(
-    (verb: string): boolean => {
+    (verb: string): void => {
       if (verb === "LOOKUP") setMode("lookup")
       else if (verb === "MOVE") setMode("move")
       else if (verb === "PRINTED") setMode("printed")
@@ -107,17 +108,16 @@ export function ScannerConsole() {
       } else if (verb === "CANCEL") {
         setPending([])
         note(`CMD-${verb}`, "Sequence cancelled")
-        return true
+        return
       } else if (verb === "DONE") {
         setPending([])
         note(`CMD-${verb}`, "Sequence finished")
-        return true
+        return
       } else {
         note(`CMD-${verb}`, "Unknown command", "error")
-        return false
+        return
       }
       note(`CMD-${verb}`, `Mode: ${MODES.find((m) => m.value === (verb in STATUS_COMMANDS ? "status" : verb.toLowerCase()))?.label ?? verb}`)
-      return true
     },
     [note],
   )
@@ -275,12 +275,11 @@ export function ScannerConsole() {
             aria-label="Status to set"
             data-testid="status-select"
           >
-            <option value="loaded">In camera</option>
-            <option value="shot">Shot</option>
-            <option value="at_lab">At the lab</option>
-            <option value="back">Back from the lab</option>
-            <option value="scanned">Scanned</option>
-            <option value="sleeved">Sleeved</option>
+            {ROLL_STATUSES.map((step) => (
+              <option key={step.value} value={step.value}>
+                {step.label}
+              </option>
+            ))}
           </select>
         ) : null}
       </div>
@@ -359,6 +358,14 @@ function CameraScanner({ onCode, onClose }: { onCode: (code: string) => void; on
   const [error, setError] = useState<string | null>(null)
   const lastCode = useRef<{ code: string; at: number } | null>(null)
 
+  // The parent passes a fresh arrow on every render, and the camera must not be
+  // torn down and reopened for each keystroke: keep the latest one in a ref and
+  // open the stream exactly once (R#68).
+  const latestOnCode = useRef(onCode)
+  useEffect(() => {
+    latestOnCode.current = onCode
+  }, [onCode])
+
   useEffect(() => {
     let stream: MediaStream | null = null
     let stopped = false
@@ -370,7 +377,7 @@ function CameraScanner({ onCode, onClose }: { onCode: (code: string) => void; on
       const now = Date.now()
       if (lastCode.current && lastCode.current.code === code && now - lastCode.current.at < 2500) return
       lastCode.current = { code, at: now }
-      onCode(code)
+      latestOnCode.current(code)
     }
 
     const run = async () => {
@@ -384,7 +391,13 @@ function CameraScanner({ onCode, onClose }: { onCode: (code: string) => void; on
         setError(`Camera not available: ${caught instanceof Error ? caught.message : String(caught)}`)
         return
       }
-      if (stopped) return
+      // The cleanup may have run while getUserMedia was still pending; its `stream`
+      // was null then, so the tracks have to be stopped here instead (R#68).
+      if (stopped) {
+        stream.getTracks().forEach((track) => track.stop())
+        stream = null
+        return
+      }
       video.srcObject = stream
       await video.play().catch(() => undefined)
 
@@ -429,7 +442,8 @@ function CameraScanner({ onCode, onClose }: { onCode: (code: string) => void; on
       window.clearTimeout(frame)
       stream?.getTracks().forEach((track) => track.stop())
     }
-  }, [onCode])
+    // `onCode` is read through the ref above, so it must not reopen the camera.
+  }, [])
 
   return (
     <div className="mt-3 space-y-2" data-testid="camera-scanner">

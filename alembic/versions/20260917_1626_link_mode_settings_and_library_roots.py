@@ -93,7 +93,7 @@ def upgrade() -> None:
     if "storage_mode" not in image_columns:
         op.add_column(
             "image_assets",
-            sa.Column("storage_mode", sa.String(length=16), server_default="managed", nullable=False),
+            sa.Column("storage_mode", sa.String(length=20), server_default="managed", nullable=False),
         )
     # --- M3's own ------------------------------------------------------------
     if "source_path" not in image_columns:

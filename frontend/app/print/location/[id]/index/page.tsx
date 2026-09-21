@@ -3,6 +3,7 @@ import { notFound } from "next/navigation"
 import { locationCodes, publicBase } from "@/components/print/data"
 import { loadLocationBundle } from "@/components/print/location-data"
 import { PrintFrame } from "@/components/print/print-frame"
+import { PrintedOn } from "@/app/print/printed-on"
 import { formatDateRange } from "@/lib/format"
 
 const ROWS_PER_PAGE = 34
@@ -80,7 +81,9 @@ export default async function BinderIndexPage({ params }: { params: Promise<{ id
             <span>
               {base}/l/{node.id}
             </span>
-            <span>Printed {new Date().toLocaleDateString()} · NegArchive</span>
+            <span>
+              <PrintedOn /> · NegArchive
+            </span>
           </footer>
         </section>
       ))}

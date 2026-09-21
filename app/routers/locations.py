@@ -6,6 +6,7 @@ from typing import List, Optional
 
 from fastapi import APIRouter, Depends
 from sqlalchemy import func
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .. import schemas
@@ -52,18 +53,7 @@ def _image_counts(db: Session, roll_ids: List[int]) -> dict:
 @router.get("/sleeve_layouts")
 def list_layouts(db: Session = Depends(get_db)):
     items = db.query(SleeveLayout).order_by(SleeveLayout.is_default.desc(), SleeveLayout.id.asc()).all()
-    return [
-        {
-            "id": l.id,
-            "name": l.name,
-            "rows": l.rows,
-            "frames_per_row": l.frames_per_row,
-            "film_format": l.film_format,
-            "is_default": bool(l.is_default),
-            "capacity": l.rows * l.frames_per_row,
-        }
-        for l in items
-    ]
+    return [_layout_dict(l) for l in items]
 
 
 @router.post("/sleeve_layouts")
@@ -80,11 +70,27 @@ def create_layout(body: schemas.SleeveLayoutWrite, db: Session = Depends(get_db)
         if layout.is_default:
             db.query(SleeveLayout).update({SleeveLayout.is_default: False})
         db.add(layout)
-        db.commit()
+        try:
+            db.commit()
+        except IntegrityError as exc:
+            db.rollback()
+            raise ApiError("duplicate_name", f"A sleeve layout named “{name}” already exists.", 409, "name") from exc
     except ApiError as exc:
         db.rollback()
         return from_exc(exc)
-    return {"ok": True, "layout": list_layouts(db)[0] if False else {"id": layout.id, "name": layout.name, "rows": layout.rows, "frames_per_row": layout.frames_per_row, "film_format": layout.film_format, "is_default": layout.is_default, "capacity": layout.rows * layout.frames_per_row}}
+    return {"ok": True, "layout": _layout_dict(layout)}
+
+
+def _layout_dict(layout: SleeveLayout) -> dict:
+    return {
+        "id": layout.id,
+        "name": layout.name,
+        "rows": layout.rows,
+        "frames_per_row": layout.frames_per_row,
+        "film_format": layout.film_format,
+        "is_default": bool(layout.is_default),
+        "capacity": layout.rows * layout.frames_per_row,
+    }
 
 
 # --- the tree ------------------------------------------------------------------
@@ -132,11 +138,14 @@ def get_location(location_id: int, db: Session = Depends(get_db)):
             if layout
             else None
         ),
-        "next_free_sleeve_id": (
-            (svc.next_free_sleeve(db, node) or Location(id=None)).id if node.kind == "binder" else None
-        ),
+        "next_free_sleeve_id": _next_free_id(db, node) if node.kind == "binder" else None,
         "discrepancies": svc.discrepancies(db, node),
     }
+
+
+def _next_free_id(db: Session, binder: Location) -> Optional[int]:
+    page = svc.next_free_sleeve(db, binder)
+    return page.id if page is not None else None
 
 
 def _apply(body: schemas.LocationWrite, node: Location, db: Session, creating: bool) -> None:
@@ -235,7 +244,11 @@ def add_pages(location_id: int, body: schemas.AddPages, db: Session = Depends(ge
     if not node:
         return not_found("Location")
     try:
-        layout = db.get(SleeveLayout, body.sleeve_layout_id) if body.sleeve_layout_id else None
+        layout = None
+        if body.sleeve_layout_id:
+            layout = db.get(SleeveLayout, body.sleeve_layout_id)
+            if layout is None:
+                raise ApiError("unknown_layout", "That sleeve layout does not exist.", 404, "sleeve_layout_id")
         created = svc.add_pages(db, node, parse_int(body.count, "count", minimum=1) or 0, layout)
         db.commit()
     except ApiError as exc:
@@ -302,7 +315,13 @@ def bulk_move(body: schemas.BulkMove, db: Session = Depends(get_db)):
                 raise ApiError("unknown_roll", f"Roll {roll_id} does not exist.", 404, "ids")
             destination = svc.move_roll(db, roll, target, note=body.note or None)
             db.flush()
-            moved.append({"roll": _roll_brief(roll), "path": svc.path_string(destination)})
+            moved.append(
+                {
+                    "roll": _roll_brief(roll),
+                    "location": svc.to_dict(destination) if destination else None,
+                    "path": svc.path_string(destination),
+                }
+            )
         db.commit()
     except ApiError as exc:
         db.rollback()
@@ -333,23 +352,33 @@ def roll_moves(film_id: int, db: Session = Depends(get_db)):
 @router.get("/films/{film_id}/layout")
 def roll_layout(film_id: int, db: Session = Depends(get_db)):
     """The sleeve grid of a roll: rows of frames, for the cover sheet and the viewer."""
+    from .api import preview_version
+
     roll = db.get(FilmRoll, film_id)
     if not roll:
         return not_found("Roll")
     layout = svc.layout_for(db, roll.location_ref)
     strips = strips_svc.effective_strips(roll.strips, layout.rows if layout else None, layout.frames_per_row if layout else None)
     frames = [
-        {"id": i.id, "frame_number": i.frame_number, "notes": i.notes, "capture_date": i.capture_date.isoformat() if i.capture_date else None}
+        {
+            "id": i.id,
+            "frame_number": i.frame_number,
+            "notes": i.notes,
+            "capture_date": i.capture_date.isoformat() if i.capture_date else None,
+            # The cover sheet's thumbnails are served immutable; see image_to_dict.
+            "preview_version": preview_version(i),
+        }
         for i in db.query(ImageAsset)
         .filter(ImageAsset.film_roll_id == roll.id, ImageAsset.type == ImageType.scan)
         .order_by(ImageAsset.frame_number.asc().nulls_last(), ImageAsset.id.asc())
         .all()
     ]
-    placed = {cell["id"] for row in strips_svc.grid(frames, strips) for cell in row if cell}
+    rows = strips_svc.grid(frames, strips)
+    placed = {cell["id"] for row in rows for cell in row if cell}
     return {
         "strips": strips,
         "layout": {"id": layout.id, "name": layout.name} if layout else None,
         "capacity": strips_svc.capacity(strips),
-        "rows": strips_svc.grid(frames, strips),
+        "rows": rows,
         "unplaced": [f for f in frames if f["id"] not in placed],
     }

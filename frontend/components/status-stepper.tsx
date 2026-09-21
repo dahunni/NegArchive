@@ -56,7 +56,9 @@ export function StatusStepper({
         const current = index === currentIndex
         const when = film[TIMESTAMP[step.value]] as string | null
         return (
-          <li key={step.value}>
+          // The timestamp is on the page, not only in a `title` a touch screen and a
+          // screen reader both miss (R#100).
+          <li key={step.value} className="flex flex-col items-center gap-0.5">
             <button
               type="button"
               onClick={() => set(step.value)}
@@ -81,6 +83,11 @@ export function StatusStepper({
               ) : null}
               {compact ? step.short : step.label}
             </button>
+            {when ? (
+              <span className="type-meta px-1 text-center" data-testid={`status-when-${step.value}`}>
+                {formatDateTime(when)}
+              </span>
+            ) : null}
           </li>
         )
       })}

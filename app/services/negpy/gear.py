@@ -35,6 +35,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+from uuid import uuid4
 
 from sqlalchemy.orm import Session
 
@@ -55,9 +56,11 @@ COLOR_TYPES = {
     FilmKind.motion_picture: "Other",
 }
 
-#: ``50mm f/1.8``, ``AF-S 24-70mm f/2.8G``: the numbers NegPy has fields for.
-_FOCAL = re.compile(r"(\d{1,4}(?:\.\d+)?)\s*mm", re.IGNORECASE)
-_APERTURE = re.compile(r"f\s*/?\s*(\d{1,2}(?:\.\d+)?)", re.IGNORECASE)
+#: ``50mm f/1.8``, ``AF-S 24-70mm f/2.8G``: the numbers NegPy has fields for. A
+#: zoom reports its short end. The aperture's ``f`` must not be the tail of a
+#: word (``EF 50mm``, ``AF 50mm``) and must not be followed by ``mm``.
+_FOCAL = re.compile(r"(\d{1,4}(?:\.\d+)?)(?:\s*-\s*\d{1,4}(?:\.\d+)?)?\s*mm", re.IGNORECASE)
+_APERTURE = re.compile(r"(?<![A-Za-z])f\s*/?\s*(\d{1,2}(?:\.\d+)?)(?!\s*mm)", re.IGNORECASE)
 
 
 def split_name(name: str) -> Tuple[Optional[str], str]:
@@ -131,19 +134,40 @@ def film_entry(stock: FilmStock) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def _load(path: Path) -> Tuple[List[dict], Optional[str]]:
-    """``(entries, wrapper key)`` for an existing gear file; ``([], None)`` if new."""
+@dataclass
+class GearFile:
+    """An existing gear file: its entries, and the shape to write it back in."""
+
+    entries: List[dict] = field(default_factory=list)
+    #: The key the list sits under (``{"cameras": [...]}``), or None for a bare array.
+    wrapper: Optional[str] = None
+    #: Every other top-level key of a wrapped file, written back untouched.
+    extra: Dict[str, Any] = field(default_factory=dict)
+
+
+def _load(path: Path) -> Optional[GearFile]:
+    """The existing gear file, an empty one if there is none — or **None** when the
+    file is there but cannot be read.
+
+    That last case is the important one: a file NegPy is halfway through writing,
+    or a share that hiccups, must not be replaced by a file holding only the
+    archive's entries. The caller skips the file and reports it.
+    """
+    if not path.exists():
+        return GearFile()
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
+        raw = json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
-        return [], None
+        return None
     if isinstance(raw, list):
-        return [entry for entry in raw if isinstance(entry, dict)], None
+        return GearFile(entries=[entry for entry in raw if isinstance(entry, dict)])
     if isinstance(raw, dict):
         for key, value in raw.items():
             if isinstance(value, list):
-                return [entry for entry in value if isinstance(entry, dict)], key
-    return [], None
+                extra = {k: v for k, v in raw.items() if k != key}
+                return GearFile(entries=[entry for entry in value if isinstance(entry, dict)], wrapper=key, extra=extra)
+        return GearFile(extra=dict(raw))
+    return None
 
 
 def merge(existing: List[dict], ours: List[dict], prefix: str) -> List[dict]:
@@ -172,13 +196,21 @@ def merge(existing: List[dict], ours: List[dict], prefix: str) -> List[dict]:
     return merged
 
 
-def _write(path: Path, entries: List[dict], wrapper: Optional[str]) -> None:
+def _write(path: Path, entries: List[dict], existing: GearFile) -> None:
     """Write the file atomically: NegPy watches mtimes and may read at any moment."""
-    payload: Any = {wrapper: entries} if wrapper else entries
+    payload: Any = entries
+    if existing.wrapper or existing.extra:
+        payload = dict(existing.extra)
+        payload[existing.wrapper or "entries"] = entries
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(path.name + ".tmp")
-    temporary.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    os.replace(temporary, path)
+    # A unique temp name: two syncs at once (live mode and the button) must not
+    # rename each other's half-written file into place.
+    temporary = path.with_name(f"{path.name}.{uuid4().hex}.tmp")
+    try:
+        temporary.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 @dataclass
@@ -212,7 +244,21 @@ def sync(db: Session, directory: Path, *, dry_run: bool = False) -> SyncResult:
     for kind, entries in ours.items():
         filename, prefix = FILES[kind]
         path = directory / filename
-        existing, wrapper = _load(path)
+        current = _load(path)
+        if current is None:
+            # Unreadable: leave it exactly as it is rather than overwrite NegPy's
+            # own entries with ours. The report says so; the next sync retries.
+            result.files[kind] = {
+                "path": str(path),
+                "ours": len(entries),
+                "kept": 0,
+                "removed": 0,
+                "total": 0,
+                "skipped": True,
+                "error": "the existing file could not be read as JSON; left untouched",
+            }
+            continue
+        existing = current.entries
         merged = merge(existing, entries, prefix)
         result.files[kind] = {
             "path": str(path),
@@ -227,7 +273,7 @@ def sync(db: Session, directory: Path, *, dry_run: bool = False) -> SyncResult:
             "total": len(merged),
         }
         if not dry_run:
-            _write(path, merged, wrapper)
+            _write(path, merged, current)
 
     if not dry_run:
         result.synced_at = datetime.utcnow().isoformat(timespec="seconds")

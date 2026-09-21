@@ -1,7 +1,22 @@
 import { notFound } from "next/navigation"
 
-import { ApiError, getCameras, getFilm, getFilms, getFilmstocks, getLenses, getLocations, getRollMoves } from "@/lib/api"
+import {
+  ApiError,
+  getCameras,
+  getFilm,
+  getFilmsPage,
+  getFilmstocks,
+  getLenses,
+  getLocations,
+  getRollMoves,
+} from "@/lib/api"
 import { RollWorkspace } from "@/components/roll-workspace"
+
+/**
+ * How many rolls the workspace's "move these frames to…" picker offers. It is a
+ * picker, not a list, so it takes one page instead of the whole archive (M3, R#20).
+ */
+const ROLL_PICKER_LIMIT = 200
 
 export default async function RollPage({
   params,
@@ -23,8 +38,8 @@ export default async function RollPage({
     throw error
   }
 
-  const [rolls, cameras, lenses, filmstocks, locations, moves] = await Promise.all([
-    getFilms(),
+  const [rollPage, cameras, lenses, filmstocks, locations, moves] = await Promise.all([
+    getFilmsPage({ limit: ROLL_PICKER_LIMIT }),
     getCameras(),
     getLenses(),
     getFilmstocks(),
@@ -37,7 +52,7 @@ export default async function RollPage({
       film={data.film}
       frames={data.images}
       contactSheets={data.contact_sheets}
-      rolls={rolls}
+      rolls={rollPage.items}
       cameras={cameras}
       lenses={lenses}
       filmstocks={filmstocks}
