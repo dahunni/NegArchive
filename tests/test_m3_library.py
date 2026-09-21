@@ -389,3 +389,107 @@ def test_a_roll_that_already_has_a_folder_is_not_hijacked(client, library):
     second = next(r for r in client.get("/api/films").json() if r["title"] == "Second")
     assert second["archive_serial"] != "2024-0031"
     assert client.get(f"/api/films/{first['id']}").json()["film"]["image_count"] == 1
+
+
+# --- the scanner pointed straight at the watch folder -------------------------
+#
+# Found on a live archive (2026-09-21): NegPy's scan mode had written a roll's 33
+# frames into /mnt/share/rolls with no subfolder, so the archive invented a roll
+# called "rolls" beside the real one and the same roll was in the library twice.
+# The roll's name was in every filename the whole time.
+
+
+def loose(root, files: dict) -> None:
+    """Write files straight into the root, the way a scanner with no subfolder does."""
+    for filename, payload in files.items():
+        (root / filename).write_bytes(payload)
+
+
+def test_loose_files_naming_a_rolls_serial_go_to_that_roll(client, library):
+    roll = client.post("/api/films", json={"title": "Straight into the watch folder"}).json()["film"]
+    serial = roll["archive_serial"]
+
+    loose(
+        library,
+        {
+            f"{serial}_Frame001.ARW": PNG_1x1 + b"loose-1",
+            f"{serial}_Frame002.ARW": PNG_1x1 + b"loose-2",
+        },
+    )
+    root = register(client, library).json()["root"]
+    result = scan(client, root["id"])
+
+    assert result["rolls_created"] == 0, "no roll named after the watch folder"
+    assert result["rolls_adopted"] == 1
+    assert result["frames_added"] == 2
+
+    after = client.get(f"/api/films/{roll['id']}").json()
+    assert after["film"]["title"] == "Straight into the watch folder"
+    assert [f["frame_number"] for f in after["images"]] == [1, 2]
+
+    # The roll is in the archive once, and the watch folder is nobody's folder:
+    # claiming it would send the *next* roll's loose files here too.
+    everything = client.get("/api/films").json()
+    assert not [r for r in everything if r["title"] == library.name]
+    assert len([r for r in everything if r["archive_serial"] == serial]) == 1
+
+    again = scan(client, root["id"])
+    assert again["rolls_adopted"] == 0 and again["rolls_created"] == 0 and again["frames_added"] == 0
+
+
+def test_two_rolls_loose_in_one_folder_stay_two_rolls(client, library):
+    """The failure the old code could not even express: one folder, two rolls."""
+    first = client.post("/api/films", json={"title": "Harbour"}).json()["film"]
+    second = client.post("/api/films", json={"title": "Kyoto"}).json()["film"]
+
+    loose(
+        library,
+        {
+            f"{first['archive_serial']}_Frame001.ARW": PNG_1x1 + b"h1",
+            f"{first['archive_serial']}_Frame002.ARW": PNG_1x1 + b"h2",
+            f"{second['archive_serial']}_Frame001.ARW": PNG_1x1 + b"k1",
+        },
+    )
+    root = register(client, library).json()["root"]
+    result = scan(client, root["id"])
+
+    assert result["rolls_created"] == 0 and result["rolls_adopted"] == 2
+    assert client.get(f"/api/films/{first['id']}").json()["film"]["image_count"] == 2
+    assert client.get(f"/api/films/{second['id']}").json()["film"]["image_count"] == 1
+
+
+def test_a_loose_file_naming_no_known_roll_still_goes_to_the_folders_roll(client, library):
+    """The old behaviour, kept: only a serial the archive *has* diverts a file."""
+    known = client.post("/api/films", json={"title": "Known"}).json()["film"]
+    loose(
+        library,
+        {
+            f"{known['archive_serial']}_Frame001.ARW": PNG_1x1 + b"known",
+            "IMG_2026_0001_0007.jpg": PNG_1x1 + b"a camera, not a serial",
+            "holiday_003.tif": PNG_1x1 + b"no serial at all",
+        },
+    )
+    root = register(client, library).json()["root"]
+    result = scan(client, root["id"])
+
+    assert result["rolls_created"] == 1 and result["rolls_adopted"] == 1
+    assert client.get(f"/api/films/{known['id']}").json()["film"]["image_count"] == 1
+    folder_roll = next(r for r in client.get("/api/films").json() if r["title"] == library.name)
+    assert folder_roll["image_count"] == 2
+
+
+def test_a_serial_named_folder_still_wins_over_the_filenames(client, library):
+    """A folder that names a roll is the more deliberate statement (M6.1 unchanged)."""
+    wanted = client.post("/api/films", json={"title": "The folder's roll"}).json()["film"]
+    other = client.post("/api/films", json={"title": "Named in the files"}).json()["film"]
+
+    make_roll_folder(
+        library,
+        wanted["archive_serial"],
+        {f"{other['archive_serial']}_Frame001.ARW": PNG_1x1 + b"confusing"},
+    )
+    root = register(client, library).json()["root"]
+    scan(client, root["id"])
+
+    assert client.get(f"/api/films/{wanted['id']}").json()["film"]["image_count"] == 1
+    assert client.get(f"/api/films/{other['id']}").json()["film"]["image_count"] == 0

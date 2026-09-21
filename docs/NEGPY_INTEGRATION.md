@@ -137,6 +137,34 @@ M2's "last number in the name wins" rule reads `NEG-2024-0002_013_Kodak Gold 200
 the whole-name preset shape before that rule. A name that does not match the preset is left to the
 loose rule exactly as before.
 
+Shape alone turned out not to be enough (found on a live archive, 2026-09-21). NegPy renders
+`{{ roll }}` through a slug step, so the serial's hyphens come back as the preset's own
+separator: `NEG-2026-0001` leaves as `NEG_2026_0001_001.jpg`. Read by shape that is roll `NEG`,
+frame **2026**, film `0001_001` — and the whole roll is filed under the year. So the film part
+must contain a **letter**; no film stock is called `0001_001`, the candidate is dropped, and the
+name falls through to the `<roll>_<frame>` rule, which reads it correctly. Both spellings of a
+serial mean the same roll (`serials.find_by_serial_loose`), padding included.
+
+### Where the scanner writes, and the roll it lands on
+
+NegPy's scan mode writes `<output>/<roll name>/<roll name>_Frame001.ARW`. Told to name the roll
+after the archive's serial, that folder is the roll (M6.1) — the frames land on the record that
+already knows the camera, the film and where the negatives are filed.
+
+Pointed **straight at the watch folder**, though, there is no subfolder: the files land loose in
+`/mnt/share/rolls`. The importer used to read only folder names, so it invented a roll called
+"rolls" with a serial of its own and left the real roll empty beside it — one roll, in the
+archive twice. The roll's name was in every *file* name the whole time, so when a folder's own
+name says nothing about a serial, the filenames are read instead, and a file naming a roll the
+archive already has goes to that roll (`importer._rolls_for_files`). Two guards keep it quiet:
+the serial has to resolve to a roll that exists, so a camera's `IMG_2026_0001_0007.jpg` matches
+nothing; and a folder that *does* name a serial keeps M6.1's behaviour, being the more
+deliberate statement of the two. The watch folder is never claimed as one roll's `source_dir` —
+the next roll scanned into it has to be free to find its own record.
+
+An archive that already has the damage is repaired by `scripts/repair_misfiled_rolls.py` (dry
+run by default), or one roll at a time in the UI with *Renumber → "Read the filenames again"*.
+
 ### Reading `edits.db`
 
 NegPy keeps every edit in `<user dir>/edits.db`, table `file_settings(file_hash,

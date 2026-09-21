@@ -31,6 +31,17 @@ COUNTER_WIDTH = 4
 
 _SERIAL = re.compile(r"^(?P<prefix>[A-Z0-9]{1,10})-(?P<year>\d{4})-(?P<number>\d{1,6})$")
 
+#: The same grammar at the *head of a filename*, with either separator and the
+#: prefix optional. Two things write it there: NegPy's camera-scan mode
+#: (``NEG-2026-0001_Frame001.ARW``) and its export templating, which renders
+#: ``{{ roll }}`` through a slug step that turns the hyphens into underscores —
+#: so the roll the archive calls ``NEG-2026-0001`` comes back as
+#: ``NEG_2026_0001_001.jpg``. A prefix has to start with a letter, or ``img_0007``
+#: and every other ``word_number`` scanner name would read as a serial.
+_SERIAL_IN_NAME = re.compile(
+    r"^(?:(?P<prefix>[A-Za-z][A-Za-z0-9]{0,9})[-_])?(?P<year>\d{4})[-_](?P<number>\d{1,6})(?![0-9])"
+)
+
 
 def prefix(db: Session) -> str:
     value = (settings_store.get(db, "serial_prefix") or "NEG").strip().upper()
@@ -117,3 +128,49 @@ def find_by_serial(db: Session, serial: str) -> Optional[FilmRoll]:
     if not wanted:
         return None
     return db.query(FilmRoll).filter(func.upper(FilmRoll.archive_serial) == wanted).first()
+
+
+def serial_in_filename(filename: Optional[str]) -> Optional[str]:
+    """``"NEG-2026-0001"`` for ``NEG_2026_0001_001.jpg``: the serial a file claims.
+
+    Only a serial at the *head* of the name counts — a number further in is a
+    frame, a date or an ISO — and it is spelled back with hyphens whichever
+    separator the file used.
+
+    This is a claim, not a fact. It is worth nothing until
+    :func:`find_by_serial_loose` matches it against a roll that actually exists,
+    which is the whole safety property: a camera's ``IMG_2026_0001_001.jpg`` parses
+    just as happily and then matches nothing.
+    """
+    if not filename:
+        return None
+    stem = str(filename).rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+    stem = stem.rsplit(".", 1)[0] if "." in stem else stem
+    match = _SERIAL_IN_NAME.match(stem.strip())
+    if not match:
+        return None
+    prefix_value = (match.group("prefix") or "").upper()
+    body = f"{match.group('year')}-{match.group('number')}"
+    return f"{prefix_value}-{body}" if prefix_value else body
+
+
+def find_by_serial_loose(db: Session, serial: str) -> Optional[FilmRoll]:
+    """:func:`find_by_serial`, but on what a serial *means* rather than how it is spelled.
+
+    ``NEG_2026_0001``, ``NEG-2026-0001`` and ``NEG-2026-1`` are one roll. A file
+    that came back from NegPy has been through a templating engine that eats
+    hyphens, and a serial written by hand is rarely padded to four digits.
+    """
+    exact = find_by_serial(db, serial)
+    if exact is not None:
+        return exact
+    wanted = parse((normalize(serial) or "").replace("_", "-"))
+    if wanted is None:
+        return None
+    prefix_value, year, _number = wanted
+    for roll in db.query(FilmRoll).filter(
+        func.upper(FilmRoll.archive_serial).like(f"{prefix_value}-{year}-%")
+    ):
+        if parse(roll.archive_serial or "") == wanted:
+            return roll
+    return None

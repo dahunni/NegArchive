@@ -65,6 +65,12 @@ def upload(client, filename: str, roll_id=None, **data) -> dict:
         ("IMG-0042.dng", 42),
         ("Roll001_Frame023.ARW", 23),  # NegPy's camera-scan mode (M6.1)
         ("NEG-2026-0007_Frame023.ARW", 23),  # the same, with the archive's serial as the roll
+        # NegPy's export templating slugs the roll, so the serial's hyphens come
+        # back as underscores. Read by shape alone that is frame 2026, and a live
+        # archive filed all 33 frames of a roll under it (2026-09-21).
+        ("NEG_2026_0007_001.jpg", 1),
+        ("NEG_2026_0007_023.jpg", 23),
+        ("NEG_2026_0007_023_HP5 Plus.jpg", 23),  # …and with the film part back on
         ("/somewhere/else/Roll12_009.tiff", 9),
         ("Roll12.tif", None),  # a number glued to a word is part of the word
         ("untitled.jpg", None),

@@ -126,6 +126,12 @@ def negpy_defaults(client):
         ("NEG-2026-0007_012_Tri-X 400.tif", "NEG-2026-0007", 12, "Tri-X 400"),
         ("NEG-2026-0007_012.tif", "NEG-2026-0007", 12, None),
         ("Roll12_007.tif", "Roll12", 7, None),
+        # The serial with its hyphens slugged to underscores: the roll now carries
+        # the preset's own separator, and the shape alone reads roll "NEG",
+        # frame 2026, film "0001_012". No film is called that — so the candidate
+        # is dropped and the name falls through to <roll>_<frame>.
+        ("NEG_2026_0007_012.tif", "NEG_2026_0007", 12, None),
+        ("NEG_2026_0007_012_HP5 Plus.tif", "NEG_2026_0007", 12, "HP5 Plus"),
     ],
 )
 def test_the_export_preset_is_read_back(filename, roll, frame, film):
@@ -152,6 +158,9 @@ def test_a_name_that_is_not_the_preset_is_left_alone(filename):
         ("007.jpg", 7),
         ("img_0007.png", 7),
         ("Roll12.tif", None),
+        # The whole roll filed as frame 2026 (found on a live archive, 2026-09-21).
+        ("NEG_2026_0007_013.jpg", 13),
+        ("NEG_2026_0007_013_Kodak Gold 200.jpg", 13),
     ],
 )
 def test_the_upload_frame_number_prefers_the_preset(filename, expected):
@@ -173,6 +182,22 @@ def test_a_roll_of_preset_named_files_is_numbered_by_frame_not_by_iso(client):
     )
     assert res.status_code == 200, res.text
     assert sorted(image["frame_number"] for image in res.json()["images"]) == [11, 12, 13]
+
+
+def test_an_underscored_serial_does_not_file_a_whole_roll_as_frame_2026(client):
+    """The live failure, end to end: NegPy exported the roll with its serial
+    slugged, and every frame of it arrived as frame 2026."""
+    roll = make_roll(client)
+    serial = roll["archive_serial"]
+    slugged = serial.replace("-", "_")
+    res = client.post(
+        f"/api/films/{roll['id']}/images/bulk",
+        files=[
+            ("files", (f"{slugged}_{n:03d}.jpg", jpeg_bytes(), "image/jpeg")) for n in (1, 2, 33)
+        ],
+    )
+    assert res.status_code == 200, res.text
+    assert sorted(image["frame_number"] for image in res.json()["images"]) == [1, 2, 33]
 
 
 def test_the_published_pattern_is_the_one_that_parses():

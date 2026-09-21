@@ -18,6 +18,9 @@ Folder layout the scanner expects — the one everybody's scanner software produ
       NEG-2026-0007/          → M6.1: the roll that already HAS this serial, if it
         NEG-2026-0007_Frame001.ARW   has no folder yet (NegPy's scan mode, told
                                       to name its roll after the archive's serial)
+      NEG-2026-0008_Frame001.ARW   → the same roll-by-serial rule read out of the
+      NEG-2026-0008_Frame002.ARW     *file* names, for a scanner pointed straight
+                                      at the watch folder with no subfolder at all
 
 **Rescans are idempotent.** A file is identified first by its absolute path and
 then by its content hash, so scanning twice changes nothing, a file edited in
@@ -239,7 +242,7 @@ def _roll_for_folder(db: Session, folder: Path, result: ScanResult) -> FilmRoll:
     # its life, instead of on a draft with a fresh serial sitting next to it. A roll
     # that already has a folder is left alone: two folders are not one roll.
     if serial:
-        existing = serials.find_by_serial(db, serial)
+        existing = serials.find_by_serial_loose(db, serial)
         if existing is not None and not existing.source_dir:
             existing.source_dir = key
             result.rolls_adopted += 1
@@ -256,6 +259,61 @@ def _roll_for_folder(db: Session, folder: Path, result: ScanResult) -> FilmRoll:
     result.rolls_created += 1
     result.roll_ids.append(roll.id)
     return roll
+
+
+def _rolls_for_files(
+    db: Session, folder: Path, files: list[Path], result: ScanResult
+) -> list[tuple[FilmRoll, list[Path], bool]]:
+    """``[(roll, files, matched_by_filename)]`` — which roll each file belongs to.
+
+    Normally the answer is one pair: a folder is a roll. But NegPy's scan mode can
+    be pointed straight at the watch folder, and then the roll's name is not in a
+    folder name at all — it is in every *file* name, because that is what the roll
+    page told you to call the roll::
+
+        /mnt/share/rolls/NEG-2026-0001_Frame001.ARW
+        /mnt/share/rolls/NEG-2026-0001_Frame002.ARW
+
+    Read by folder alone those are 33 loose files in a directory called ``rolls``,
+    so the archive invented a roll called "rolls" with a fresh serial and the real
+    roll — the one that knows the camera, the film and where the negatives live —
+    sat next to it with nothing in it. The same roll, in the archive twice.
+
+    So when the folder's own name says nothing about a serial, the filenames are
+    asked instead, and a file naming a roll the archive **already has** goes to
+    that roll. Everything else falls back to the folder's roll exactly as before.
+
+    Two guards make this safe to do by default:
+
+    * the serial has to resolve to an existing roll (:func:`serials.find_by_serial_loose`),
+      so a camera's ``IMG_2026_0001_0007.jpg`` matches nothing and changes nothing;
+    * a folder that *does* name a serial keeps M6.1's behaviour untouched — the
+      folder is the more deliberate statement of the two.
+
+    Unlike the folder rule this does not claim ``source_dir``. A watch folder is
+    not one roll's folder; the next roll scanned into it must be free to find its
+    own record, and a file that names no roll must still land on the folder's.
+    """
+    _title, serial = parse_folder_name(folder.name)
+    if serial is not None:
+        return [(_roll_for_folder(db, folder, result), files, False)]
+
+    by_roll: dict[int, tuple[FilmRoll, list[Path]]] = {}
+    leftover: list[Path] = []
+    for file_path in files:
+        claimed = serials.serial_in_filename(file_path.name)
+        roll = serials.find_by_serial_loose(db, claimed) if claimed else None
+        if roll is None:
+            leftover.append(file_path)
+            continue
+        by_roll.setdefault(roll.id, (roll, []))[1].append(file_path)
+
+    groups = [(roll, group, True) for roll, group in by_roll.values()]
+    if leftover or not groups:
+        # `not groups` keeps an empty watch folder answering as it always did: a
+        # draft roll for the folder, which is what the settings page shows.
+        groups.append((_roll_for_folder(db, folder, result), leftover, False))
+    return groups
 
 
 def _refresh_sidecar(image: ImageAsset) -> bool:
@@ -404,9 +462,16 @@ def _scan_root_locked(db: Session, root: LibraryRoot, commit: bool) -> ScanResul
                 # watch folder is supposed to show it as a draft immediately.
                 _roll_for_folder(db, folder, result)
                 continue
-            roll = _roll_for_folder(db, folder, result)
-            for file_path in files:
-                _link_file(db, file_path, roll, result, ingest, edits_index)
+            for roll, group, by_filename in _rolls_for_files(db, folder, files, result):
+                before = result.frames_added
+                for file_path in group:
+                    _link_file(db, file_path, roll, result, ingest, edits_index)
+                # A roll found by its filenames is only *adopted* on the sweep that
+                # actually puts frames on it; there is no `source_dir` to mark it
+                # with, so without this a rescan would report the adoption forever.
+                if by_filename and result.frames_added > before and roll.id not in result.roll_ids:
+                    result.rolls_adopted += 1
+                    result.roll_ids.append(roll.id)
     finally:
         if edits_index is not None:
             edits_index.close()

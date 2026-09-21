@@ -83,7 +83,10 @@ def test_the_version_endpoint_reports_the_build_and_the_changelog(client, monkey
     assert body["changelog_total"] == len(body["changelog"])
     assert body["release_url"].endswith(f"/v{version.__version__}")
 
-    trimmed = client.get("/api/system/version", params={"since": "0.9.1"}).json()
+    # `since` the release before this one leaves exactly this one. Taken from the
+    # file rather than written down, so a release does not have to edit this test.
+    previous = body["changelog"][1]["version"]
+    trimmed = client.get("/api/system/version", params={"since": previous}).json()
     assert [e["version"] for e in trimmed["changelog"]] == [version.__version__]
     assert trimmed["changelog_total"] == body["changelog_total"]
 

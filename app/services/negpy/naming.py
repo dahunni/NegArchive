@@ -17,6 +17,16 @@ wrong here: ``NEG-2026-0007_012_Tri-X 400.tif`` ends in ``400``, and a roll wher
 every frame is number 400 is worse than a roll with no frame numbers at all. So a
 name is only read as a preset name when the whole shape matches: something, an
 underscore, one to four digits, an underscore, something.
+
+And the "something" on the right has to look like a film: **it must contain a
+letter.** Strictness in the shape alone was not enough, because NegPy's export
+templating replaces the hyphens in a roll name with underscores, so the serial
+``NEG-2026-0001`` reaches the archive as ``NEG_2026_0001_001.jpg`` — a name in
+which the *roll* now contains the preset's own separator. Read by shape alone that
+is roll ``NEG``, frame ``2026``, film ``0001_001``, and a whole roll arrives filed
+as frame 2026. No film stock is called ``0001_001``; requiring a letter throws the
+candidate out, the name falls through to the ``<roll>_<frame>`` rule below, and the
+frame is 1 as it should be.
 """
 
 from __future__ import annotations
@@ -37,6 +47,10 @@ _BOUNDARY = re.compile(r"_(?P<frame>\d{1,4})_")
 #: produces and what most scanner software writes anyway.
 _ROLL_FRAME = re.compile(r"^(?P<roll>\S.*?)_(?P<frame>\d{1,4})$")
 
+#: One letter, in any alphabet. What tells a film name from a run of digits that
+#: is really part of the roll's serial.
+_LETTER = re.compile(r"[^\W\d_]", re.UNICODE)
+
 
 def _split_preset(stem: str) -> Optional[tuple[str, int, str]]:
     """``(roll, frame, film)`` for ``<roll>_<frame>_<film>``, or None.
@@ -46,11 +60,16 @@ def _split_preset(stem: str) -> Optional[tuple[str, int, str]]:
     the last numeric group. The preset pads the frame to three digits, so a
     three-digit group is preferred; among equals, the first wins — the roll is
     the part people write by hand, the film comes from a catalog.
+
+    A candidate whose film part has no letter in it is not a candidate at all:
+    ``NEG_2026_0001_001`` splits into roll ``NEG``, frame ``2026``, film
+    ``0001_001``, and there is no such film. Dropping it is what stops an
+    underscored serial from turning a whole roll into frame 2026.
     """
     candidates = []
     for match in _BOUNDARY.finditer(stem):
         roll, film = stem[: match.start()].strip(), stem[match.end() :].strip()
-        if roll and film:
+        if roll and film and _LETTER.search(film):
             candidates.append((match.group("frame"), roll, film))
     if not candidates:
         return None
