@@ -201,3 +201,67 @@ jobs:
         env:
           IMAGE: ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ matrix.image }}
         run: docker buildx imagetools inspect "$IMAGE:${{ steps.meta.outputs.version }}"
+
+  # A tag is not a release. The footer and Settings → About link at
+  # `/releases/tag/v<version>` (app/routers/system.py, `release_url`), and pushing
+  # `v0.10.0` without also creating the release left that link answering 404 for a
+  # whole version — which is exactly the kind of thing nobody notices until they
+  # click it. So the release is made here, from the same CHANGELOG entry the app
+  # itself serves, and it cannot drift from the tag again.
+  #
+  # After `merge`, so a release only appears once its images are actually pullable:
+  # the notes tell people to `docker compose pull`.
+  release:
+    name: GitHub release
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: merge
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Take this version's entry out of the changelog
+        id: notes
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          # The section from this version's heading up to the next one. The same
+          # shape `app/services/changelog.py` parses, so if this finds nothing the
+          # release is missing its entry and that is worth failing over.
+          awk -v v="## [$version]" '
+            index($0, v) == 1 { inside = 1; next }
+            inside && /^## \[/ { exit }
+            inside { print }
+          ' CHANGELOG.md > body.md
+          if [ ! -s body.md ]; then
+            echo "::error::CHANGELOG.md has no entry for $version" >&2
+            exit 1
+          fi
+          {
+            echo ""
+            echo "## Update"
+            echo ""
+            echo '```bash'
+            echo "git pull && docker compose pull && docker compose up -d"
+            echo '```'
+            echo ""
+            echo "**Full changelog:** [CHANGELOG.md](https://github.com/${GITHUB_REPOSITORY}/blob/${GITHUB_REF_NAME}/CHANGELOG.md)"
+          } >> body.md
+
+      - name: Create it, unless it is already there
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "Release $GITHUB_REF_NAME already exists; leaving its notes alone."
+            exit 0
+          fi
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --notes-file body.md \
+            --verify-tag \
+            --latest
