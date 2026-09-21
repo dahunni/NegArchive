@@ -42,7 +42,7 @@
  *     can hold something stale (pages and API answers) rather than trusting the
  *     name alone to have moved.
  */
-const VERSION = "v1"
+const VERSION = "v2"
 const SHELL_CACHE = `negarchive-shell-${VERSION}`
 const PAGE_CACHE = `negarchive-pages-${VERSION}`
 const API_CACHE = `negarchive-api-${VERSION}`
@@ -170,7 +170,14 @@ self.addEventListener("fetch", (event) => {
 
   // Never cache the "am I online / who am I" endpoints: the whole point of them
   // is to answer for right now. Exports and backups are left to the network too.
-  if (url.pathname === "/api/health" || url.pathname === "/api/system/info") return
+  // `/api/system/version` joins them (M7): the first page load after an update
+  // has to see the *new* version, not a cached copy of the old one.
+  if (
+    url.pathname === "/api/health" ||
+    url.pathname === "/api/system/info" ||
+    url.pathname === "/api/system/version"
+  )
+    return
   if (neverCache(url.pathname)) return
 
   if (url.pathname.startsWith("/api/")) {

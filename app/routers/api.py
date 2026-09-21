@@ -47,6 +47,7 @@ from ..seed import seed_catalog
 from ..services import lifecycle, rawdecode, serials, settings_store
 from ..services import locations as loc_svc
 from ..services import preview as preview_render
+from ..services import search as search_svc
 from ..services import strips as strips_svc
 from ..services.hashing import safe_content_hash
 from ..services.negpy import edits as negpy_edits
@@ -766,8 +767,12 @@ def list_films(
     anything under it) and ``bucket`` (``in_cameras`` / ``at_lab`` / ``to_scan`` /
     ``to_sleeve``, the home page work lists).
 
-    * ``q``      — words that must all appear somewhere in the roll (title, notes,
-                   serial, folder, building, camera, lens, film). Case-insensitive.
+    * ``q``      — words that must all appear somewhere on or in the roll: title,
+                   notes, serial, folder, building, gear, film, developer, the years
+                   it was shot, its location's path, and its frames' notes and
+                   filenames. Case-insensitive, typo-tolerant with pg_trgm, and
+                   ``camera:``, ``film:``, ``year:``, ``status:``, ``location:``
+                   pin a word to one field (M7, app/services/search.py).
     * ``camera_id`` / ``film_stock_id`` — catalog ids (R#14). The deprecated
       ``camera`` / ``film_type`` name filters still work for older clients, and
       match a roll by either its id's catalog name or its legacy name column.
@@ -783,29 +788,13 @@ def list_films(
 
     query = db.query(FilmRoll)
 
-    for term in (q or "").split():
-        pattern = f"%{term.lower()}%"
-        query = query.filter(
-            or_(
-                func.lower(func.coalesce(FilmRoll.title, "")).like(pattern),
-                func.lower(func.coalesce(FilmRoll.notes, "")).like(pattern),
-                func.lower(func.coalesce(FilmRoll.archive_serial, "")).like(pattern),
-                func.lower(func.coalesce(FilmRoll.folder, "")).like(pattern),
-                func.lower(func.coalesce(FilmRoll.building, "")).like(pattern),
-                func.lower(func.coalesce(FilmRoll.camera, "")).like(pattern),
-                func.lower(func.coalesce(FilmRoll.lens, "")).like(pattern),
-                func.lower(func.coalesce(FilmRoll.film_type, "")).like(pattern),
-                FilmRoll.camera_id.in_(
-                    db.query(Camera.id).filter(func.lower(Camera.name).like(pattern))
-                ),
-                FilmRoll.lens_id.in_(
-                    db.query(Lens.id).filter(func.lower(Lens.name).like(pattern))
-                ),
-                FilmRoll.film_stock_id.in_(
-                    db.query(FilmStock.id).filter(func.lower(FilmStock.name).like(pattern))
-                ),
-            )
-        )
+    # M7: the one matcher every list uses (app/services/search.py) — words and
+    # quoted phrases that must all appear somewhere on or in the roll, including
+    # its frames' notes and filenames, `camera:`/`film:`/`year:`/... qualifiers,
+    # and a typo's worth of slack when pg_trgm is installed.
+    parsed = search_svc.parse(q)
+    if not parsed.empty:
+        query = query.filter(*search_svc.roll_filters(db, None, parsed))
 
     if camera_id is not None:
         query = query.filter(FilmRoll.camera_id == camera_id)
@@ -856,7 +845,12 @@ def list_films(
 
     page_limit, page_offset = _page_bounds(limit, offset)
     total = query.order_by(None).count()
-    query = query.order_by(FilmRoll.created_at.desc(), FilmRoll.id.desc()).offset(page_offset)
+    # A search is ordered by how well each roll matches, then newest first; a
+    # plain listing stays newest first, as it always was.
+    ordering = [FilmRoll.created_at.desc(), FilmRoll.id.desc()]
+    if not parsed.empty:
+        ordering.insert(0, search_svc.roll_score(db, parsed).desc())
+    query = query.order_by(*ordering).offset(page_offset)
     if page_limit is not None:
         query = query.limit(page_limit)
     films = query.all()
@@ -1132,7 +1126,8 @@ def list_images(
     """Every frame, filtered and paginated (roadmap M3, R#20).
 
     ``unassigned=true`` is the "not in a roll yet" pile the frames page shows;
-    ``q`` searches the note and the original filename.
+    ``q`` searches the note, the original filename, the frame number and the
+    roll's title and serial (M7).
     """
     query = db.query(ImageAsset)
     if film_id:
@@ -1148,20 +1143,23 @@ def list_images(
         # else: ignore invalid type filter, return all
     if storage_mode in {"managed", "linked"}:
         query = query.filter(ImageAsset.storage_mode == storage_mode)
-    for term in (q or "").split():
-        pattern = f"%{term.lower()}%"
-        query = query.filter(
-            or_(
-                func.lower(func.coalesce(ImageAsset.notes, "")).like(pattern),
-                func.lower(func.coalesce(ImageAsset.original_filename, "")).like(pattern),
-            )
-        )
+    # M7: the shared matcher — note, filename, frame number, the roll's title and
+    # serial, `frame:12`, `roll:harbour`, and the roll-level qualifiers.
+    parsed = search_svc.parse(q)
+    if not parsed.empty:
+        query = query.filter(*search_svc.frame_filters(db, None, parsed))
 
     page_limit, page_offset = _page_bounds(limit, offset)
     total = query.order_by(None).count()
     # R#24: frame order everywhere, not insertion order. Across rolls, group by
-    # roll first so a page is not a shuffle of every roll's frame 1.
-    ordered = frames_in_order(query.order_by(ImageAsset.film_roll_id.asc().nulls_first()))
+    # roll first so a page is not a shuffle of every roll's frame 1. A search
+    # puts the best matches first and keeps that order within a score.
+    if parsed.empty:
+        ordered = frames_in_order(query.order_by(ImageAsset.film_roll_id.asc().nulls_first()))
+    else:
+        ordered = frames_in_order(
+            query.order_by(search_svc.frame_score(db, parsed).desc(), ImageAsset.film_roll_id.asc().nulls_first())
+        )
     ordered = ordered.offset(page_offset)
     if page_limit is not None:
         ordered = ordered.limit(page_limit)
@@ -1742,6 +1740,76 @@ def bulk_update_images(body: schemas.BulkImageUpdate, db: Session = Depends(get_
         lifecycle.touch_scanned(db.get(FilmRoll, fields["film_roll_id"]))
     db.commit()
     return {"ok": True, "updated": len(images), "images": [image_to_dict(i) for i in images]}
+
+
+@router.post(
+    "/films/{film_id}/frames/renumber",
+    response_model=None,
+    responses={400: {"model": schemas.ErrorOut}, 404: {"model": schemas.ErrorOut}},
+)
+def renumber_frames(film_id: int, body: schemas.RenumberFrames, db: Session = Depends(get_db)):
+    """Give a roll's frames a new numbering in one go (M7).
+
+    Body: ``{"mode": "sequential"|"reverse"|"shift"|"from_filenames", "ids": [...],
+    "start": 1, "step": 1, "offset": 0, "dry_run": false}``. ``ids`` limits it to a
+    selection (in the roll's display order); without it every scan of the roll is
+    renumbered. ``dry_run`` answers with the plan and writes nothing, which is what
+    the dialog shows before "Apply". See :mod:`app.services.renumber` for the modes.
+
+    Answers ``{"ok", "dry_run", "plan": [{"id", "from", "to", "original_filename"}],
+    "updated", "conflicts": [numbers used twice afterwards], "images": [...]}``.
+    """
+    from ..services import renumber as renumber_svc
+
+    film = db.get(FilmRoll, film_id)
+    if film is None:
+        return not_found("Roll")
+    try:
+        mode = parse_choice(body.mode, "mode", renumber_svc.MODES)
+        if mode is None:
+            raise ApiError("invalid_mode", f"Mode must be one of: {', '.join(renumber_svc.MODES)}.", 400, "mode")
+        start = parse_int(body.start, "start", minimum=0)
+        step = parse_int(body.step, "step", minimum=1)
+        offset = parse_int(body.offset, "offset")
+        scans = frames_in_order(
+            db.query(ImageAsset).filter(ImageAsset.film_roll_id == film_id, ImageAsset.type == ImageType.scan)
+        ).all()
+        chosen = scans
+        if body.ids:
+            wanted = set(_require_ids(body.ids))
+            chosen = [f for f in scans if f.id in wanted]
+            missing = wanted - {f.id for f in chosen}
+            if missing:
+                raise ApiError("not_in_roll", f"{len(missing)} of those frames are not scans of this roll.", 404, "ids")
+        planned = renumber_svc.plan(
+            chosen,
+            mode,
+            start=1 if start is None else start,
+            step=1 if step is None else step,
+            offset=offset or 0,
+            from_filename=frame_number_from_filename,
+        )
+    except ApiError as exc:
+        return from_exc(exc)
+
+    targets = {item["id"]: item["to"] for item in planned}
+    after = [targets.get(f.id, f.frame_number) for f in scans]
+    conflicts = renumber_svc.duplicates(after)
+    changes = [item for item in planned if item["from"] != item["to"]]
+    if body.dry_run:
+        return {"ok": True, "dry_run": True, "plan": planned, "updated": len(changes), "conflicts": conflicts}
+
+    for frame in chosen:
+        frame.frame_number = targets[frame.id]
+    db.commit()
+    return {
+        "ok": True,
+        "dry_run": False,
+        "plan": planned,
+        "updated": len(changes),
+        "conflicts": conflicts,
+        "images": [image_to_dict(f) for f in chosen],
+    }
 
 
 @router.post(

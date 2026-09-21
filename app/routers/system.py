@@ -11,6 +11,7 @@ can I reach it":
   frontend needs no QR dependency and works offline.
 * ``POST /api/system/login`` / ``logout`` — the shared password (R#26).
 * ``GET|PUT /api/system/settings`` — the allowlisted toggles.
+* ``GET /api/system/version``  — the version, the build and the changelog (M7).
 
 ``/api/system/info`` deliberately reports no filesystem contents, no versions of
 anything and no error detail: it is the one endpoint an unauthenticated visitor
@@ -27,11 +28,11 @@ from fastapi import APIRouter, Depends, Request, Response
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from .. import auth, paths
+from .. import auth, paths, version
 from ..db import get_db
 from ..errors import ApiError, error_response, from_exc, read_json
 from ..models import FilmRoll, ImageAsset, LibraryRoot
-from ..services import network, settings_store
+from ..services import changelog, network, settings_store
 from ..services import smb as smb_service
 from ..services.negpy import dirs as negpy_dirs
 from ..services.negpy import handoff as negpy_handoff
@@ -262,3 +263,34 @@ async def put_settings(request: Request, db: Session = Depends(get_db)):
         return from_exc(exc)
     db.commit()
     return {"ok": True, "settings": settings_store.get_all(db), "watch": _watch_state(db)}
+
+
+# ---------------------------------------------------------------------------
+# Version and changelog (M7)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/system/version")
+def system_version(since: Optional[str] = None):
+    """Which NegArchive this is, and what changed.
+
+    ``version`` is :data:`app.version.__version__`; ``git_sha`` and ``built_at``
+    are what the published image was built from, or null for a checkout run
+    from source. ``changelog`` is ``CHANGELOG.md`` parsed, newest first, and
+    ``since=<version>`` trims it to the entries newer than that — which is what
+    the UI asks for on the first load after an update, so the "what's new"
+    dialog shows exactly the releases you skipped.
+
+    Unlike ``/api/system/info`` this endpoint is *not* on the open list: with a
+    password set, the version is behind it like everything else.
+    """
+    entries = changelog.entries()
+    return {
+        "app": "NegArchive",
+        "version": version.__version__,
+        "git_sha": version.git_sha(),
+        "built_at": version.build_date(),
+        "changelog": changelog.since(entries, since) if since else entries,
+        "changelog_total": len(entries),
+        "release_url": f"https://github.com/dahunni/NegArchive/releases/tag/v{version.__version__}",
+    }

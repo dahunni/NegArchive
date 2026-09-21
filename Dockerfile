@@ -21,6 +21,14 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . /app
 
+# Which commit this image was built from and when (M7). The publish workflow
+# passes them; a local `docker compose build` leaves them empty and the version
+# endpoint says so. `app/version.py` reads the two environment variables.
+ARG GIT_SHA=""
+ARG BUILD_DATE=""
+ENV NEGARCHIVE_GIT_SHA=${GIT_SHA} \
+    NEGARCHIVE_BUILD_DATE=${BUILD_DATE}
+
 # One directory for everything the archive owns; the compose stack bind-mounts
 # the host's ./data over it (roadmap M3). Created here so the image also works
 # standalone, without a mount.

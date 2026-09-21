@@ -3,7 +3,7 @@
 import Link from "next/link"
 import { usePathname, useRouter } from "next/navigation"
 import { useEffect, useState } from "react"
-import { Film, Images, MapPin, Menu, Printer, ScanLine, Settings, Wrench } from "lucide-react"
+import { Film, Images, MapPin, Menu, Printer, ScanLine, Search, Settings, Wrench } from "lucide-react"
 
 import { errorMessage, resolveScan } from "@/lib/api"
 import { cn } from "@/lib/utils"
@@ -12,7 +12,10 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/co
 import { LanFooter } from "@/components/lan-footer"
 import { LoginGate } from "@/components/login-gate"
 import { OfflineBanner } from "@/components/offline-banner"
+import { SearchPalette } from "@/components/search-palette"
 import { ThemeToggle } from "@/components/theme-toggle"
+import { WhatsNewDialog } from "@/components/whats-new-dialog"
+import { useAppVersion, useVersionPolling } from "@/hooks/use-app-version"
 import { useScannerWedge } from "@/hooks/use-scanner-wedge"
 import { useToast } from "@/hooks/use-toast"
 
@@ -41,11 +44,23 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const router = useRouter()
   const { toast } = useToast()
   const [mobileOpen, setMobileOpen] = useState(false)
+  // M7: the search palette, and the "what's new" dialog (opened by an update, or on request).
+  const [searchOpen, setSearchOpen] = useState(false)
+  const [whatsNew, setWhatsNew] = useState<"update" | "all" | null>(null)
+  useVersionPolling()
+  const version = useAppVersion()
 
   // The nav sheet must not stay open across a navigation on a phone.
   useEffect(() => {
     setMobileOpen(false)
   }, [pathname])
+
+  // An update was noticed (the first load after `docker compose pull`, or a
+  // tab left open through it): show what changed, once, until it is acknowledged.
+  useEffect(() => {
+    if (version.updated && whatsNew === null && !isPrintRoute(pathname)) setWhatsNew("update")
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [version.updated])
 
   // M4: a barcode scanner works from any page. The scanner console has its own
   // handling (multi-step sequences), so the shell stays out of its way there.
@@ -66,26 +81,32 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     { enabled: !pathname.startsWith("/scan") },
   )
 
-  // `/` focuses the roll search from anywhere, the way a barcode scanner expects
-  // a field to type into.
+  // `⌘K` / `Ctrl+K` opens the search palette from anywhere, even inside a text
+  // field (M7). `/` keeps its M4 meaning on the roll list — focus the filter
+  // bar's search box, the way a barcode scanner expects a field to type into —
+  // and on every other page it opens the palette instead of leaving the page.
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key.toLowerCase() === "k" && (event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey) {
+        event.preventDefault()
+        setSearchOpen((open) => !open)
+        return
+      }
       if (event.key !== "/" || event.metaKey || event.ctrlKey || event.altKey) return
       const target = event.target as HTMLElement | null
       if (target && (["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName) || target.isContentEditable)) return
       const search = document.querySelector<HTMLInputElement>('[data-testid="roll-search"]')
+      event.preventDefault()
       if (search) {
-        event.preventDefault()
         search.focus()
         search.select()
-      } else if (pathname !== "/") {
-        event.preventDefault()
-        router.push("/?focus=search")
+      } else {
+        setSearchOpen(true)
       }
     }
     document.addEventListener("keydown", onKeyDown)
     return () => document.removeEventListener("keydown", onKeyDown)
-  }, [pathname, router])
+  }, [])
 
   if (isPrintRoute(pathname)) {
     return <>{children}</>
@@ -166,6 +187,28 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           </nav>
 
           <div className="ml-auto flex items-center gap-1">
+            {/* M7: search everything. A labelled button with the shortcut on a
+                desktop, an icon on a phone. */}
+            <Button
+              variant="outline"
+              className="hidden h-10 min-w-56 justify-start gap-2 text-muted-foreground lg:flex"
+              onClick={() => setSearchOpen(true)}
+              data-testid="search-open"
+            >
+              <Search className="h-4 w-4" />
+              <span className="flex-1 text-left font-normal">Search…</span>
+              <kbd className="rounded border border-border px-1.5 py-0.5 text-[10px]">⌘K</kbd>
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-11 w-11 lg:hidden"
+              onClick={() => setSearchOpen(true)}
+              aria-label="Search the archive"
+              data-testid="search-open-mobile"
+            >
+              <Search className="h-5 w-5" />
+            </Button>
             <Button variant="ghost" size="icon" className="h-11 w-11 lg:hidden" asChild aria-label="Scan a code">
               <Link href="/scan">
                 <ScanLine className="h-5 w-5" />
@@ -178,10 +221,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
       <main className="mx-auto w-full max-w-7xl flex-1 px-4 py-6 sm:px-6 sm:py-8 lg:px-8">{children}</main>
 
-      {/* M3: the address to type on a phone, and the QR that saves the typing. */}
-      <LanFooter />
+      {/* M3: the address to type on a phone, and the QR that saves the typing.
+          M7: and which NegArchive this is, with "what's new" a click away. */}
+      <LanFooter onWhatsNew={() => setWhatsNew("all")} />
       {/* M3: renders nothing unless NEGARCHIVE_PASSWORD is set on the backend. */}
       <LoginGate />
+
+      <SearchPalette open={searchOpen} onOpenChange={setSearchOpen} />
+      <WhatsNewDialog open={whatsNew !== null} onOpenChange={(open) => !open && setWhatsNew(null)} mode={whatsNew ?? "all"} />
     </div>
   )
 }

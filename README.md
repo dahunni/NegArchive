@@ -12,7 +12,8 @@ integrity: Postgres only, Alembic, original filenames, gear foreign keys, valida
 lifecycle), M3 (offline-first: one Compose stack, import by reference, backup, PWA), M4 (the
 physical archive: serials, locations, lifecycle, codes, printouts, scanner console), M5 (the
 NegPy integration: metadata ingest, gear sync, roll handoff, sidecars) and M6 (the network share,
-so NegPy on a laptop and NegArchive on a server work in the same folder) are done;
+so NegPy on a laptop and NegArchive on a server work in the same folder) and M7 (search everything,
+the version on screen, renumbering) are done;
 read the [Known issues](#known-issues) section before deploying.
 
 ## Where this is going
@@ -41,8 +42,17 @@ A **roll** is the unit of work, so the roll list is the home page and everything
 
 - **Rolls** (`/`, also reachable at `/films`) — one row per roll with a strip of real thumbnails,
   the film, the camera, the dates you shot it and where the negatives are filed. The filter bar
-  above the list searches titles, notes, serials and folders and narrows by camera, film and date
-  range; there is no separate search page.
+  above the list searches everything on or in a roll and narrows by camera, film, date range and
+  status; there is no separate search page.
+- **Search everything** with `⌘K` (`Ctrl+K`), the search button in the header, or `/` on any page
+  without its own search box. One palette finds rolls, frames, cameras, lenses, film stocks and
+  storage locations, ranked; arrow keys move, `Enter` opens. A word matches anything the archive
+  knows about a roll — title, notes, serial, folder, gear, film, developer, the year it was shot,
+  where it is filed, and the notes and filenames of its frames — and small typos are forgiven
+  (`harbor` finds "Harbour"). `camera:nikon`, `film:portra`, `year:2024`, `status:sleeved`,
+  `in:"binder 3"`, `serial:0003` and `frame:12` pin a word to one field; `"quoted words"` must
+  appear as written. The filter bars on the roll list and the frames page use the same grammar,
+  so `/?q=…` and `/images?q=…` are links.
 - **New roll** opens a three-step wizard (title and dates → gear and film → storage) and then the
   upload zone, so a roll goes from nothing to scanned in one dialog. It remembers the camera, lens
   and film you used last.
@@ -50,14 +60,23 @@ A **roll** is the unit of work, so the roll list is the home page and everything
   frames. Drag files or a whole ZIP onto the zone and each one gets its own progress bar. In the
   grid, the frame number and the note are edited in place — arrow keys walk the grid, `Enter`
   opens the viewer, `Space` selects, `Escape` clears the selection. With frames selected, the bar
-  at the bottom deletes them, moves them to another roll or sets a capture date on all of them.
+  at the bottom deletes them, moves them to another roll, sets a capture date on all of them or
+  renumbers them. **Renumber** (on the roll, or on a selection) numbers the frames in their
+  current order from any start, reverses the order for a roll scanned tail first, shifts every
+  number for a scanner that counted from 0, or reads the numbers out of the filenames again — and
+  shows every old → new number, and any duplicates, before it writes.
 - **The frame viewer** (click a frame, or go to `/images/{id}`) has previous/next on the arrow
   keys, zoom, download and the metadata panel beside the image, editable in place.
 - **Frames** (`/images`) is every scan in the archive including the ones not in a roll yet; select
   them and use "Move to roll" to file them.
 - **Gear** (`/gear`) is the cameras, lenses and film stocks catalog, three tabs, edited in dialogs.
 - **Settings** (`/settings`) is the archive itself: the folders it links scans from, the watch
-  folder toggle and its last-scan readout, and export / import / CSV.
+  folder toggle and its last-scan readout, export / import / CSV, and **About** — the version,
+  the commit the image was built from, and the changelog.
+- **The version is on screen.** The footer says which NegArchive is running; the first page load
+  after `docker compose pull` opens the changelog entries you have not seen (the browser remembers
+  the last version it saw), and a tab that stayed open through the update is told to reload.
+  `CHANGELOG.md` is the source: `GET /api/system/version` serves it parsed.
 - The layout works down to 375px: the navigation collapses into a drawer and the roll list becomes
   one column. There is a light/dark toggle in the header, and the footer shows the address to type
   on a phone plus a QR code for it.
@@ -78,7 +97,7 @@ A **roll** is the unit of work, so the roll list is the home page and everything
   behind those URLs left the source tree (M3). The path, the name the scanner gave the file,
   whether NegArchive owns it and its content hash are stored in the database
 - Face detection was deleted in M2: no DeepFace, no TensorFlow, no scikit-learn. People come
-  from Immich in M7. The backend image is about 0.28 GB instead of 2 GB.
+  from Immich in M8. The backend image is about 0.28 GB instead of 2 GB.
 
 ## Project structure
 
@@ -102,6 +121,11 @@ app/                    FastAPI backend
   routers/scan.py       the scanner console's grammar and command cards (M4)
   routers/negpy.py      status, gear sync, roll handoff, ingest, hash lookup (M5)
   routers/smb.py        the network share and the live-mode setup (M6)
+  routers/search.py     GET /api/search — everything that matches, grouped by kind (M7)
+  services/search.py    the one grammar and matcher behind the palette and the filter bars (M7)
+  services/renumber.py  a new numbering for a roll's frames, planned before it is written (M7)
+  services/changelog.py CHANGELOG.md parsed for /api/system/version (M7)
+  version.py            __version__ — bump it with CHANGELOG.md and frontend/package.json (M7)
   services/smb.py       the only place that runs `mount`: validation, credentials, status (M6)
   services/livemode.py  one button: folders, watched roots, NegPy's folders, gear (M6)
   services/hashing.py   the sampled SHA-256 that identifies a scan — and ties it to NegPy
@@ -135,6 +159,10 @@ frontend/               Next.js app (app router)
                         settings-workspace, lan-footer, login-gate, offline-banner,
                         empty/error states and skeletons; components/ui is shadcn
   components/negpy-handoff-button.tsx  "Open in NegPy": prepare the folder, hand over the paths
+  components/search-palette.tsx        ⌘K: search everything (M7)
+  components/whats-new-dialog.tsx      the changelog, after an update or on request (M7)
+  components/renumber-dialog.tsx       renumber a roll's frames, with the plan shown first (M7)
+  hooks/use-app-version.ts             which version this is, and has it changed since last time
   lib/api.ts            typed fetch helpers, API base handling, the session token, ApiError
   lib/format.ts         date range, storage and frame-label formatting
   public/sw.js          the service worker; public/manifest.webmanifest and public/icons

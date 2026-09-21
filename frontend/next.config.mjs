@@ -1,5 +1,14 @@
+import { createRequire } from 'node:module'
+
+const require = createRequire(import.meta.url)
+/** M7: the version this build is, shown next to the backend's in Settings → About. */
+const { version } = require('./package.json')
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  env: {
+    NEXT_PUBLIC_APP_VERSION: version,
+  },
   experimental: {
     // Let a whole roll of TIFFs through the /api proxy. The default is 10 MB,
     // which is one 16-bit scan.

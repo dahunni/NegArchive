@@ -1,7 +1,7 @@
 "use client"
 
 import { useRouter, useSearchParams } from "next/navigation"
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { Camera as CameraIcon, Film as FilmIcon, Package, Pencil, Plus, Trash2 } from "lucide-react"
 
 import {
@@ -16,6 +16,7 @@ import {
   getCatalogImageUrl,
 } from "@/lib/api"
 import { formatDate } from "@/lib/format"
+import { cn } from "@/lib/utils"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
@@ -55,6 +56,15 @@ export function GearSection({
   const { toast } = useToast()
 
   const [tab, setTab] = useState<GearKind>(tabFromParam(params.get("tab")))
+  // M7: `?highlight=<id>` (a search result) scrolls that card into view and rings it.
+  const highlight = Number(params.get("highlight")) || null
+  useEffect(() => {
+    if (!highlight) return
+    const handle = window.setTimeout(() => {
+      document.querySelector<HTMLElement>(`[data-gear-id="${tab}-${highlight}"]`)?.scrollIntoView({ block: "center" })
+    }, 50)
+    return () => window.clearTimeout(handle)
+  }, [highlight, tab])
   const [dialog, setDialog] = useState<{ kind: GearKind; item: GearItem | null } | null>(null)
   const [pendingDelete, setPendingDelete] = useState<{ kind: GearKind; item: GearItem } | null>(null)
   /** Set when the API refused because rolls still use this entry (409, R#14). */
@@ -129,7 +139,14 @@ export function GearSection({
             ) : (
               <ul className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4" data-testid="gear-list">
                 {items[entry.value].map((item) => (
-                  <li key={item.id} className="overflow-hidden rounded-lg border border-border bg-card">
+                  <li
+                    key={item.id}
+                    data-gear-id={`${entry.value}-${item.id}`}
+                    className={cn(
+                      "overflow-hidden rounded-lg border border-border bg-card",
+                      highlight === item.id && "ring-2 ring-primary ring-offset-2 ring-offset-background",
+                    )}
+                  >
                     <GearThumb item={item} />
                     <div className="space-y-2 p-3">
                       <div className="flex items-start justify-between gap-2">

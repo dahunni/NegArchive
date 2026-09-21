@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react"
 import { useRouter } from "next/navigation"
-import { Database, Download, FlaskConical, FolderPlus, HardDrive, RefreshCw, Trash2, Upload } from "lucide-react"
+import { Database, Download, FlaskConical, FolderPlus, HardDrive, RefreshCw, Sparkles, Trash2, Upload } from "lucide-react"
 
 import {
   type LibraryRoot,
@@ -14,6 +14,7 @@ import {
   type WatchState,
   EXPORT_CSV_URL,
   EXPORT_URL,
+  FRONTEND_VERSION,
   createLibraryRoot,
   deleteLibraryRoot,
   errorMessage,
@@ -29,7 +30,7 @@ import {
   updateLibraryRoot,
   updateSettings,
 } from "@/lib/api"
-import { formatDate } from "@/lib/format"
+import { formatDate, formatDateTime } from "@/lib/format"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
@@ -38,6 +39,8 @@ import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialo
 import { ShareCard } from "@/components/share-card"
 import { ShareSettings } from "@/components/share-settings"
 import { EmptyState } from "@/components/empty-state"
+import { WhatsNewDialog } from "@/components/whats-new-dialog"
+import { useAppVersion } from "@/hooks/use-app-version"
 import { useToast } from "@/hooks/use-toast"
 
 /**
@@ -58,6 +61,9 @@ export function SettingsWorkspace() {
   const [watch, setWatch] = useState<WatchState | null>(null)
   const [negpy, setNegpy] = useState<NegpyStatus | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
+  // M7: which NegArchive this is, from the shell's one fetch.
+  const version = useAppVersion()
+  const [changelogOpen, setChangelogOpen] = useState(false)
   const [pendingRemove, setPendingRemove] = useState<LibraryRoot | null>(null)
 
   const [newPath, setNewPath] = useState("")
@@ -277,6 +283,51 @@ export function SettingsWorkspace() {
             onSave={(value) => saveSetting({ share_host: value })}
           />
         </div>
+      </section>
+
+      {/* ------------------------------------------------------- M7: about */}
+      <section className="space-y-3" data-testid="about">
+        <h2 className="type-section">About</h2>
+        <div className="space-y-3 rounded-lg border border-border bg-card p-4">
+          <dl className="grid gap-x-6 gap-y-2 sm:grid-cols-2">
+            <Fact label="NegArchive" value={version?.info ? `v${version.info.version}` : "…"} mono />
+            <Fact
+              label="Interface"
+              value={
+                FRONTEND_VERSION
+                  ? version?.staleFrontend
+                    ? `v${FRONTEND_VERSION} (older than the archive — reload)`
+                    : `v${FRONTEND_VERSION}`
+                  : "…"
+              }
+              mono
+            />
+            <Fact label="Built from" value={version?.info?.git_sha ?? "a source checkout"} mono />
+            <Fact
+              label="Built"
+              value={version?.info?.built_at ? (formatDateTime(version.info.built_at) ?? version.info.built_at) : "—"}
+            />
+          </dl>
+          <div className="flex flex-wrap gap-2">
+            <Button variant="outline" className="min-h-11" onClick={() => setChangelogOpen(true)} data-testid="about-whats-new">
+              <Sparkles className="mr-2 h-4 w-4" />
+              What&apos;s new
+            </Button>
+            {version?.info ? (
+              <Button variant="ghost" className="min-h-11" asChild>
+                <a href={version.info.release_url} target="_blank" rel="noopener noreferrer">
+                  Release on GitHub
+                </a>
+              </Button>
+            ) : null}
+          </div>
+          <p className="type-meta">
+            Updating is <code className="rounded bg-secondary px-1">docker compose pull</code> and{" "}
+            <code className="rounded bg-secondary px-1">docker compose up -d</code>; the first page after that opens the
+            changes you have not seen.
+          </p>
+        </div>
+        <WhatsNewDialog open={changelogOpen} onOpenChange={setChangelogOpen} mode="all" />
       </section>
 
       {/* ---------------------------------------------- M6.2: the archive's own share */}

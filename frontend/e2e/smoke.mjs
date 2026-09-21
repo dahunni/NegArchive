@@ -184,17 +184,60 @@ async function main() {
 
   // filters. M3 moved the filtering into Postgres, so this is a debounced round
   // trip to the API rather than an array filter: give it time to come back.
-  await page.getByTestId("roll-search").fill("harbour")
+  await page.getByTestId("roll-search").first().fill("harbour")
   await page.waitForTimeout(FILTER_MS)
   const narrowed = await page.getByTestId("roll-row").count()
   check("the search filter narrows the list", narrowed < rollsBefore, `${narrowed} of ${rollsBefore}`)
   check("the search is server-side", narrowed > 0, "seeded archive has 'harbour' rolls")
-  await page.getByTestId("roll-search").fill("")
+  await page.getByTestId("roll-search").first().fill("")
   await page.waitForTimeout(FILTER_MS)
 
   // /films renders the same page
   await page.goto(`${BASE_URL}/films`, { waitUntil: "load" })
   check("/films still works", await visible(page.getByTestId("roll-list")))
+
+  // M7: the search palette — ⌘K from anywhere, everything grouped, Enter opens
+  await page.goto(`${BASE_URL}/gear`, { waitUntil: "load" })
+  await page.keyboard.press("ControlOrMeta+k")
+  check("M7: ⌘K opens the search palette", await visible(page.getByTestId("search-palette")))
+  await page.getByTestId("search-input").fill("harbour")
+  await page.waitForTimeout(FILTER_MS)
+  const hitKinds = await page.getByTestId("search-result").evaluateAll((nodes) => nodes.map((n) => n.getAttribute("data-kind")))
+  check("M7: the palette finds rolls", hitKinds.includes("roll"), hitKinds.join(","))
+  check("M7: the palette finds frames", hitKinds.includes("frame"), hitKinds.join(","))
+  const firstHit = ((await page.getByTestId("search-result").first().textContent()) || "").toLowerCase()
+  check("M7: the best match comes first", firstHit.includes("harbour"), firstHit.slice(0, 60))
+  await page.getByTestId("search-input").fill("harbor")
+  await page.waitForTimeout(FILTER_MS)
+  check("M7: a typo still finds the roll", (await page.getByTestId("search-result").count()) > 0)
+  await page.getByTestId("search-input").fill("camera:nikon")
+  await page.waitForTimeout(FILTER_MS)
+  // Only the roll rows say which camera they were shot on; a frame row names its roll.
+  const qualified = await page
+    .locator('[data-testid="search-result"][data-kind="roll"]')
+    .evaluateAll((nodes) => nodes.map((n) => (n.textContent || "").toLowerCase()))
+  check("M7: a qualifier narrows to one field", qualified.length > 0 && qualified.every((t) => t.includes("nikon")), qualified.slice(0, 3).join(" | "))
+  await page.getByTestId("search-input").fill("harbour")
+  await page.waitForTimeout(FILTER_MS)
+  await page.keyboard.press("Enter")
+  await page.waitForURL(/\/films\/\d+/, { timeout: 8000 }).catch(() => {})
+  check("M7: Enter opens the first result", new URL(page.url()).pathname.startsWith("/films/"), page.url())
+  // The dialog fades out; wait for it to leave the DOM before typing again, or the
+  // `/` lands in its input.
+  await page.getByTestId("search-palette").waitFor({ state: "detached", timeout: 5000 }).catch(() => {})
+  check("M7: the palette closed on navigation", (await page.getByTestId("search-palette").count()) === 0)
+  await page.keyboard.press("/")
+  check("M7: / opens the palette off the roll list", await visible(page.getByTestId("search-palette")))
+  check("M7: the palette remembers recent searches", await visible(page.getByTestId("search-recent")))
+  await page.keyboard.press("Escape")
+  await page.goto(`${BASE_URL}/images?q=harbour`, { waitUntil: "load" })
+  // The streamed page can briefly hold the input twice (the hidden placeholder and
+  // the real one): wait for the visible one.
+  await visible(page.getByTestId("frame-search"))
+  check(
+    "M7: the frames page takes ?q=",
+    ((await page.getByTestId("frame-search").first().inputValue()) || "") === "harbour",
+  )
 
   // /search redirects into the filtered roll list
   await page.goto(`${BASE_URL}/search?q=kyoto`, { waitUntil: "load" })
@@ -291,6 +334,30 @@ async function main() {
   await page.reload({ waitUntil: "load" })
   check("an inline frame number survives a reload", (await numbers()).includes("17"))
   check("the grid re-sorted after the change", (await numbers()).join(",") === "2,17")
+
+  // M7: renumber the roll in one go — the dialog previews, Apply writes
+  check("M7: the roll page offers Renumber", await visible(page.getByTestId("renumber-roll")))
+  check(
+    "M7: Renumber opens a dialog with a plan",
+    await clickUntil(page.getByTestId("renumber-roll").first(), page.getByTestId("renumber-plan")),
+  )
+  const planText = (await page.getByTestId("renumber-plan").textContent()) || ""
+  check("M7: the plan shows old → new", planText.includes("17") && planText.includes("2"), planText.slice(0, 80))
+  await page.getByTestId("renumber-apply").click()
+  await page.waitForTimeout(1500)
+  check("M7: the frames are 1, 2 after renumbering", (await numbers()).join(",") === "1,2", (await numbers()).join(","))
+  // …and a selection can be shifted on its own
+  await page.getByLabel("Select frame 2").first().click()
+  check("M7: the bulk bar offers Renumber…", await visible(page.getByTestId("bulk-renumber")))
+  await page.getByTestId("bulk-renumber").click()
+  await page.getByTestId("renumber-mode-shift").click()
+  await page.getByTestId("renumber-offset").fill("10")
+  await page.waitForTimeout(FILTER_MS)
+  check("M7: shifting previews 2 → 12", ((await page.getByTestId("renumber-plan").textContent()) || "").includes("12"))
+  await page.getByTestId("renumber-apply").click()
+  await page.waitForTimeout(1500)
+  check("M7: only the selected frame moved", (await numbers()).join(",") === "1,12", (await numbers()).join(","))
+  await page.keyboard.press("Escape")
 
   const firstNote = page.getByTestId("frame-notes-input").first()
   await firstNote.fill("e2e note")
@@ -412,6 +479,30 @@ async function main() {
 
   // ---------------------------------------------------------------- M3: LAN footer
   check("the footer shows the LAN address", await visible(page.getByTestId("lan-footer")))
+  check("M7: the footer shows the version", await visible(page.getByTestId("app-version")))
+  const footerVersion = ((await page.getByTestId("app-version").first().textContent()) || "").trim()
+  const apiVersion = await page.evaluate(async () => (await (await fetch("/api/system/version")).json()).version)
+  check("M7: the footer's version is the backend's", footerVersion === `v${apiVersion}`, `${footerVersion} vs ${apiVersion}`)
+  check(
+    "M7: the footer opens what's new",
+    await clickUntil(page.getByTestId("whats-new-open").first(), page.getByTestId("whats-new")),
+  )
+  await page.keyboard.press("Escape")
+  await page.waitForTimeout(300)
+
+  // M7: an update is noticed. Pretend this browser last saw an older version and reload.
+  await page.evaluate(() => window.localStorage.setItem("negarchive.version.seen", "0.0.1"))
+  await page.reload({ waitUntil: "load" })
+  check("M7: the first load after an update opens what's new", await visible(page.getByTestId("whats-new")))
+  const updateTitle = (await page.getByTestId("whats-new").textContent()) || ""
+  check("M7: the update dialog names the new version", updateTitle.includes(`updated to v${apiVersion}`), updateTitle.slice(0, 80))
+  await page.getByTestId("whats-new-close").click()
+  await page.waitForTimeout(300)
+  const seenAfter = await page.evaluate(() => window.localStorage.getItem("negarchive.version.seen"))
+  check("M7: closing the dialog marks the version seen", seenAfter === apiVersion, String(seenAfter))
+  await page.reload({ waitUntil: "load" })
+  await page.waitForTimeout(800)
+  check("M7: it does not open again", (await page.getByTestId("whats-new").count()) === 0)
   const lanUrl = await page.getByTestId("lan-url").textContent()
   check("the LAN address looks like a URL", /^https?:\/\/.+:\d+$/.test((lanUrl || "").trim()), lanUrl ?? "none")
   await page.getByTestId("lan-qr-toggle").click()
@@ -429,6 +520,20 @@ async function main() {
   check("the watch folder toggle is there", await visible(page.getByTestId("watch-toggle")))
   check("the watch readout is there", await visible(page.getByTestId("watch-readout")))
   check("the export links are there", await visible(page.getByTestId("export-zip")))
+
+  // M7: the version on screen, in Settings and in the footer, and the changelog behind it
+  check("M7: Settings has an About card", await visible(page.getByTestId("about")))
+  const aboutText = (await page.getByTestId("about").first().textContent()) || ""
+  check("M7: About shows a version number", /v\d+\.\d+\.\d+/.test(aboutText), aboutText.slice(0, 80))
+  check(
+    "M7: About opens the changelog",
+    await clickUntil(page.getByTestId("about-whats-new").first(), page.getByTestId("changelog")),
+  )
+  const entries = await page.getByTestId("changelog-entry").count()
+  check("M7: the changelog lists releases", entries >= 2, `${entries} entries`)
+  await page.getByTestId("whats-new-close").click()
+  await page.waitForTimeout(300)
+  check("M7: the changelog closes", (await page.getByTestId("whats-new").count()) === 0)
   const csvOk = await page.evaluate(async () => {
     const res = await fetch("/api/export/rolls.csv")
     const body = await res.text()
@@ -849,7 +954,7 @@ async function main() {
   // Also the only test of the delete dialog, and it keeps the archive tidy so a
   // screenshot run does not show this script's leftovers.
   await page.goto(BASE_URL, { waitUntil: "load" })
-  await page.getByTestId("roll-search").fill(title)
+  await page.getByTestId("roll-search").first().fill(title)
   await page.waitForTimeout(FILTER_MS)
   check(
     "deleting a roll asks first",

@@ -38,16 +38,19 @@ const DEBOUNCE_MS = 250
  */
 export function FramesBrowser({
   initial,
+  initialQuery = "",
   rolls,
 }: {
   initial: Page<Frame>
+  /** M7: `?q=` from the URL; the first page was rendered with it on the server. */
+  initialQuery?: string
   rolls: Film[]
 }) {
   const router = useRouter()
   const { toast } = useToast()
 
   const [roll, setRoll] = useState(ALL)
-  const [query, setQuery] = useState("")
+  const [query, setQuery] = useState(initialQuery)
 
   const [items, setItems] = useState<Frame[]>(initial.items)
   const [total, setTotal] = useState(initial.total)
@@ -145,7 +148,7 @@ export function FramesBrowser({
               id="frames-search"
               value={query}
               onChange={(event) => setQuery(event.target.value)}
-              placeholder="Note or original filename…"
+              placeholder="Note, filename, frame number, roll…"
               className="h-11 pl-9"
               data-testid="frame-search"
             />

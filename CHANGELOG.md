@@ -1,0 +1,73 @@
+# Changelog
+
+Every release, newest first. The archive reads this file itself: `GET /api/system/version`
+serves it, the footer shows the version, and the first visit after an update opens the entries
+you have not seen yet. Keep the format — `## [version] - YYYY-MM-DD`, then `### Added`,
+`### Changed`, `### Fixed` or `### Removed` with one `-` bullet per line — because that is what
+`app/services/changelog.py` parses.
+
+## [0.10.0] - 2026-09-21
+
+### Added
+- **Search everything from anywhere.** `⌘K` (or `Ctrl+K`, or the search button in the header)
+  opens a palette that finds rolls, frames, cameras, lenses, film stocks and storage locations in
+  one go, ranked by how well they match, with the arrow keys and `Enter` to open a result.
+- **Better matching.** A search finds a roll by anything on it or in it: title, notes, serial,
+  folder, building, gear, film, developer, the year it was shot, where it is filed, and the
+  notes and filenames of its frames. Small typos are forgiven (`harbor` finds "Harbour"), and
+  `camera:`, `lens:`, `film:`, `year:`, `status:`, `location:` and `serial:` narrow a search to
+  one field. The filter bar on the roll list uses the same matching.
+- **The version on screen.** The footer shows which NegArchive is running; Settings → About has
+  the build details and this changelog.
+- **What's new after an update.** The first page load after `docker compose pull` opens the
+  changelog entries you have not seen yet, and says when the page you have open was built for
+  an older version than the archive, so a reload is one click away.
+- **Renumber the frames of a roll in one go.** *Renumber* on the roll page (or on a selection
+  in the bulk bar) numbers the frames in their current order from any start, reverses the
+  order for a roll scanned tail first, shifts every number for a scanner that counted from 0,
+  or reads the numbers out of the filenames again. The dialog shows every old → new number,
+  and warns about duplicates, before anything is written.
+
+### Changed
+- The frames page takes `?q=` in the URL, so "all frames matching …" from the palette is a link.
+- The service worker no longer caches the version endpoint, so an update is noticed straight
+  away rather than after the cache expires.
+
+## [0.9.1] - 2026-09-21
+
+### Fixed
+- The 2026-09-20 review: a hundred small things across the API, the UI and the printouts, fixed
+  in one release. The write-up is in `docs/REVIEW.md`.
+
+## [0.9.0] - 2026-09-20
+
+### Added
+- Live mode on the archive's own share: NegPy on a laptop and NegArchive on the server work in
+  the same folder, and an edit in NegPy shows up in the archive on its own.
+- Two address overrides, one for the links and QR codes the archive prints and one for the
+  share it serves, for a box that is reached through a different name than it sees itself.
+
+## [0.8.0] - 2026-09-20
+
+### Added
+- The archive serves its own network share, so a scanner or NegPy can drop files straight
+  into it, and the inbox folder empties itself into rolls.
+
+## [0.7.1] - 2026-09-20
+
+### Fixed
+- A frame that is already a positive — a NegPy export, a scan of a print — is shown as it is
+  and never printed a second time.
+- The published images are built on native runners per architecture, so the arm64 build no
+  longer hangs under emulation.
+
+## [0.7.0] - 2026-09-20
+
+### Added
+- Camera scanning with NegPy: the raws from NegPy's scan mode go straight into the archive,
+  previews are rendered from the raw, and the share mounts on the archive side.
+
+## [0.6.0] - 2026-09-18
+
+### Added
+- The network share (M6): mount the folder NegPy works in, watch it, and import by reference.
