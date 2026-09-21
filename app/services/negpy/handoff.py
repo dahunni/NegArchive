@@ -40,6 +40,7 @@ from sqlalchemy.orm import Session
 from ... import paths as app_paths
 from ...errors import ApiError
 from ...models import FilmRoll, ImageAsset, ImageType
+from .. import renditions as renditions_svc
 from . import naming
 from . import sidecar as sidecar_mod
 
@@ -184,8 +185,13 @@ def prepare(
         raise ApiError("invalid_mode", f"Mode must be one of: {', '.join(MODES)}.", 400, "mode")
 
     scans: List[ImageAsset] = (
-        db.query(ImageAsset)
-        .filter(ImageAsset.film_roll_id == roll.id, ImageAsset.type == ImageType.scan)
+        # M8: the negatives. Handing NegPy back its own exports would have it
+        # converting a positive a second time, and would double every roll.
+        renditions_svc.only_frames(
+            db.query(ImageAsset).filter(
+                ImageAsset.film_roll_id == roll.id, ImageAsset.type == ImageType.scan
+            )
+        )
         .order_by(ImageAsset.frame_number.asc().nulls_last(), ImageAsset.id.asc())
         .all()
     )

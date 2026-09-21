@@ -6,6 +6,36 @@ you have not seen yet. Keep the format — `## [version] - YYYY-MM-DD`, then `##
 `### Changed`, `### Fixed` or `### Removed` with one `-` bullet per line — because that is what
 `app/services/changelog.py` parses.
 
+## [0.11.0] - 2026-09-21
+
+### Changed
+- **A NegPy export is a rendition of a frame, not a second frame.** A roll that has been
+  through NegPy holds two files per frame — the raw negative the scanner made and the positive
+  NegPy exported from it — and the archive was counting both. A 33-frame roll listed 66, every
+  frame appeared twice in every grid, and re-exporting added a third file rather than replacing
+  the second. The negative is now *the frame* and the export hangs off it: one frame, counted
+  once, everywhere. The export keeps its own file, hash, filename and download link, and the
+  roll page's contrast button switches between them — "NegPy's export" and "the negative as
+  scanned".
+- **A frame shows the export where there is one.** The positive view used to be this backend's
+  approximation of NegPy's tone controls in every case. It still is when there is nothing
+  better, and still says so — but a real export beats an approximation of one, and that is what
+  cover sheets, index cards, the sleeve grid, the roll list and the viewer now show.
+- **Re-exporting a frame replaces its export.** The newest export becomes the frame's
+  rendition, the previous record is retired and its file deleted — only ever a file NegArchive
+  owns; a linked file on your share is unlinked, never touched. Notes typed on the old export
+  are carried forward.
+- Searching, renumbering, contact sheets and the handoff to NegPy all see frames, not files.
+  Handing NegPy back its own exports would have had it converting a positive a second time.
+
+### Added
+- `derived_from_id` on a frame's file, and `rendition` on every frame the API answers with.
+  `GET /api/images?type=scan&renditions=true` lists the exports too, for a maintenance sweep.
+- `scripts/repair_negpy_archive.py` (was `repair_misfiled_rolls.py`) gains a third pass that
+  pairs the exports an existing archive already holds with their negatives. Its dry run now
+  does the whole repair and rolls it back, so the preview is the real thing rather than a guess
+  at what each pass would find.
+
 ## [0.10.1] - 2026-09-21
 
 ### Fixed

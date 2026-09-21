@@ -7,9 +7,13 @@ a roll-list thumbnail can only show one of them, and it has to be the positive.
 Thirty-six orange negatives tell you nothing about a roll, and before this the
 raw won every time simply for having the lower id.
 
-The rule lives in `app.services.strips.better_for_paper` and is applied by the
-sleeve grid, by the roll list's cover strip and — in the frontend — by the print
-pages' loader, so every surface shows the same picture of a frame.
+Two mechanisms do this, and they cover different cases.
+
+M8's :mod:`app.services.renditions` is the main one: the export is hung off the
+negative it was made from, so there is only ever *one* frame, and every surface
+shows it with the export's picture. `strips.better_for_paper` is the fallback
+for two frames that merely share a number and are not paired — two scans of one
+negative, or an export the archive could not match to anything.
 """
 
 import io
@@ -93,24 +97,33 @@ def test_the_sleeve_grid_shows_the_positive():
 # --- and through the API ------------------------------------------------------
 
 
-def test_the_roll_lists_cover_strip_is_the_positives(client):
+def test_the_roll_lists_cover_strip_shows_the_export(client):
+    """The strip links to the *frame* (M8) and shows the export's picture."""
     roll, pairs = scanned_roll(client, frames=3)
     listed = next(r for r in client.get("/api/films").json() if r["id"] == roll["id"])
-    assert listed["cover_image_ids"] == [positive["id"] for _negative, positive in pairs]
-    assert listed["cover_image_id"] == pairs[0][1]["id"]
-    assert listed["image_count"] == 6, "both files are still in the archive"
+    assert listed["cover_image_ids"] == [negative["id"] for negative, _positive in pairs]
+    assert listed["image_count"] == 3, "three frames, not six files"
+
+    detail = client.get(f"/api/films/{roll['id']}").json()["images"]
+    by_id = {f["id"]: f for f in detail}
+    assert listed["cover_versions"] == [
+        by_id[negative["id"]]["rendition"]["preview_version"] for negative, _p in pairs
+    ], "the thumbnail is of the export, not of the negative"
 
 
-def test_the_sleeve_layout_puts_the_positive_in_the_cell(client):
+def test_the_sleeve_layout_puts_the_export_in_the_cell(client):
     roll, pairs = scanned_roll(client, frames=3)
     layout = client.get(f"/api/films/{roll['id']}/layout").json()
     cells = [cell for row in layout["rows"] for cell in row if cell]
-    assert [cell["id"] for cell in cells] == [positive["id"] for _n, positive in pairs]
-    assert all(cell["positive"] for cell in cells)
+    assert [cell["id"] for cell in cells] == [negative["id"] for negative, _p in pairs]
+
+    detail = {f["id"]: f for f in client.get(f"/api/films/{roll['id']}").json()["images"]}
+    assert [cell["preview_version"] for cell in cells] == [
+        detail[negative["id"]]["rendition"]["preview_version"] for negative, _p in pairs
+    ]
 
 
-def test_the_negative_behind_a_placed_positive_is_not_called_unplaced(client):
-    """It is on the sleeve — its positive is standing in for it."""
+def test_nothing_is_called_unplaced_for_a_roll_that_went_through_negpy(client):
     roll, _pairs = scanned_roll(client, frames=3)
     layout = client.get(f"/api/films/{roll['id']}/layout").json()
     assert layout["unplaced"] == []

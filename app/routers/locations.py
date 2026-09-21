@@ -14,6 +14,7 @@ from ..db import get_db
 from ..errors import ApiError, error_response, from_exc, not_found, parse_int
 from ..models import FilmRoll, ImageAsset, ImageType, Location, LocationMove, SleeveLayout
 from ..services import locations as svc
+from ..services import renditions as renditions_svc
 from ..services import strips as strips_svc
 
 router = APIRouter(prefix="/api", tags=["locations"])
@@ -39,8 +40,11 @@ def _image_counts(db: Session, roll_ids: List[int]) -> dict:
     if not roll_ids:
         return {}
     rows = (
-        db.query(ImageAsset.film_roll_id, func.count(ImageAsset.id))
-        .filter(ImageAsset.film_roll_id.in_(roll_ids), ImageAsset.type == ImageType.scan)
+        renditions_svc.only_frames(
+            db.query(ImageAsset.film_roll_id, func.count(ImageAsset.id)).filter(
+                ImageAsset.film_roll_id.in_(roll_ids), ImageAsset.type == ImageType.scan
+            )
+        )
         .group_by(ImageAsset.film_roll_id)
         .all()
     )
@@ -359,22 +363,33 @@ def roll_layout(film_id: int, db: Session = Depends(get_db)):
         return not_found("Roll")
     layout = svc.layout_for(db, roll.location_ref)
     strips = strips_svc.effective_strips(roll.strips, layout.rows if layout else None, layout.frames_per_row if layout else None)
+    scans = (
+        renditions_svc.only_frames(
+            db.query(ImageAsset).filter(
+                ImageAsset.film_roll_id == roll.id, ImageAsset.type == ImageType.scan
+            )
+        )
+        .order_by(ImageAsset.frame_number.asc().nulls_last(), ImageAsset.id.asc())
+        .all()
+    )
+    # M8: the cell shows NegPy's export where the frame has one. The *frame's* id
+    # stays the cell's identity — a cover sheet links to the frame, not to one of
+    # its files — but the thumbnail is of the picture, not of the negative.
+    shown = renditions_svc.by_frame(db, [i.id for i in scans])
     frames = [
         {
             "id": i.id,
             "frame_number": i.frame_number,
             "notes": i.notes,
             "capture_date": i.capture_date.isoformat() if i.capture_date else None,
-            # Which of a frame's two files the sleeve grid shows; see
+            # Which of a frame's two files the sleeve grid shows when they are two
+            # rows rather than a frame and its rendition; see
             # `strips.better_for_paper`.
             "positive": i.positive,
             # The cover sheet's thumbnails are served immutable; see image_to_dict.
-            "preview_version": preview_version(i),
+            "preview_version": preview_version(shown.get(i.id) or i),
         }
-        for i in db.query(ImageAsset)
-        .filter(ImageAsset.film_roll_id == roll.id, ImageAsset.type == ImageType.scan)
-        .order_by(ImageAsset.frame_number.asc().nulls_last(), ImageAsset.id.asc())
-        .all()
+        for i in scans
     ]
     rows = strips_svc.grid(frames, strips)
     # By *number*, not by id: a frame whose sibling took the cell — the raw

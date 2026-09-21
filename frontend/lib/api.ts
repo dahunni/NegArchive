@@ -209,7 +209,29 @@ export interface Image {
    * busts their URL.
    */
   preview_version?: string | null
+  /**
+   * M8: NegPy's export of this frame — the positive it made from this negative.
+   * A picture of the same piece of film, not a frame of its own, so it is never
+   * listed beside the frame: the archive counts this frame once. Null when the
+   * roll has not been through NegPy, and then the positive view is this
+   * backend's approximation instead of a real export.
+   */
+  rendition?: Rendition | null
+  /** The token for the frame's *own* file — what `?render=raw` serves. */
+  negative_version?: string | null
   created_at: string
+}
+
+/** M8: see `Image.rendition`. */
+export interface Rendition {
+  id: number
+  url: string
+  original_filename?: string | null
+  storage_mode: string
+  content_hash?: string | null
+  negpy_edited_at?: string | null
+  created_at: string
+  preview_version?: string | null
 }
 
 export interface CaptureMetadata {
@@ -733,7 +755,18 @@ export function getPreviewUrl(
  * sidecar or `positive` changes; the positive-derived token is the fallback for an
  * archive whose backend does not send one yet.
  */
-export function previewVersion(image: Pick<Image, "positive" | "preview_version">): string | undefined {
+/**
+ * The cache-busting token for a frame's preview.
+ *
+ * `preview_version` follows whichever file the preview URL actually serves — the
+ * NegPy export when the frame has one (M8). `render: "raw"` asks for the frame's
+ * own file instead, so it needs the token for that one.
+ */
+export function previewVersion(
+  image: Pick<Image, "positive" | "preview_version" | "negative_version">,
+  render?: PreviewRender,
+): string | undefined {
+  if (render === "raw" && image.negative_version) return image.negative_version
   if (image.preview_version) return image.preview_version
   if (image.positive == null) return undefined
   return image.positive ? "pos" : "neg"

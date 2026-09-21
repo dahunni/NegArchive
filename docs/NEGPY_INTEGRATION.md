@@ -171,20 +171,45 @@ a serial re-files a frame.
 An archive that already has the damage is repaired by `scripts/repair_misfiled_rolls.py` (dry
 run by default), or one roll at a time in the UI with *Renumber → "Read the filenames again"*.
 
-### Two files per frame, and which one goes on paper
+### Two files per frame: the frame, and its rendition
 
 After a round trip a frame has both the raw negative the scanner made and the positive NegPy
-exported from it. Both are `type=scan` on the same roll with the same frame number — duplicates
-per number are legitimate in this archive, and the roll page shows both.
+exported from it. They are two pictures of one piece of film. Stored as two rows they were
+counted as two frames — a 33-frame roll listed 66, every frame appeared twice in every grid,
+and a re-export added a third rather than replacing the second.
 
-Everywhere that can only show *one* image per frame, the positive wins: the sleeve grid, cover
-sheets, index cards, roll stickers and the roll list's cover strip. Thirty-six orange negatives
-say nothing about a roll, and before this the raw won every time for the accidental reason that
-it had the lower id. The rule is `strips.better_for_paper` — a finished positive beats one that
-is not, the newest export beats an older one, and with no positive anywhere the old rule stands
-(first in display order). `roll_summaries` and `/api/films/{id}/layout` apply it server-side;
-the print pages' loader (`frontend/components/print/data.ts`, `onePerFrame`) applies the same
-rule to the thumbnail strips, so 36 thumbnails mean 36 frames rather than the first 18 twice.
+So (M8) the **negative is the frame** and the export hangs off it through
+`ImageAsset.derived_from_id`; `app/services/renditions.py` owns the whole rule. The export is
+not swallowed: it keeps its own path, content hash, original filename, provenance and download
+URL, and the API hands it back as `rendition` on the frame. What it is not is a frame — it is
+never counted, listed, searched, renumbered, placed on a sleeve or handed back to NegPy as one.
+`renditions.only_frames()` is the single filter that says so, and every list goes through it.
+
+**Which negative an export belongs to** is something NegPy writes into the export itself:
+`negpy:CaptureRoll` and `negpy:CaptureFrame`, already read into `capture_metadata` by the time
+pairing runs. That is the program that made the file saying so, so it is used first; the
+filename's roll and frame are the fallback, and the record's own roll and number the fallback
+after that. Nothing is guessed — a positive that names no roll, or names a frame the roll does
+not have, stays a frame in its own right, which is the right answer for a scan of a print.
+
+**A fresher export replaces the one before it.** Re-exporting after another edit is the normal
+case, not the exception. The newest export becomes the rendition, the previous record is
+retired and its file deleted — only ever a file the archive owns (`storage_mode == "managed"`);
+a linked file on somebody's share is unlinked, never touched. Notes typed on the old export are
+carried forward.
+
+**What is shown.** `?render=raw` on a frame's preview is always the negative as stored.
+Anything else is the export when there is one — a real export beats this backend's
+approximation of NegPy's tone controls, which is what the positive preview is otherwise (and it
+still says so). Cover sheets, index cards, the sleeve grid, the roll list's strip and the
+viewer all follow that, and the viewer's contrast button switches between the two files.
+
+`strips.better_for_paper` remains for the case pairing cannot cover: two rows that merely share
+a frame number and are not a frame and its rendition — two scans of one negative, or an export
+the archive could not match to anything. There the finished positive still wins the cell.
+
+An archive that already holds both halves as two frames is paired up by
+`scripts/repair_negpy_archive.py`.
 
 ### Reading `edits.db`
 

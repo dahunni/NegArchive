@@ -242,9 +242,40 @@ class ImageAsset(Base):
     #: the roll's film is unknown. Set from NegPy's XMP on ingest, or by hand.
     positive: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
 
+    #: M8: the frame this file is a *rendition of*, when it is not a frame itself.
+    #:
+    #: A roll that goes through NegPy comes back with two files per frame: the raw
+    #: negative the scanner made, and the positive NegPy exported from it. They are
+    #: two pictures of one negative, not two frames, and counting them as two was
+    #: wrong everywhere it showed — 33 frames listed as 66, each one twice, and a
+    #: re-export adding a third rather than replacing the second.
+    #:
+    #: So the **negative is the frame** and the export hangs off it. NULL means a
+    #: frame in its own right (almost everything: every negative, and a positive
+    #: that arrived without one). Set means a rendition: it keeps its own file,
+    #: hash, filename and provenance, and is reachable through its frame, but it is
+    #: never counted, listed, renumbered or placed on a sleeve as a frame of its own.
+    #: One level only — a rendition is never itself rendered.
+    derived_from_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("image_assets.id", ondelete="CASCADE"), index=True, nullable=True
+    )
+
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     film_roll: Mapped["FilmRoll | None"] = relationship("FilmRoll", back_populates="images")
+
+    #: The renditions of this frame, newest last. In practice at most one (a
+    #: fresher export replaces the one before it), but the shape does not forbid
+    #: more and nothing here assumes a single row.
+    renditions: Mapped[list["ImageAsset"]] = relationship(
+        "ImageAsset",
+        back_populates="derived_from",
+        cascade="all, delete-orphan",
+        foreign_keys=[derived_from_id],
+    )
+    derived_from: Mapped["ImageAsset | None"] = relationship(
+        "ImageAsset", back_populates="renditions", remote_side=[id], foreign_keys=[derived_from_id]
+    )
 
 
 class LibraryRoot(Base):

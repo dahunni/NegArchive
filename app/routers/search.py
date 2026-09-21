@@ -36,6 +36,7 @@ from ..errors import error_response
 from ..models import Camera, FilmRoll, FilmStock, ImageAsset, ImageType, Lens
 from ..services import lifecycle
 from ..services import locations as loc_svc
+from ..services import renditions as renditions_svc
 from ..services import search as search_svc
 
 router = APIRouter(prefix="/api", tags=["search"])
@@ -106,7 +107,9 @@ def _frames(db: Session, query: search_svc.Query, limit: int) -> dict:
     from .api import preview_version
 
     base = (
-        db.query(ImageAsset)
+        # M8: a NegPy export is not a frame, so it is not a second search hit for
+        # the frame it was made from.
+        renditions_svc.only_frames(db.query(ImageAsset))
         .filter(ImageAsset.type == ImageType.scan)
         .filter(*search_svc.frame_filters(db, None, query))
     )

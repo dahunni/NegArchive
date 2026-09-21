@@ -47,6 +47,7 @@ from ..seed import seed_catalog
 from ..services import lifecycle, rawdecode, serials, settings_store
 from ..services import locations as loc_svc
 from ..services import preview as preview_render
+from ..services import renditions as renditions_svc
 from ..services import search as search_svc
 from ..services import strips as strips_svc
 from ..services.hashing import safe_content_hash
@@ -266,8 +267,10 @@ def roll_summaries(db: Session, film_ids: Optional[Iterable[int]] = None) -> Dic
     if ids is not None and not ids:
         return {}
 
-    counts = db.query(ImageAsset.film_roll_id, func.count(ImageAsset.id)).filter(
-        ImageAsset.type == ImageType.scan, ImageAsset.film_roll_id.isnot(None)
+    counts = renditions_svc.only_frames(
+        db.query(ImageAsset.film_roll_id, func.count(ImageAsset.id)).filter(
+            ImageAsset.type == ImageType.scan, ImageAsset.film_roll_id.isnot(None)
+        )
     )
     covers = db.query(
         ImageAsset.film_roll_id,
@@ -276,6 +279,7 @@ def roll_summaries(db: Session, film_ids: Optional[Iterable[int]] = None) -> Dic
         ImageAsset.negpy_edited_at,
         ImageAsset.positive,
         ImageAsset.frame_number,
+        ImageAsset.derived_from_id,
     ).filter(ImageAsset.type == ImageType.scan, ImageAsset.film_roll_id.isnot(None))
     if ids is not None:
         counts = counts.filter(ImageAsset.film_roll_id.in_(ids))
@@ -289,12 +293,18 @@ def roll_summaries(db: Session, film_ids: Optional[Iterable[int]] = None) -> Dic
     # and has both the raw negative and the exported positive, the positive
     # (`strips.better_for_paper`). Four orange negatives is not a cover.
     chosen: Dict[int, Dict[Optional[int], dict]] = {}
-    for roll_id, image_id, path, edited_at, positive, frame_number in covers.order_by(
+    # M8: a rendition is not a frame, so it is not a cover of its own — but it is
+    # the *picture* of the frame it hangs off, and that is what goes in the strip.
+    renditions: Dict[int, dict] = {}
+    for roll_id, image_id, path, edited_at, positive, frame_number, derived_from in covers.order_by(
         ImageAsset.film_roll_id.asc(),
         ImageAsset.frame_number.asc().nulls_last(),
         ImageAsset.id.asc(),
     ).all():
         cell = {"id": image_id, "path": path, "edited_at": edited_at, "positive": positive}
+        if derived_from is not None:
+            renditions.setdefault(derived_from, cell)
+            continue
         per_roll = chosen.setdefault(roll_id, {})
         # An unnumbered frame is its own cover candidate, never a rival of another.
         key = frame_number if frame_number is not None else -image_id
@@ -309,8 +319,10 @@ def roll_summaries(db: Session, film_ids: Optional[Iterable[int]] = None) -> Dic
     for roll_id, per_roll in chosen.items():
         _, strip, versions = summary.setdefault(roll_id, (0, [], []))
         for _key, cell in sorted(per_roll.items(), key=lambda kv: kv[0] if kv[0] >= 0 else 1 << 30):
+            # The strip links to the *frame* and shows its rendition's picture.
+            shown = renditions.get(cell["id"], cell)
             strip.append(cell["id"])
-            versions.append(_preview_token(cell["path"], cell["edited_at"], cell["positive"]))
+            versions.append(_preview_token(shown["path"], shown["edited_at"], shown["positive"]))
     return summary
 
 
@@ -319,7 +331,13 @@ def frames_in_order(query):
     return query.order_by(ImageAsset.frame_number.asc().nulls_last(), ImageAsset.id.asc())
 
 
-def image_to_dict(i: ImageAsset) -> dict:
+def image_to_dict(i: ImageAsset, rendition: Optional[ImageAsset] = None) -> dict:
+    """One frame, as the API answers it.
+
+    ``rendition`` is M8's NegPy export hanging off this frame, when the caller has
+    already looked it up (``renditions.by_frame``). It is not fetched here: a roll
+    page asks for 36 frames at once and a query per frame is a query too many.
+    """
     storage_mode = i.storage_mode or "managed"
     if storage_mode == "linked":
         # M3: a linked file lives outside /static on purpose, so the API serves it.
@@ -359,7 +377,35 @@ def image_to_dict(i: ImageAsset) -> dict:
         "positive": i.positive,
         # Previews are served immutable for a year, so the URL has to change when
         # the rendering would: the file's bytes, its NegPy edit, or its polarity.
-        "preview_version": preview_version(i),
+        # The preview URL is the frame's, but it serves the export when there is
+        # one, so the token has to follow whichever file is actually shown.
+        "preview_version": preview_version(rendition or i),
+        # M8: NegPy's export of this frame. A picture of the same piece of film,
+        # not a frame of its own — the archive counts this frame once. Null when
+        # the roll has not been through NegPy, and then the positive preview is
+        # this backend's approximation instead.
+        "rendition": (
+            {
+                "id": rendition.id,
+                "url": (
+                    f"/api/images/{rendition.id}/download"
+                    if (rendition.storage_mode or "managed") == "linked"
+                    else "/" + rendition.path.replace(os.sep, "/").lstrip("/")
+                ),
+                "original_filename": rendition.original_filename,
+                "storage_mode": rendition.storage_mode or "managed",
+                "content_hash": rendition.content_hash,
+                "negpy_edited_at": (
+                    rendition.negpy_edited_at.isoformat() if rendition.negpy_edited_at else None
+                ),
+                "created_at": rendition.created_at.isoformat(),
+                "preview_version": preview_version(rendition),
+            }
+            if rendition is not None
+            else None
+        ),
+        # The frame's own file, whatever is shown for it — what "raw" gives you.
+        "negative_version": preview_version(i),
         "created_at": i.created_at.isoformat(),
     }
 
@@ -377,6 +423,17 @@ def _preview_token(path: Optional[str], negpy_edited_at: Optional[datetime], pos
     edited = negpy_edited_at.isoformat() if negpy_edited_at else ""
     payload = f"{mtime}:{edited}:{positive}"
     return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:10]
+
+
+def images_to_dicts(db: Session, images: Iterable[ImageAsset]) -> List[dict]:
+    """``image_to_dict`` for many frames, with their M8 renditions in one query."""
+    listed = list(images)
+    found = renditions_svc.by_frame(db, [i.id for i in listed])
+    return [image_to_dict(i, found.get(i.id)) for i in listed]
+
+
+def image_with_rendition(db: Session, i: ImageAsset) -> dict:
+    return image_to_dict(i, renditions_svc.by_frame(db, [i.id]).get(i.id))
 
 
 def catalog_url(path: Optional[str]) -> Optional[str]:
@@ -888,8 +945,10 @@ def get_film(film_id: int, db: Session = Depends(get_db)):
     if not f:
         return not_found("Roll")
     scans = frames_in_order(
-        db.query(ImageAsset).filter(
-            ImageAsset.film_roll_id == f.id, ImageAsset.type == ImageType.scan
+        renditions_svc.only_frames(
+            db.query(ImageAsset).filter(
+                ImageAsset.film_roll_id == f.id, ImageAsset.type == ImageType.scan
+            )
         )
     ).all()
     contact_sheets = (
@@ -902,7 +961,7 @@ def get_film(film_id: int, db: Session = Depends(get_db)):
         "film": film_to_dict(
             f, len(scans), [i.id for i in scans[:COVER_STRIP]], [preview_version(i) for i in scans[:COVER_STRIP]]
         ),
-        "images": [image_to_dict(i) for i in scans],
+        "images": images_to_dicts(db, scans),
         "contact_sheets": [image_to_dict(i) for i in contact_sheets],
     }
 
@@ -1141,6 +1200,9 @@ def list_images(
     q: Optional[str] = None,
     unassigned: Optional[bool] = None,
     storage_mode: Optional[str] = None,
+    renditions: bool = Query(
+        False, description="M8: also list NegPy exports, which are not frames of their own."
+    ),
     limit: Optional[int] = None,
     offset: Optional[int] = None,
     db: Session = Depends(get_db),
@@ -1160,6 +1222,11 @@ def list_images(
         t = type.lower().strip()
         if t == "scan":
             query = query.filter(ImageAsset.type == ImageType.scan)
+            # M8: a NegPy export is reached through its frame, not listed beside
+            # it. `?renditions=true` asks for them anyway, which is what a
+            # maintenance sweep and the repair script want.
+            if not renditions:
+                query = renditions_svc.only_frames(query)
         elif t in {"contact", "contact_sheet", "contact-sheet"}:
             query = query.filter(ImageAsset.type == ImageType.contact_sheet)
         # else: ignore invalid type filter, return all
@@ -1185,7 +1252,7 @@ def list_images(
     ordered = ordered.offset(page_offset)
     if page_limit is not None:
         ordered = ordered.limit(page_limit)
-    return _respond_page([image_to_dict(i) for i in ordered.all()], total, page_limit, page_offset)
+    return _respond_page(images_to_dicts(db, ordered.all()), total, page_limit, page_offset)
 
 
 @router.get(
@@ -1197,7 +1264,7 @@ def get_image(image_id: int, db: Session = Depends(get_db)):
     i = db.get(ImageAsset, image_id)
     if not i:
         return not_found("Frame")
-    return image_to_dict(i)
+    return image_with_rendition(db, i)
 
 
 def _cache_file(image_id: int, width: int, mtime_ns: int, token: str = "raw") -> str:
@@ -1371,9 +1438,17 @@ def get_image_preview(
     render: str = Query("auto", description="auto | raw | positive (M5)"),
     db: Session = Depends(get_db),
 ):
-    i = db.get(ImageAsset, image_id)
-    if not i:
+    frame = db.get(ImageAsset, image_id)
+    if not frame:
         return not_found("Frame")
+    # M8: a frame that went through NegPy has two files. `raw` means the negative
+    # as stored, always; anything else prefers the export NegPy actually made
+    # over this backend's approximation of one, and serves it as it is. The URL
+    # stays the frame's, so nothing that links to a frame has to know.
+    rendition = renditions_svc.by_frame(db, [frame.id]).get(frame.id)
+    i, _still_render = renditions_svc.shown_for(frame, rendition, render)
+    if i is not frame:
+        image_id = i.id
     # Resolve absolute path
     abs_path = _abs(i.path)
     ext = os.path.splitext(abs_path)[1].lower()
@@ -1591,7 +1666,7 @@ def create_image(body: schemas.ImageCreate, db: Session = Depends(get_db)):
         return from_exc(exc)
     db.add(i)
     db.commit()
-    return {"ok": True, "image": image_to_dict(i)}
+    return {"ok": True, "image": image_with_rendition(db, i)}
 
 
 def _registrable_path(path: str, requested_mode: Optional[str]) -> str:
@@ -1659,7 +1734,7 @@ def update_image(image_id: int, body: schemas.ImageUpdate, db: Session = Depends
         db.rollback()
         return from_exc(exc)
     db.commit()
-    return {"ok": True, "image": image_to_dict(i)}
+    return {"ok": True, "image": image_with_rendition(db, i)}
 
 
 def parse_positive(value) -> Optional[bool]:
@@ -1761,7 +1836,7 @@ def bulk_update_images(body: schemas.BulkImageUpdate, db: Session = Depends(get_
     if fields.get("film_roll_id"):
         lifecycle.touch_scanned(db.get(FilmRoll, fields["film_roll_id"]))
     db.commit()
-    return {"ok": True, "updated": len(images), "images": [image_to_dict(i) for i in images]}
+    return {"ok": True, "updated": len(images), "images": images_to_dicts(db, images)}
 
 
 @router.post(
@@ -1794,7 +1869,11 @@ def renumber_frames(film_id: int, body: schemas.RenumberFrames, db: Session = De
         step = parse_int(body.step, "step", minimum=1)
         offset = parse_int(body.offset, "offset")
         scans = frames_in_order(
-            db.query(ImageAsset).filter(ImageAsset.film_roll_id == film_id, ImageAsset.type == ImageType.scan)
+            renditions_svc.only_frames(
+                db.query(ImageAsset).filter(
+                    ImageAsset.film_roll_id == film_id, ImageAsset.type == ImageType.scan
+                )
+            )
         ).all()
         chosen = scans
         if body.ids:
@@ -1830,7 +1909,7 @@ def renumber_frames(film_id: int, body: schemas.RenumberFrames, db: Session = De
         "plan": planned,
         "updated": len(changes),
         "conflicts": conflicts,
-        "images": [image_to_dict(f) for f in chosen],
+        "images": images_to_dicts(db, chosen),
     }
 
 
@@ -1912,14 +1991,16 @@ def upload_image(
     # whose owner never turned sidecars on. Opened and closed around the ingest.
     index = negpy_edits.open_index(db)
     try:
-        negpy_metadata.ingest_image(db, img, roll=roll, edits_index=index)
+        negpy_metadata.ingest_image(
+            db, img, roll=roll, edits_index=index, delete_file=delete_asset_file
+        )
     finally:
         if index is not None:
             index.close()
     if img.film_roll_id and image_type == ImageType.scan:
         lifecycle.touch_scanned(roll or db.get(FilmRoll, img.film_roll_id))
     db.commit()
-    return {"ok": True, "image": image_to_dict(img)}
+    return {"ok": True, "image": image_with_rendition(db, img)}
 
 
 # ---------------------------
@@ -1940,8 +2021,10 @@ def create_contact_sheet(
     thumb_size = max(32, min(int(thumb_size or 300), 1000))
     # R#24: the sheet is laid out in frame order, like everything else.
     scans: List[ImageAsset] = frames_in_order(
-        db.query(ImageAsset).filter(
-            ImageAsset.film_roll_id == film_id, ImageAsset.type == ImageType.scan
+        renditions_svc.only_frames(
+            db.query(ImageAsset).filter(
+                ImageAsset.film_roll_id == film_id, ImageAsset.type == ImageType.scan
+            )
         )
     ).all()
     if len(scans) < 2:
@@ -2048,6 +2131,7 @@ def bulk_upload_images(
                 create_gear=create_gear,
                 sidecar_path=stored_sidecar,
                 edits_index=edits_index,
+                delete_file=delete_asset_file,
             )
     except ApiError as exc:
         # Everything or nothing: a rejected file must not leave half a roll behind.
@@ -2063,7 +2147,7 @@ def bulk_upload_images(
     if created:
         lifecycle.touch_scanned(f)
     db.commit()
-    return {"ok": True, "images": [image_to_dict(i) for i in created]}
+    return {"ok": True, "images": images_to_dicts(db, created)}
 
 
 @router.post(
@@ -2180,6 +2264,7 @@ def bulk_upload_zip(
                             create_gear=create_gear,
                             sidecar_path=stored_sidecar,
                             edits_index=edits_index,
+                            delete_file=delete_asset_file,
                         )
                     except OSError:
                         skipped.append(name)
@@ -2191,7 +2276,7 @@ def bulk_upload_zip(
         if created:
             lifecycle.touch_scanned(f)
         db.commit()
-        return {"ok": True, "images": [image_to_dict(i) for i in created], "skipped": sorted(skipped)}
+        return {"ok": True, "images": images_to_dicts(db, created), "skipped": sorted(skipped)}
 
 
 def max_zip_bytes() -> int:
