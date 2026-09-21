@@ -365,6 +365,9 @@ def roll_layout(film_id: int, db: Session = Depends(get_db)):
             "frame_number": i.frame_number,
             "notes": i.notes,
             "capture_date": i.capture_date.isoformat() if i.capture_date else None,
+            # Which of a frame's two files the sleeve grid shows; see
+            # `strips.better_for_paper`.
+            "positive": i.positive,
             # The cover sheet's thumbnails are served immutable; see image_to_dict.
             "preview_version": preview_version(i),
         }
@@ -374,11 +377,15 @@ def roll_layout(film_id: int, db: Session = Depends(get_db)):
         .all()
     ]
     rows = strips_svc.grid(frames, strips)
-    placed = {cell["id"] for row in rows for cell in row if cell}
+    # By *number*, not by id: a frame whose sibling took the cell — the raw
+    # negative behind the positive on the grid — is on the sleeve, and listing it
+    # under "not on the sleeve grid" would say the opposite for every frame of a
+    # roll that went through NegPy.
+    placed = {cell["frame_number"] for row in rows for cell in row if cell}
     return {
         "strips": strips,
         "layout": {"id": layout.id, "name": layout.name} if layout else None,
         "capacity": strips_svc.capacity(strips),
         "rows": rows,
-        "unplaced": [f for f in frames if f["id"] not in placed],
+        "unplaced": [f for f in frames if f["frame_number"] not in placed],
     }

@@ -169,6 +169,9 @@ class ScanResult:
     rolls_adopted: int = 0  # M6.1: existing rolls a serial-named folder attached to
     frames_added: int = 0
     frames_rehomed: int = 0
+    #: Frames a move put under a folder or a filename naming a *different* roll
+    #: by serial, and which followed the file onto it.
+    frames_refiled: int = 0
     frames_updated: int = 0
     frames_unchanged: int = 0
     files_skipped: int = 0
@@ -179,7 +182,9 @@ class ScanResult:
     def summary(self) -> str:
         sidecars = f", {self.sidecars_seen} NegPy sidecars" if self.sidecars_seen else ""
         return (
-            f"{self.frames_added} new, {self.frames_rehomed} re-homed, "
+            f"{self.frames_added} new, {self.frames_rehomed} re-homed"
+            + (f" ({self.frames_refiled} onto the roll they name)" if self.frames_refiled else "")
+            + ", "
             f"{self.frames_updated} updated, {self.frames_unchanged} unchanged, "
             f"{self.rolls_created} new rolls"
             + (f", {self.rolls_adopted} adopted" if self.rolls_adopted else "")
@@ -192,6 +197,7 @@ class ScanResult:
             "rolls_adopted": self.rolls_adopted,
             "frames_added": self.frames_added,
             "frames_rehomed": self.frames_rehomed,
+            "frames_refiled": self.frames_refiled,
             "frames_updated": self.frames_updated,
             "frames_unchanged": self.frames_unchanged,
             "files_skipped": self.files_skipped,
@@ -261,10 +267,31 @@ def _roll_for_folder(db: Session, folder: Path, result: ScanResult) -> FilmRoll:
     return roll
 
 
+def _same_serial(roll: FilmRoll, claimed: Optional[str]) -> bool:
+    """Does ``roll`` actually carry the serial a folder or a filename named?
+
+    Compared by meaning, not by spelling, so ``NEG_2026_0001`` and ``NEG-2026-1``
+    both answer yes for ``NEG-2026-0001``. False whenever the roll was invented
+    rather than found — that is what keeps a move between two ordinary folders
+    from dragging frames off the roll they are on.
+    """
+    if not claimed or not roll.archive_serial:
+        return False
+    wanted = serials.parse(claimed.replace("_", "-"))
+    held = serials.parse(roll.archive_serial)
+    if wanted is not None and held is not None:
+        return wanted == held
+    return serials.normalize(claimed) == serials.normalize(roll.archive_serial)
+
+
 def _rolls_for_files(
     db: Session, folder: Path, files: list[Path], result: ScanResult
 ) -> list[tuple[FilmRoll, list[Path], bool]]:
-    """``[(roll, files, matched_by_filename)]`` — which roll each file belongs to.
+    """``[(roll, files, named_by_serial)]`` — which roll each file belongs to.
+
+    The third element says the roll was found *by its serial* rather than invented
+    from a folder name, which is what lets :func:`_link_file` re-file a frame that
+    moved (see there).
 
     Normally the answer is one pair: a folder is a roll. But NegPy's scan mode can
     be pointed straight at the watch folder, and then the roll's name is not in a
@@ -296,7 +323,8 @@ def _rolls_for_files(
     """
     _title, serial = parse_folder_name(folder.name)
     if serial is not None:
-        return [(_roll_for_folder(db, folder, result), files, False)]
+        roll = _roll_for_folder(db, folder, result)
+        return [(roll, files, _same_serial(roll, serial))]
 
     by_roll: dict[int, tuple[FilmRoll, list[Path]]] = {}
     leftover: list[Path] = []
@@ -308,11 +336,11 @@ def _rolls_for_files(
             continue
         by_roll.setdefault(roll.id, (roll, []))[1].append(file_path)
 
-    groups = [(roll, group, True) for roll, group in by_roll.values()]
+    groups = [(roll, group, True) for roll, group in by_roll.values()]  # matched on its serial
     if leftover or not groups:
         # `not groups` keeps an empty watch folder answering as it always did: a
         # draft roll for the folder, which is what the settings page shows.
-        groups.append((_roll_for_folder(db, folder, result), leftover, False))
+        groups.append((_roll_for_folder(db, folder, result), leftover, False))  # the folder's own roll
     return groups
 
 
@@ -345,6 +373,7 @@ def _link_file(
     result: ScanResult,
     ingest: tuple[bool, bool] = (True, False),
     edits_index=None,
+    by_serial: bool = False,
 ) -> None:
     absolute = str(file_path)
     digest = safe_content_hash(file_path)
@@ -386,6 +415,16 @@ def _link_file(
             candidate.original_filename = file_path.name
             if candidate.film_roll_id is None:
                 candidate.film_roll_id = roll.id
+            elif by_serial and candidate.film_roll_id != roll.id:
+                # The file moved somewhere that names a roll by its *serial*: a
+                # folder called NEG-2026-0001, or a filename that starts with it.
+                # That is a deliberate statement about where the frame belongs,
+                # and it is how somebody repairs a misfiled roll by hand — so the
+                # record follows the file. A move between two ordinary folders
+                # still leaves the roll alone (`by_serial` is false there), which
+                # is what keeps a reorganisation from shuffling the archive.
+                candidate.film_roll_id = roll.id
+                result.frames_refiled += 1
             result.frames_rehomed += 1
             return
 
@@ -462,14 +501,17 @@ def _scan_root_locked(db: Session, root: LibraryRoot, commit: bool) -> ScanResul
                 # watch folder is supposed to show it as a draft immediately.
                 _roll_for_folder(db, folder, result)
                 continue
-            for roll, group, by_filename in _rolls_for_files(db, folder, files, result):
+            for roll, group, by_serial in _rolls_for_files(db, folder, files, result):
                 before = result.frames_added
                 for file_path in group:
-                    _link_file(db, file_path, roll, result, ingest, edits_index)
-                # A roll found by its filenames is only *adopted* on the sweep that
-                # actually puts frames on it; there is no `source_dir` to mark it
+                    _link_file(db, file_path, roll, result, ingest, edits_index, by_serial)
+                # A roll found by its *filenames* is only adopted on the sweep that
+                # actually puts frames on it: there is no `source_dir` to mark it
                 # with, so without this a rescan would report the adoption forever.
-                if by_filename and result.frames_added > before and roll.id not in result.roll_ids:
+                # `_roll_for_folder` has already counted a roll it resolved from a
+                # folder name and put its id in `roll_ids`, which is what keeps the
+                # two paths from counting the same roll twice.
+                if by_serial and result.frames_added > before and roll.id not in result.roll_ids:
                     result.rolls_adopted += 1
                     result.roll_ids.append(roll.id)
     finally:

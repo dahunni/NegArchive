@@ -26,6 +26,19 @@ you have not seen yet. Keep the format — `## [version] - YYYY-MM-DD`, then `##
 - A serial matches whichever way it is spelled: `NEG_2026_0001`, `NEG-2026-0001` and
   `NEG-2026-1` are one roll, so a folder or file that lost its padding or its hyphens still
   finds the record it belongs to.
+- **Filing scans into the right folder now sticks.** Moving a file under a folder named with a
+  roll's serial puts the frame on that roll. Re-homing a moved file only ever filled in an
+  *empty* roll before, so tidying a misfiled roll into the right folder by hand changed nothing
+  and the archive stayed wrong. A move between two ordinary folders still leaves the roll alone
+  — only a serial re-files a frame.
+- **Anything printed shows the positive, not the negative.** A roll scanned through NegPy has
+  two files per frame — the raw negative and the positive exported from it — and cover sheets,
+  index cards, the sleeve grid and the roll list's thumbnails were all showing the raw, because
+  it happened to arrive first. They show the exported positive where there is one, one image
+  per frame, so 36 thumbnails mean 36 frames. Both files stay in the archive and the roll page
+  still shows both. A roll with no positives looks exactly as it did.
+- A negative whose positive is standing in for it on the sleeve grid is no longer listed under
+  "not on the sleeve grid" — which had been saying it about every frame of a NegPy roll.
 
 ### Added
 - `scripts/repair_misfiled_rolls.py` puts an archive that already has the damage back together:

@@ -270,7 +270,12 @@ def roll_summaries(db: Session, film_ids: Optional[Iterable[int]] = None) -> Dic
         ImageAsset.type == ImageType.scan, ImageAsset.film_roll_id.isnot(None)
     )
     covers = db.query(
-        ImageAsset.film_roll_id, ImageAsset.id, ImageAsset.path, ImageAsset.negpy_edited_at, ImageAsset.positive
+        ImageAsset.film_roll_id,
+        ImageAsset.id,
+        ImageAsset.path,
+        ImageAsset.negpy_edited_at,
+        ImageAsset.positive,
+        ImageAsset.frame_number,
     ).filter(ImageAsset.type == ImageType.scan, ImageAsset.film_roll_id.isnot(None))
     if ids is not None:
         counts = counts.filter(ImageAsset.film_roll_id.in_(ids))
@@ -279,16 +284,33 @@ def roll_summaries(db: Session, film_ids: Optional[Iterable[int]] = None) -> Dic
     summary: Dict[int, RollSummary] = {
         roll_id: (count, [], []) for roll_id, count in counts.group_by(ImageAsset.film_roll_id).all()
     }
-    # First frames of each roll in display order: lowest frame number, then oldest row.
-    for roll_id, image_id, path, edited_at, positive in covers.order_by(
+    # First frames of each roll in display order: lowest frame number, then oldest
+    # row — but one image per frame *number*, and where a roll went through NegPy
+    # and has both the raw negative and the exported positive, the positive
+    # (`strips.better_for_paper`). Four orange negatives is not a cover.
+    chosen: Dict[int, Dict[Optional[int], dict]] = {}
+    for roll_id, image_id, path, edited_at, positive, frame_number in covers.order_by(
         ImageAsset.film_roll_id.asc(),
         ImageAsset.frame_number.asc().nulls_last(),
         ImageAsset.id.asc(),
     ).all():
+        cell = {"id": image_id, "path": path, "edited_at": edited_at, "positive": positive}
+        per_roll = chosen.setdefault(roll_id, {})
+        # An unnumbered frame is its own cover candidate, never a rival of another.
+        key = frame_number if frame_number is not None else -image_id
+        current = per_roll.get(key)
+        if current is None:
+            if len(per_roll) >= COVER_STRIP:
+                continue  # the strip is full of earlier frames; nothing can improve it
+            per_roll[key] = cell
+        elif strips_svc.better_for_paper(current, cell):
+            per_roll[key] = cell
+
+    for roll_id, per_roll in chosen.items():
         _, strip, versions = summary.setdefault(roll_id, (0, [], []))
-        if len(strip) < COVER_STRIP:
-            strip.append(image_id)
-            versions.append(_preview_token(path, edited_at, positive))
+        for _key, cell in sorted(per_roll.items(), key=lambda kv: kv[0] if kv[0] >= 0 else 1 << 30):
+            strip.append(cell["id"])
+            versions.append(_preview_token(cell["path"], cell["edited_at"], cell["positive"]))
     return summary
 
 
