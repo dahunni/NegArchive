@@ -70,16 +70,39 @@ def position(frame_number: Optional[int], strips: Sequence[int]) -> Optional[tup
     return None
 
 
+def better_for_paper(current: dict, candidate: dict) -> bool:
+    """Should ``candidate`` replace ``current`` as the one image shown for a frame?
+
+    A roll scanned through NegPy has **two files per frame**: the raw negative the
+    scanner made and the positive NegPy exported from it. Anything printed wants
+    the positive — a cover sheet or an index card full of orange negatives is not
+    something anybody can read a roll from — so a finished positive beats one that
+    is not, and between two positives the newest export wins, an export being the
+    later of the two by definition.
+
+    With no positive anywhere the old rule stands: the first frame in display
+    order, which is the lowest id.
+    """
+    mine, theirs = bool(current.get("positive")), bool(candidate.get("positive"))
+    if mine != theirs:
+        return theirs
+    return theirs and (candidate.get("id") or 0) > (current.get("id") or 0)
+
+
 def grid(frames: Iterable[dict], strips: Sequence[int]) -> List[List[Optional[dict]]]:
     """Rows of cells mirroring the sleeve: each cell is the frame dict or None.
 
     ``frames`` are dicts with a ``frame_number``; unnumbered frames and frames past
-    the last strip are not placed (the caller lists them separately).
+    the last strip are not placed (the caller lists them separately). Where two
+    frames share a number, :func:`better_for_paper` picks the one to show.
     """
-    by_number = {}
+    by_number: dict = {}
     for frame in frames:
         number = frame.get("frame_number")
-        if number is not None and number not in by_number:
+        if number is None:
+            continue
+        current = by_number.get(number)
+        if current is None or better_for_paper(current, frame):
             by_number[number] = frame
     rows: List[List[Optional[dict]]] = []
     next_number = 1

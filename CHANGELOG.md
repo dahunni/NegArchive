@@ -6,6 +6,46 @@ you have not seen yet. Keep the format — `## [version] - YYYY-MM-DD`, then `##
 `### Changed`, `### Fixed` or `### Removed` with one `-` bullet per line — because that is what
 `app/services/changelog.py` parses.
 
+## [0.10.1] - 2026-09-21
+
+### Fixed
+- **A roll exported from NegPy no longer arrives as 33 copies of frame 2026.** NegPy's export
+  templating slugs the roll name, so the serial `NEG-2026-0001` comes back in the filename as
+  `NEG_2026_0001_001.jpg` — and the preset parser, which reads `<roll>_<frame>_<film>` by shape,
+  took the year for the frame and `0001_001` for the film. A part of the name only counts as a
+  film now if it has a letter in it, so the name falls through to the `<roll>_<frame>` rule and
+  the frame is 1. *Renumber → "Read the filenames again"* fixes a roll that already came in
+  wrong, one roll at a time, with the plan on screen.
+- **A scanner pointed straight at the watch folder no longer puts the roll in the archive
+  twice.** NegPy's scan mode, writing `NEG-2026-0001_Frame001.ARW` into the watch folder with no
+  subfolder around it, made the archive invent a roll named after the *folder* — "rolls" — while
+  the real roll sat beside it, empty. When a folder's own name says nothing about a serial, the
+  filenames are read instead, and a file naming a roll the archive already has goes to that
+  roll. Two rolls loose in one folder now stay two rolls; a file naming nothing known still goes
+  to the folder's roll, as before. The watch folder itself is never claimed as one roll's folder.
+- A serial matches whichever way it is spelled: `NEG_2026_0001`, `NEG-2026-0001` and
+  `NEG-2026-1` are one roll, so a folder or file that lost its padding or its hyphens still
+  finds the record it belongs to.
+- **Filing scans into the right folder now sticks.** Moving a file under a folder named with a
+  roll's serial puts the frame on that roll. Re-homing a moved file only ever filled in an
+  *empty* roll before, so tidying a misfiled roll into the right folder by hand changed nothing
+  and the archive stayed wrong. A move between two ordinary folders still leaves the roll alone
+  — only a serial re-files a frame.
+- **Anything printed shows the positive, not the negative.** A roll scanned through NegPy has
+  two files per frame — the raw negative and the positive exported from it — and cover sheets,
+  index cards, the sleeve grid and the roll list's thumbnails were all showing the raw, because
+  it happened to arrive first. They show the exported positive where there is one, one image
+  per frame, so 36 thumbnails mean 36 frames. Both files stay in the archive and the roll page
+  still shows both. A roll with no positives looks exactly as it did.
+- A negative whose positive is standing in for it on the sleeve grid is no longer listed under
+  "not on the sleeve grid" — which had been saying it about every frame of a NegPy roll.
+
+### Added
+- `scripts/repair_misfiled_rolls.py` puts an archive that already has the damage back together:
+  it moves frames onto the roll their filenames name, removes the invented roll it leaves empty
+  (never one you have typed anything into), and re-reads every frame number from its filename.
+  A dry run by default; `--apply` writes.
+
 ## [0.10.0] - 2026-09-21
 
 ### Added
