@@ -18,7 +18,7 @@ from alembic import command
 from . import auth, paths
 from .db import SessionLocal, engine
 from .errors import ApiError, from_exc, validation_error_response
-from .routers import api, backup, library, locations, negpy, scan, system
+from .routers import api, backup, library, locations, negpy, scan, search, system
 from .routers import inbox as inbox_router
 from .routers import share as share_router
 from .routers import smb as smb_router
@@ -223,3 +223,4 @@ app.include_router(negpy.router)
 app.include_router(smb_router.router)
 app.include_router(inbox_router.router)
 app.include_router(share_router.router)
+app.include_router(search.router)

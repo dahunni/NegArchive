@@ -3,7 +3,7 @@
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { useEffect, useState } from "react"
-import { ArrowLeft, Grid2x2, History, Loader2, MapPin, Pencil, Printer, Trash2 } from "lucide-react"
+import { ArrowLeft, Grid2x2, History, ListOrdered, Loader2, MapPin, Pencil, Printer, Trash2 } from "lucide-react"
 
 import {
   ACCEPTED_IMAGE_TYPES,
@@ -32,6 +32,7 @@ import { MoveRollDialog } from "@/components/move-roll-dialog"
 import { NegpyHandoffButton } from "@/components/negpy-handoff-button"
 import { NegpyScanCard } from "@/components/negpy-scan-card"
 import { PrintMenu } from "@/components/print-menu"
+import { RenumberDialog } from "@/components/renumber-dialog"
 import { RollEditSheet } from "@/components/roll-edit-sheet"
 import { StatusStepper } from "@/components/status-stepper"
 import { UploadZone } from "@/components/upload-zone"
@@ -73,6 +74,8 @@ export function RollWorkspace({
   const [editing, setEditing] = useState(editOnOpen)
   const [moving, setMoving] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
+  // M7: the renumber dialog — for the whole roll, or for the frames selected in the grid.
+  const [renumber, setRenumber] = useState<{ ids?: number[] } | null>(null)
   const [generating, setGenerating] = useState(false)
   const [sheetIndex, setSheetIndex] = useState<number | null>(null)
   const [showMoves, setShowMoves] = useState(false)
@@ -338,11 +341,19 @@ export function RollWorkspace({
       </section>
 
       <section className="space-y-3">
-        <div className="flex items-center justify-between gap-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
           <h2 className="type-section">Frames</h2>
-          <p className="type-meta hidden sm:block">
-            Arrow keys move · Enter opens · Space selects · Esc clears
-          </p>
+          <div className="flex items-center gap-3">
+            <p className="type-meta hidden sm:block">
+              Arrow keys move · Enter opens · Space selects · Esc clears
+            </p>
+            {frames.length > 0 ? (
+              <Button variant="outline" size="sm" className="min-h-10" onClick={() => setRenumber({})} data-testid="renumber-roll">
+                <ListOrdered className="mr-2 h-4 w-4" />
+                Renumber
+              </Button>
+            ) : null}
+          </div>
         </div>
         <FrameGrid
           frames={frames}
@@ -350,8 +361,16 @@ export function RollWorkspace({
           strips={film.effective_strips}
           emptyTitle="No frames in this roll yet"
           emptyDescription="Drop the scans above; they land here with their frame numbers ready to fill in."
+          onRenumber={(ids) => setRenumber({ ids })}
         />
       </section>
+
+      <RenumberDialog
+        open={renumber !== null}
+        onOpenChange={(open) => !open && setRenumber(null)}
+        rollId={film.id}
+        ids={renumber?.ids}
+      />
 
       <RollEditSheet
         film={film}

@@ -639,6 +639,53 @@ export async function bulkUpdateImages(ids: number[], patch: BulkImagePatch): Pr
   return (json?.images ?? []) as Image[]
 }
 
+// M7: renumber a roll's frames in one go (app/services/renumber.py).
+export type RenumberMode = "sequential" | "reverse" | "shift" | "from_filenames"
+
+export interface RenumberPlanItem {
+  id: number
+  from: number | null
+  to: number | null
+  original_filename: string | null
+}
+
+export interface RenumberResult {
+  ok: boolean
+  dry_run: boolean
+  plan: RenumberPlanItem[]
+  /** How many frames change number (or would, on a dry run). */
+  updated: number
+  /** Frame numbers used more than once afterwards. Allowed, but worth a look. */
+  conflicts: number[]
+  images?: Image[]
+}
+
+/** `dryRun` answers with the plan and writes nothing. `ids` scopes it to a selection. */
+export async function renumberFrames(
+  rollId: number,
+  {
+    mode,
+    ids,
+    start,
+    step,
+    offset,
+    dryRun = false,
+  }: { mode: RenumberMode; ids?: number[]; start?: number; step?: number; offset?: number; dryRun?: boolean },
+): Promise<RenumberResult> {
+  const body: Record<string, unknown> = { mode, dry_run: dryRun }
+  if (ids && ids.length) body.ids = ids
+  if (start !== undefined && Number.isFinite(start)) body.start = start
+  if (step !== undefined && Number.isFinite(step)) body.step = step
+  if (offset !== undefined && Number.isFinite(offset)) body.offset = offset
+  const res = await apiFetch(`/api/films/${rollId}/frames/renumber`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  })
+  await assertOk(res, "Could not renumber the frames.")
+  return res.json()
+}
+
 export async function bulkDeleteImages(ids: number[], keepFiles = false): Promise<number> {
   const res = await apiFetch(`/api/images/bulk_delete`, {
     method: "POST",
@@ -884,6 +931,140 @@ export interface SystemInfo {
 export async function getSystemInfo(): Promise<SystemInfo> {
   const res = await apiFetch("/api/system/info")
   await assertOk(res, "Could not reach the archive.")
+  return res.json()
+}
+
+// ---------------------------------------------------------------------------
+// M7: the version on screen, and what changed
+// ---------------------------------------------------------------------------
+
+/** One release in CHANGELOG.md, as the backend parses it. */
+export interface ChangelogEntry {
+  version: string
+  date: string | null
+  sections: { title: string; items: string[] }[]
+}
+
+export interface AppVersion {
+  app: string
+  /** `app/version.py`: what the backend is. */
+  version: string
+  /** The commit the published image was built from; null for a source checkout. */
+  git_sha: string | null
+  built_at: string | null
+  changelog: ChangelogEntry[]
+  changelog_total: number
+  release_url: string
+}
+
+/**
+ * The version this *frontend* was built as (`frontend/package.json`, baked in by
+ * next.config.mjs). Normally equal to the backend's; differs when a tab was open
+ * across an update and still runs the old bundle, or when the two images were
+ * pulled at different tags.
+ */
+export const FRONTEND_VERSION = process.env.NEXT_PUBLIC_APP_VERSION || ""
+
+/** `since` trims the changelog to the releases newer than that version. */
+export async function getAppVersion(since?: string | null): Promise<AppVersion> {
+  const res = await apiFetch(`/api/system/version${since ? `?since=${encodeURIComponent(since)}` : ""}`)
+  await assertOk(res, "Could not read the archive's version.")
+  return res.json()
+}
+
+// ---------------------------------------------------------------------------
+// M7: search everything
+// ---------------------------------------------------------------------------
+
+export type SearchKind = "roll" | "frame" | "camera" | "lens" | "film_stock" | "location"
+
+export interface SearchRollHit {
+  kind: "roll"
+  id: number
+  title: string
+  url: string
+  serial: string | null
+  status: RollStatus
+  status_label: string | null
+  film_type: string | null
+  camera: string | null
+  start_date: string | null
+  end_date: string | null
+  location_path: string | null
+  image_count: number
+  cover_image_id: number | null
+  cover_version: string | null
+}
+
+export interface SearchFrameHit {
+  kind: "frame"
+  id: number
+  title: string
+  url: string
+  frame_number: number | null
+  roll_id: number | null
+  roll_title: string | null
+  roll_serial: string | null
+  notes: string | null
+  original_filename: string | null
+  capture_date: string | null
+  preview_version: string | null
+}
+
+export interface SearchGearHit {
+  kind: "camera" | "lens" | "film_stock"
+  id: number
+  title: string
+  url: string
+  subtitle: string | null
+  image_url: string | null
+}
+
+export interface SearchLocationHit {
+  kind: "location"
+  id: number
+  title: string
+  url: string
+  location_kind: string
+  kind_label: string
+  path: string | null
+  code: string | null
+  roll_count: number
+}
+
+export type SearchHit = SearchRollHit | SearchFrameHit | SearchGearHit | SearchLocationHit
+
+export interface SearchGroup {
+  kind: SearchKind
+  label: string
+  /** How many match in the database — more than `items` when the page is short. */
+  total: number
+  items: SearchHit[]
+}
+
+export interface SearchResult {
+  query: string
+  parsed: { terms: string[]; phrases: string[]; qualifiers: Record<string, string[]> }
+  total: number
+  groups: SearchGroup[]
+  /** Whether pg_trgm is there, i.e. whether a typo can still find something. */
+  fuzzy: boolean
+}
+
+/**
+ * Everything that matches, grouped by kind (`GET /api/search`). The grammar is
+ * the one the roll list's filter bar uses: words that must all match, quoted
+ * phrases, and `camera:` / `film:` / `year:` / `status:` / `location:` / `serial:`.
+ */
+export async function searchArchive(
+  q: string,
+  { kinds, limit, signal }: { kinds?: SearchKind[]; limit?: number; signal?: AbortSignal } = {},
+): Promise<SearchResult> {
+  const res = await apiFetch(
+    `/api/search${queryString({ q, kinds: kinds?.join(","), limit })}`,
+    { signal },
+  )
+  await assertOk(res, "Could not search the archive.")
   return res.json()
 }
 

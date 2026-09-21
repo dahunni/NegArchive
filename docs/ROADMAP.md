@@ -434,7 +434,29 @@ that workflow **the raw is the scan**, and the archive has to treat it as one.
 - [ ] Trichrome (RGB scanlight) sessions write a merged 16-bit TIFF beside the three raws — decide
       whether the triplet is hidden behind the merge, the way NegPy hides `_IR` sidecar TIFFs.
 
-## M7 — Immich connector (optional photo layer)
+## M7 — Finding things, and knowing what you are running *(done)*
+
+- [x] **Search everything** (`GET /api/search`, `app/services/search.py`): one grammar — words that
+      must all match, `"quoted phrases"`, `camera:` / `lens:` / `film:` / `year:` / `status:` /
+      `location:` (`in:`) / `serial:` / `frame:` / `roll:` qualifiers — and one matcher behind the
+      `⌘K` palette, the roll list and the frames page. A roll matches on its title, notes, serial,
+      folder, building, gear, film, developer, the years it was shot, its location's path and its
+      frames' notes and filenames; results are ranked (exact serial or title, then prefix, then word
+      start, then anywhere, then notes). `pg_trgm` is installed by a migration that shrugs when it
+      may not, and then a typo in a plain word still finds the thing (`word_similarity ≥ 0.5`, five
+      letters or more, never on a serial or a filename).
+- [x] **The version on screen**: `app/version.py` is the number, `CHANGELOG.md` the story,
+      `frontend/package.json` the interface's copy; a test keeps the three equal. `GET
+      /api/system/version` serves all of it plus the commit and date the image was built from
+      (`GIT_SHA` / `BUILD_DATE` build args from the publish workflow). The footer shows the version,
+      Settings → About the build; the first load after an update opens the entries since the version
+      this browser last saw, and a tab that outlived the update is told to reload.
+- [x] **Renumber a roll's frames** (`POST /api/films/{id}/frames/renumber`,
+      `app/services/renumber.py`): sequential from any start and step, reversed, shifted, or read
+      from the filenames again; on the whole roll or a selection; `dry_run` answers with the plan
+      and the numbers that would be used twice, which the dialog shows before Apply.
+
+## M8 — Immich connector (optional photo layer)
 
 Immich stays optional: every feature below is behind an "Immich" settings section (base URL +
 API key) and NegArchive works fully without it. Two services, two databases; never share
@@ -459,7 +481,7 @@ Immich's Postgres.
 - [ ] Later, optional: an Immich workflow plugin (Wasm, alpha) that files a newly added asset into
       the right album by parsing the NegPy/NegArchive XMP, so the connector also runs inside Immich.
 
-## M8 — Nice to have
+## M9 — Nice to have
 
 - [ ] Paper twin: photograph the DM index print or sleeve page as the roll's contact sheet.
 - [ ] Darkroom prints as assets with paper, size, location; loan / status log.

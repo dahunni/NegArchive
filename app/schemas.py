@@ -235,6 +235,19 @@ class BulkImageUpdate(Model):
         return name in self.model_fields_set
 
 
+class RenumberFrames(Model):
+    """``POST /api/films/{id}/frames/renumber`` (M7, app/services/renumber.py)."""
+
+    mode: Optional[str] = None
+    #: Only these frames (a selection); every scan of the roll when empty.
+    ids: List[Any] = Field(default_factory=list)
+    start: Optional[Any] = None
+    step: Optional[Any] = None
+    offset: Optional[Any] = None
+    #: Answer with the plan and write nothing.
+    dry_run: bool = False
+
+
 class BulkImageDelete(Model):
     ids: List[Any] = Field(default_factory=list)
     #: M2 deletes managed files with the record; send ``keep_files`` to opt out (R#9).

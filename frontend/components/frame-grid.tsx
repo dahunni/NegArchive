@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useRouter } from "next/navigation"
-import { CalendarDays, FolderInput, Images, Loader2, Trash2, X } from "lucide-react"
+import { CalendarDays, FolderInput, Images, ListOrdered, Loader2, Trash2, X } from "lucide-react"
 
 import {
   type Film,
@@ -41,6 +41,7 @@ export function FrameGrid({
   emptyTitle = "No frames yet",
   emptyDescription = "Drop scans into the upload zone above and they appear here.",
   strips,
+  onRenumber,
 }: {
   frames: Frame[]
   rolls: Film[]
@@ -48,6 +49,8 @@ export function FrameGrid({
   emptyDescription?: string
   /** M4: the roll's strip lengths, so each cell can say "Strip 3 · Pos 2". */
   strips?: number[]
+  /** M7: offered by the roll page — "Renumber…" the selection; absent on the loose-frames page. */
+  onRenumber?: (ids: number[]) => void
 }) {
   const router = useRouter()
   const { toast } = useToast()
@@ -278,6 +281,19 @@ export function FrameGrid({
             {selected.size} selected
             {busy ? <Loader2 className="ml-2 inline h-3 w-3 animate-spin" /> : null}
           </span>
+
+          {onRenumber ? (
+            <Button
+              variant="outline"
+              className="min-h-11"
+              disabled={busy}
+              onClick={() => onRenumber(frames.filter((f) => selected.has(f.id)).map((f) => f.id))}
+              data-testid="bulk-renumber"
+            >
+              <ListOrdered className="mr-2 h-4 w-4" />
+              Renumber…
+            </Button>
+          ) : null}
 
           <Select
             value=""
