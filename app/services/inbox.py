@@ -347,6 +347,13 @@ def _take(
         db.add(image)
         db.flush()
         stored_sidecar = store_sidecar_bytes(rel_path, payload) if payload else None
+        # `delete_asset_file` is the router's, and its guards (never a linked
+        # file, never anything outside static/uploads) are the ones that must
+        # apply when a re-export through the inbox supersedes an older one. Same
+        # bargain as `importer`'s import of the frame-number parser: one rule,
+        # in the one place that has always owned it.
+        from ..routers.api import delete_asset_file
+
         negpy_metadata.ingest_image(
             db,
             image,
@@ -356,6 +363,7 @@ def _take(
             create_gear=create_gear,
             sidecar_path=stored_sidecar,
             edits_index=edits_index,
+            delete_file=delete_asset_file,
         )
         if image.film_roll_id is None:
             # Last resort, the folder rule applied to the name: `NEG-2026-0007_Frame005.ARW`

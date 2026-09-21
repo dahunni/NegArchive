@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import os
 
-__version__ = "0.10.1"
+__version__ = "0.11.0"
 
 
 def git_sha() -> str | None:

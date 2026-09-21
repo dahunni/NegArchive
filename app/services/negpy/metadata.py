@@ -33,12 +33,13 @@ import re
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from ...models import Camera, FilmKind, FilmRoll, FilmStock, ImageAsset, ImageType, Lens
+from .. import renditions as renditions_svc
 from .. import serials, settings_store
 from . import edits as edits_mod
 from . import naming
@@ -426,9 +427,14 @@ class IngestResult:
     #: True when the recipe came from NegPy's edits.db rather than from a sidecar.
     edits_match: bool = False
     sources: List[str] = field(default_factory=list)
+    #: M8: the id of the frame this file turned out to be a *rendition* of — a
+    #: NegPy export hung off the negative it was made from. None for a frame.
+    rendition_of: Optional[int] = None
 
     def __bool__(self) -> bool:
-        return bool(self.fields or self.roll_fields or self.sidecar or self.edits_match)
+        return bool(
+            self.fields or self.roll_fields or self.sidecar or self.edits_match or self.rendition_of
+        )
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -438,6 +444,7 @@ class IngestResult:
             "matched_roll_id": self.matched_roll_id,
             "sidecar": self.sidecar,
             "edits_match": self.edits_match,
+            "rendition_of": self.rendition_of,
             "sources": list(self.sources),
         }
 
@@ -579,6 +586,14 @@ def ingest_settings(db: Session) -> tuple[bool, bool]:
     return bool(settings_store.get(db, "negpy_ingest")), bool(settings_store.get(db, "negpy_create_gear"))
 
 
+def _pair_up(db: Session, image: ImageAsset, delete_file) -> Optional[int]:
+    """M8: hang a NegPy export off the negative it was made from, if it names one.
+
+    """
+    negative = renditions_svc.attach(db, image, delete_file=delete_file)
+    return negative.id if negative is not None else None
+
+
 def ingest_image(
     db: Session,
     image: ImageAsset,
@@ -589,6 +604,7 @@ def ingest_image(
     create_gear: Optional[bool] = None,
     sidecar_path: Optional[str | Path] = None,
     edits_index: Optional["edits_mod.EditsIndex"] = None,
+    delete_file: Optional[Callable[[str], None]] = None,
 ) -> IngestResult:
     """Read one frame's file and fill in what the archive does not know yet.
 
@@ -604,6 +620,12 @@ def ingest_image(
     if enabled is None:
         enabled = bool(settings_store.get(db, "negpy_ingest"))
     if not enabled:
+        # Still pair up an export with its negative. Reading NegPy's metadata is
+        # what the setting turns off; counting one frame twice is not a feature
+        # anybody switched on, so it stays fixed either way. Without the XMP all
+        # this has to go on is the filename and the record, which is enough for
+        # the shape NegPy's own preset produces.
+        result.rendition_of = _pair_up(db, image, delete_file)
         return result
     if create_gear is None:
         create_gear = bool(settings_store.get(db, "negpy_create_gear"))
@@ -640,4 +662,5 @@ def ingest_image(
     result.sidecar = attach_sidecar(image, sidecar_path)
     if result.sidecar is None and attach_edits(image, edits_index):
         result.edits_match = True
+    result.rendition_of = _pair_up(db, image, delete_file)
     return result

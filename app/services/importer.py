@@ -55,6 +55,7 @@ from ..models import FilmRoll, ImageAsset, ImageType, LibraryRoot
 # direction; `routers.api` does not import this module, so it is a straight edge,
 # not a cycle. If it ever needs to, both belong in a service of their own.)
 from ..routers.api import ALLOWED_EXTENSIONS, frame_number_from_filename
+from ..routers.api import delete_asset_file as _delete_asset_file
 from . import lifecycle, serials, share, smb
 from .hashing import safe_content_hash
 from .negpy import edits as negpy_edits
@@ -453,6 +454,10 @@ def _link_file(
         enabled=enabled,
         create_gear=create_gear,
         edits_index=edits_index,
+        # A linked file is never deleted by this — `delete_asset_file` refuses
+        # one. It is here for the case where a linked re-export supersedes a
+        # *managed* one that had been uploaded through the browser earlier.
+        delete_file=_delete_asset_file,
     )
     if ingested.sidecar or ingested.edits_match:
         result.sidecars_seen += 1

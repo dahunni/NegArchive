@@ -49,6 +49,20 @@ const RENDER_LABEL: Record<PreviewRender, string> = {
 }
 
 /**
+ * M8: what the toggle is actually switching between for *this* frame.
+ *
+ * A frame that came back from NegPy has two real files — the negative the
+ * scanner made and the positive NegPy exported from it — and the toggle picks
+ * one. Saying "the positive preview" there would be wrong twice over: it is not
+ * a preview and it is not this backend's approximation, it is the export.
+ */
+function renderLabel(render: PreviewRender, hasExport: boolean): string {
+  if (!hasExport) return RENDER_LABEL[render]
+  if (render === "raw") return "the negative as scanned"
+  return render === "auto" ? "NegPy's export" : "NegPy's export (the positive)"
+}
+
+/**
  * The frame viewer: previous/next, zoom, download and the metadata panel beside the
  * image. It replaces both the old image detail page and the old image edit page.
  */
@@ -186,6 +200,8 @@ export function FrameViewer({
 
   const roll = rolls.find((r) => r.id === frame.film_roll_id) ?? null
   const nextRender = RENDER_CYCLE[(RENDER_CYCLE.indexOf(render) + 1) % RENDER_CYCLE.length]
+  // M8: this frame has a real NegPy export behind it, not just an approximation.
+  const hasExport = Boolean(frame?.rendition)
 
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
@@ -205,7 +221,7 @@ export function FrameViewer({
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img
               key={`${frame.id}-${render}`}
-              src={getPreviewUrl(frame.id, 1600, render, previewVersion(frame))}
+              src={getPreviewUrl(frame.id, 1600, render, previewVersion(frame, render))}
               alt={frameLabel(frame)}
               data-testid="viewer-image"
               className="max-h-full max-w-full object-contain select-none"
@@ -287,13 +303,13 @@ export function FrameViewer({
               {/* M5: print the negative, or show the scan as it was stored. Not
                   offered for a frame that is already a positive (M6.1): there is
                   nothing to print, and the server would show it as is regardless. */}
-              {frame.positive !== true ? (
+              {frame.positive !== true || frame.rendition ? (
                 <Button
                   variant="ghost"
                   size="icon"
                   className="h-10 w-10"
-                  aria-label={`Showing ${RENDER_LABEL[render]}; switch to ${RENDER_LABEL[nextRender]}`}
-                  title={`Showing ${RENDER_LABEL[render]}; switch to ${RENDER_LABEL[nextRender]}`}
+                  aria-label={`Showing ${renderLabel(render, hasExport)}; switch to ${renderLabel(nextRender, hasExport)}`}
+                  title={`Showing ${renderLabel(render, hasExport)}; switch to ${renderLabel(nextRender, hasExport)}`}
                   data-testid="viewer-render-toggle"
                   onClick={() => chooseRender(nextRender)}
                 >
@@ -482,8 +498,29 @@ export function FrameViewer({
               {/* M5: what NegPy has done to this scan, and what the file itself
                   said when the archive read it. NegArchive does not interpret the
                   recipe — it reports that there is one, and summarises it. */}
-              {frame.negpy_summary || frame.capture_metadata ? (
+              {frame.negpy_summary || frame.capture_metadata || frame.rendition ? (
                 <div className="space-y-2 border-t border-border pt-3" data-testid="viewer-negpy">
+                  {/* M8: the frame's two files. The negative is the frame; the
+                      export is NegPy's positive of it, kept whole and reachable,
+                      but never counted as a frame of its own. */}
+                  {frame.rendition ? (
+                    <div className="flex flex-wrap items-center gap-2" data-testid="viewer-rendition">
+                      <Badge variant="secondary">NegPy export</Badge>
+                      <span className="type-meta break-all">
+                        {frame.rendition.original_filename ?? "the exported positive"}
+                        {frame.rendition.negpy_edited_at
+                          ? ` · ${formatDate(frame.rendition.negpy_edited_at)}`
+                          : ""}
+                      </span>
+                      <a
+                        href={getImageDownloadUrl({ id: frame.rendition.id } as Frame)}
+                        className="type-meta underline"
+                        data-testid="viewer-rendition-download"
+                      >
+                        Download
+                      </a>
+                    </div>
+                  ) : null}
                   {frame.negpy_summary ? (
                     <div className="flex flex-wrap items-center gap-2">
                       <Badge variant="secondary">Edited in NegPy</Badge>

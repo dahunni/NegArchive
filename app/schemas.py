@@ -176,6 +176,25 @@ class ImageUpdate(ImageWrite, Update):
     pass
 
 
+class RenditionOut(Model):
+    """M8: NegPy's export of a frame — a picture of the same piece of film.
+
+    Not a frame of its own: it is never counted, listed or numbered beside the
+    frame it hangs off. The frame's own ``preview_version`` already follows this
+    file, because the frame's preview URL serves it; ``negative_version`` is
+    there for a viewer that wants to show the negative as stored (``?render=raw``).
+    """
+
+    id: int
+    url: str
+    original_filename: Optional[str] = None
+    storage_mode: str
+    content_hash: Optional[str] = None
+    negpy_edited_at: Optional[datetime] = None
+    created_at: datetime
+    preview_version: Optional[str] = None
+
+
 class ImageOut(Model):
     id: int
     film_roll_id: Optional[int] = None
@@ -204,6 +223,11 @@ class ImageOut(Model):
     #: Changes whenever the preview would: the file, its NegPy edit, its polarity.
     #: Previews are served immutable, so the client puts this in the URL.
     preview_version: Optional[str] = None
+    #: M8: NegPy's export of this frame, when it has one. The frame's preview URL
+    #: serves this file; ``?render=raw`` serves the negative.
+    rendition: Optional[RenditionOut] = None
+    #: The token for the frame's *own* file, whatever is shown for it.
+    negative_version: Optional[str] = None
     created_at: datetime
 
 

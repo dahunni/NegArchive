@@ -1,4 +1,4 @@
-"""``scripts/repair_misfiled_rolls.py``: the rows the two NegPy bugs left behind.
+"""``scripts/repair_negpy_archive.py``: the rows the NegPy bugs left behind.
 
 The state rebuilt here is the one found on a live archive on 2026-09-21, after a
 single roll had been through the whole NegPy flow:
@@ -12,9 +12,11 @@ single roll had been through the whole NegPy flow:
   folder's* name, holding the same roll's 33 raw negatives
   (``NEG-2026-0001_Frame001.ARW``…), because the importer only read folder names.
 
-One roll, in the archive twice, with the frame numbers of one half all wrong. The
-script is run as a subprocess against a throwaway database, because that is how
-somebody with a damaged archive will use it.
+One roll, in the archive twice, with the frame numbers of one half all wrong —
+and, once the two halves are back together, every frame standing in it twice
+because the export was a row of its own. The script is run as a subprocess
+against a throwaway database, because that is how somebody with a damaged
+archive will use it.
 """
 
 import os
@@ -80,7 +82,7 @@ def build_broken_archive(url: str) -> dict:
 
 def repair(url: str, *extra: str) -> subprocess.CompletedProcess:
     return subprocess.run(
-        [sys.executable, os.path.join("scripts", "repair_misfiled_rolls.py"), *extra],
+        [sys.executable, os.path.join("scripts", "repair_negpy_archive.py"), *extra],
         cwd=REPO_ROOT,
         env=dict(os.environ, DATABASE_URL=url),
         capture_output=True,
@@ -97,7 +99,7 @@ def rows(url: str, sql: str, **params):
         engine.dispose()
 
 
-def test_a_dry_run_describes_both_repairs_and_writes_nothing():
+def test_a_dry_run_describes_every_repair_and_writes_nothing():
     with scratch_database() as url:
         ids = build_broken_archive(url)
         result = repair(url)
@@ -105,11 +107,13 @@ def test_a_dry_run_describes_both_repairs_and_writes_nothing():
 
         assert '"rolls": 33 frames name NEG-2026-0001' in result.stdout
         assert "2026→1" in result.stdout
+        assert "33 exports become renditions" in result.stdout
         assert "Dry run" in result.stdout
 
         still_there = rows(url, "SELECT film_roll_id, count(*) FROM image_assets GROUP BY 1")
         assert sorted(still_there) == sorted([(ids["real"], 33), (ids["invented"], 33)])
         assert rows(url, "SELECT count(*) FROM image_assets WHERE frame_number = 2026")[0][0] == 33
+        assert rows(url, "SELECT count(*) FROM image_assets WHERE derived_from_id IS NOT NULL") == [(0,)]
 
 
 def test_apply_puts_the_roll_back_together():
@@ -123,17 +127,31 @@ def test_apply_puts_the_roll_back_together():
         assert surviving == (ids["real"], "London 2026 + Birthday", "Nikon F5")
         assert rows(url, "SELECT count(*) FROM image_assets WHERE film_roll_id = :r", r=ids["real"]) == [(66,)]
 
+        # …but 33 *frames*: each export is now a rendition of its negative (M8).
+        assert rows(url, "SELECT count(*) FROM image_assets WHERE derived_from_id IS NULL") == [(33,)]
+        paired = rows(
+            url,
+            "SELECT n.original_filename, e.original_filename FROM image_assets e"
+            " JOIN image_assets n ON n.id = e.derived_from_id ORDER BY n.frame_number LIMIT 2",
+        )
+        assert paired == [
+            ("NEG-2026-0001_Frame001.ARW", "NEG_2026_0001_001.jpg"),
+            ("NEG-2026-0001_Frame002.ARW", "NEG_2026_0001_002.jpg"),
+        ]
+
         # And every frame number now comes from the name of its file.
         numbered = rows(
             url,
-            "SELECT frame_number, count(*) FROM image_assets GROUP BY 1 ORDER BY 1",
+            "SELECT frame_number, count(*) FROM image_assets WHERE derived_from_id IS NULL"
+            " GROUP BY 1 ORDER BY 1",
         )
-        assert numbered == [(n, 2) for n in range(1, 34)]
+        assert numbered == [(n, 1) for n in range(1, 34)]
 
         # Idempotent: a second run has nothing left to do.
         again = repair(url, "--apply")
         assert "No roll is holding another roll's frames." in again.stdout
         assert "Every frame number already matches its filename." in again.stdout
+        assert "Every NegPy export is already hung off its negative." in again.stdout
 
 
 def test_a_roll_somebody_has_typed_into_is_never_removed():
@@ -160,11 +178,37 @@ def test_a_roll_somebody_has_typed_into_is_never_removed():
         assert rows(url, "SELECT source_dir FROM film_rolls WHERE id = :i", i=ids["invented"]) == [(None,)]
 
 
-def test_no_renumber_leaves_the_frame_numbers_alone():
+def test_the_passes_can_be_turned_off_one_at_a_time():
+    """`--no-renumber --no-pair` merges the roll and changes nothing else."""
+    with scratch_database() as url:
+        ids = build_broken_archive(url)
+        assert repair(url, "--apply", "--no-renumber", "--no-pair").returncode == 0
+        assert rows(url, "SELECT count(*) FROM image_assets WHERE frame_number = 2026") == [(33,)]
+        assert rows(url, "SELECT count(*) FROM image_assets WHERE derived_from_id IS NOT NULL") == [(0,)]
+        assert rows(
+            url, "SELECT count(*) FROM image_assets WHERE film_roll_id = :r", r=ids["real"]
+        ) == [(66,)], "the merge still happened"
+
+
+def test_no_pair_leaves_the_exports_standing_as_frames():
+    with scratch_database() as url:
+        build_broken_archive(url)
+        assert repair(url, "--apply", "--no-pair").returncode == 0
+        assert rows(url, "SELECT count(*) FROM image_assets WHERE derived_from_id IS NOT NULL") == [(0,)]
+        # Renumbering still ran, so the exports are frames 1–33 beside the negatives.
+        assert rows(url, "SELECT count(*) FROM image_assets WHERE frame_number = 2026") == [(0,)]
+
+
+def test_a_rendition_takes_the_frame_number_of_its_frame():
+    """Even with `--no-renumber`: a rendition is not numbered on its own."""
     with scratch_database() as url:
         build_broken_archive(url)
         assert repair(url, "--apply", "--no-renumber").returncode == 0
-        assert rows(url, "SELECT count(*) FROM image_assets WHERE frame_number = 2026")[0][0] == 33
+        assert rows(
+            url,
+            "SELECT count(*) FROM image_assets e JOIN image_assets n ON n.id = e.derived_from_id"
+            " WHERE e.frame_number IS DISTINCT FROM n.frame_number",
+        ) == [(0,)]
 
 
 def test_a_healthy_archive_is_left_alone():
@@ -193,4 +237,5 @@ def test_a_healthy_archive_is_left_alone():
         result = repair(url, "--apply")
         assert "No roll is holding another roll's frames." in result.stdout
         assert "Every frame number already matches its filename." in result.stdout
+        assert "Every NegPy export is already hung off its negative." in result.stdout
         assert rows(url, "SELECT count(*) FROM film_rolls") == [(1,)]
