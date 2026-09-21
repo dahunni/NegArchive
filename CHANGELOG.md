@@ -6,6 +6,20 @@ you have not seen yet. Keep the format — `## [version] - YYYY-MM-DD`, then `##
 `### Changed`, `### Fixed` or `### Removed` with one `-` bullet per line — because that is what
 `app/services/changelog.py` parses.
 
+## [0.11.1] - 2026-09-21
+
+### Fixed
+- **The sleeve cover sheet uses the whole page, and an upright frame is no longer a
+  thumbnail.** Every cell on the sheet was locked to a landscape 3:2 box, so a frame shot
+  upright was drawn at less than half the width of the one beside it, matted against
+  near-black — on a roll where half the frames are portrait it read as a picture that had
+  failed to load. The strips now take the height the header leaves instead of stopping a third
+  of the way up the A4, a cell grows to square, and the matting is the paper rather than a
+  black bar. An upright frame comes off the printer at a little over twice the area.
+- A sleeve cell asks for a preview wide enough to print it. The width was fixed at 480 px,
+  which is right for a 35mm roll at six frames to a strip and soft on a 120 roll at three,
+  whose cells are twice as wide; it now follows the cell.
+
 ## [0.11.0] - 2026-09-21
 
 ### Changed

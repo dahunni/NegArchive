@@ -59,8 +59,34 @@
 .hr { border: 0; border-top: 0.4pt solid var(--rule); margin: 4mm 0; }
 
 /* The sleeve grid: rows are strips, cells are frames, the same geometry as the page behind it. */
-.strip-grid { display: grid; gap: 1.5mm; margin-top: 3mm; }
-.strip-row { display: grid; gap: 1.5mm; }
+.strip-grid {
+  /* Set per roll by the cover sheet: how many frames a strip holds. */
+  --cols: 6;
+  --strip-gap: 1.5mm;
+  --strip-label-w: 6mm;
+  /* The width one cell gets, from the sheet's own geometry: the paper less its
+     margins, the strip label and the gaps. All absolute, so a row can cap its
+     height against it (see .strip-row). */
+  --cell-w: calc(
+    (var(--paper-w) - 2 * var(--paper-margin) - var(--strip-label-w) - (var(--cols) - 1) * var(--strip-gap))
+    / var(--cols)
+  );
+  display: flex;
+  flex-direction: column;
+  gap: var(--strip-gap);
+  margin-top: 3mm;
+}
+.strip-row {
+  display: grid;
+  gap: var(--strip-gap);
+  /* Share out whatever the header leaves rather than sitting at 3:2 and leaving
+     a third of the page blank — a frame turned on its side was drawn less than
+     half width and read as an unrendered thumbnail. A square cell is the cap:
+     past it even an upright frame stops growing and the space is only margin. */
+  flex: 1 1 0;
+  min-height: 0;
+  max-height: var(--cell-w);
+}
 .frame-box {
   aspect-ratio: 3 / 2;
   border: 0.4pt solid var(--rule);
@@ -69,8 +95,11 @@
   background: #f4f4f4;
   overflow: hidden;
 }
+.strip-grid .frame-box { aspect-ratio: auto; min-height: 0; }
 .frame-box.empty { border-style: dashed; background: #fff; }
-.frame-box img { width: 100%; height: 100%; object-fit: contain; display: block; background: #222; }
+/* Letterboxing is the paper showing through, not a black bar: an upright frame
+   in a wider cell used to sit between two slabs of near-black. */
+.frame-box img { width: 100%; height: 100%; object-fit: contain; display: block; background: transparent; }
 .frame-box .num {
   position: absolute; left: 1mm; bottom: 0.6mm;
   font-size: 7.5pt; font-weight: 600; font-family: ui-monospace, Menlo, monospace;
@@ -81,7 +110,12 @@
   font-size: 6.5pt; color: var(--ink-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   background: rgba(255,255,255,0.85); padding: 0 1mm; border-radius: 0.6mm;
 }
-.strip-label { font-size: 7pt; color: var(--ink-muted); writing-mode: vertical-rl; transform: rotate(180deg); text-align: center; }
+.strip-label { font-size: 7pt; color: var(--ink-muted); writing-mode: vertical-rl; transform: rotate(180deg); text-align: center; overflow: hidden; }
+
+/* The cover sheet is a column: header, rule, then the grid taking the rest. */
+.sheet.sleeve { display: flex; flex-direction: column; padding-bottom: 13mm; }
+.sheet.sleeve > * { flex: 0 0 auto; }
+.sheet.sleeve > .strip-grid { flex: 1 1 auto; min-height: 0; }
 
 /* Labels cut by hand: a grid of fixed-size boxes with cut marks. */
 .label-sheet { display: grid; gap: 0; }
