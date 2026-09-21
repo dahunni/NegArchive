@@ -41,6 +41,7 @@ from ..models import (
     ImageType,
     Lens,
     Location,
+    needs_label,
 )
 from ..seed import seed_catalog
 from ..services import lifecycle, rawdecode, serials, settings_store
@@ -76,6 +77,10 @@ def uploads_root() -> str:
     return str(paths.uploads_dir())
 
 COVER_STRIP = 4  # thumbnails shown per row in the roll list
+
+# A truncated scan (a write that stopped early) still renders as far as it goes,
+# instead of failing the preview. Process-wide, set once at import.
+PILImageFile.LOAD_TRUNCATED_IMAGES = True
 
 # --- upload allowlist (R#18) --------------------------------------------------
 
@@ -172,7 +177,10 @@ def frame_number_from_filename(filename: Optional[str]) -> Optional[int]:
 
 
 def film_to_dict(
-    f: FilmRoll, image_count: Optional[int] = None, cover_image_ids: Optional[List[int]] = None
+    f: FilmRoll,
+    image_count: Optional[int] = None,
+    cover_image_ids: Optional[List[int]] = None,
+    cover_versions: Optional[List[str]] = None,
 ) -> dict:
     return {
         "id": f.id,
@@ -203,6 +211,9 @@ def film_to_dict(
         "image_count": int(image_count or 0),
         "cover_image_id": (cover_image_ids or [None])[0],
         "cover_image_ids": list(cover_image_ids or []),
+        # One preview_version per cover id (see image_to_dict): the roll list's
+        # thumbnails are served immutable and need the token in the URL too.
+        "cover_versions": list(cover_versions or []),
         # M4: the physical side. `effective_strips` is the roll's own list or the
         # sleeve layout's default, so the UI can place frame 14 on strip 3 without a
         # second request.
@@ -221,7 +232,8 @@ def film_to_dict(
         "sleeved_at": f.sleeved_at.isoformat() if f.sleeved_at else None,
         "loaded_camera_id": f.loaded_camera_id,
         "label_printed_at": f.label_printed_at.isoformat() if f.label_printed_at else None,
-        "needs_label": f.label_printed_at is None,
+        # Never printed, or moved since: the same question the print queue asks.
+        "needs_label": needs_label(f),
     }
 
 
@@ -241,10 +253,14 @@ def _effective_strips(f: FilmRoll) -> List[int]:
     return strips_svc.effective_strips(None, rows, per_row)
 
 
-def roll_summaries(
-    db: Session, film_ids: Optional[Iterable[int]] = None
-) -> Dict[int, Tuple[int, List[int]]]:
-    """``{film_roll_id: (scan count, first few image ids)}`` in two cheap queries."""
+#: What ``roll_summaries`` answers per roll, and the value for a roll with no scans.
+RollSummary = Tuple[int, List[int], List[str]]
+NO_SCANS: RollSummary = (0, [], [])
+
+
+def roll_summaries(db: Session, film_ids: Optional[Iterable[int]] = None) -> Dict[int, RollSummary]:
+    """``{film_roll_id: (scan count, first few image ids, their preview versions)}``
+    in two cheap queries."""
     ids = list(film_ids) if film_ids is not None else None
     if ids is not None and not ids:
         return {}
@@ -252,25 +268,26 @@ def roll_summaries(
     counts = db.query(ImageAsset.film_roll_id, func.count(ImageAsset.id)).filter(
         ImageAsset.type == ImageType.scan, ImageAsset.film_roll_id.isnot(None)
     )
-    covers = db.query(ImageAsset.film_roll_id, ImageAsset.id).filter(
-        ImageAsset.type == ImageType.scan, ImageAsset.film_roll_id.isnot(None)
-    )
+    covers = db.query(
+        ImageAsset.film_roll_id, ImageAsset.id, ImageAsset.path, ImageAsset.negpy_edited_at, ImageAsset.positive
+    ).filter(ImageAsset.type == ImageType.scan, ImageAsset.film_roll_id.isnot(None))
     if ids is not None:
         counts = counts.filter(ImageAsset.film_roll_id.in_(ids))
         covers = covers.filter(ImageAsset.film_roll_id.in_(ids))
 
-    summary: Dict[int, Tuple[int, List[int]]] = {
-        roll_id: (count, []) for roll_id, count in counts.group_by(ImageAsset.film_roll_id).all()
+    summary: Dict[int, RollSummary] = {
+        roll_id: (count, [], []) for roll_id, count in counts.group_by(ImageAsset.film_roll_id).all()
     }
     # First frames of each roll in display order: lowest frame number, then oldest row.
-    for roll_id, image_id in covers.order_by(
+    for roll_id, image_id, path, edited_at, positive in covers.order_by(
         ImageAsset.film_roll_id.asc(),
         ImageAsset.frame_number.asc().nulls_last(),
         ImageAsset.id.asc(),
     ).all():
-        count, strip = summary.setdefault(roll_id, (0, []))
+        _, strip, versions = summary.setdefault(roll_id, (0, [], []))
         if len(strip) < COVER_STRIP:
             strip.append(image_id)
+            versions.append(_preview_token(path, edited_at, positive))
     return summary
 
 
@@ -317,8 +334,26 @@ def image_to_dict(i: ImageAsset) -> dict:
         "negpy_render": negpy_recipe.report(i.negpy_recipe) if i.negpy_recipe else None,
         # M6.1: already a positive (true), a negative (false), or decide from the film (null).
         "positive": i.positive,
+        # Previews are served immutable for a year, so the URL has to change when
+        # the rendering would: the file's bytes, its NegPy edit, or its polarity.
+        "preview_version": preview_version(i),
         "created_at": i.created_at.isoformat(),
     }
+
+
+def preview_version(i: ImageAsset) -> Optional[str]:
+    """A short token that changes whenever this frame's preview would."""
+    return _preview_token(i.path, i.negpy_edited_at, i.positive)
+
+
+def _preview_token(path: Optional[str], negpy_edited_at: Optional[datetime], positive: Optional[bool]) -> str:
+    try:
+        mtime = os.stat(_abs(path or "")).st_mtime_ns
+    except OSError:
+        mtime = 0
+    edited = negpy_edited_at.isoformat() if negpy_edited_at else ""
+    payload = f"{mtime}:{edited}:{positive}"
+    return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:10]
 
 
 def catalog_url(path: Optional[str]) -> Optional[str]:
@@ -827,7 +862,7 @@ def list_films(
     films = query.all()
 
     summaries = roll_summaries(db, [f.id for f in films])
-    items = [film_to_dict(f, *summaries.get(f.id, (0, []))) for f in films]
+    items = [film_to_dict(f, *summaries.get(f.id, NO_SCANS)) for f in films]
     return _respond_page(items, total, page_limit, page_offset)
 
 
@@ -848,7 +883,9 @@ def get_film(film_id: int, db: Session = Depends(get_db)):
         .all()
     )
     return {
-        "film": film_to_dict(f, len(scans), [i.id for i in scans[:COVER_STRIP]]),
+        "film": film_to_dict(
+            f, len(scans), [i.id for i in scans[:COVER_STRIP]], [preview_version(i) for i in scans[:COVER_STRIP]]
+        ),
         "images": [image_to_dict(i) for i in scans],
         "contact_sheets": [image_to_dict(i) for i in contact_sheets],
     }
@@ -866,16 +903,17 @@ def create_film(body: schemas.FilmRollCreate, db: Session = Depends(get_db)):
         start = parse_date(body.start_date, "start_date")
         end = parse_date(body.end_date, "end_date")
         _check_date_order(start, end)
+        # The same cleaning as an update: "" and the UI's "None" placeholder are NULL.
         f = FilmRoll(
             title=title,
-            notes=body.notes,
+            notes=clean_name(body.notes),
             format=body.format,
             developer=clean_name(body.developer),
             development_dilution=clean_name(body.development_dilution),
             push_pull=clean_name(body.push_pull),
             development_time=clean_name(body.development_time),
-            building=body.building,
-            folder=body.folder,
+            building=clean_name(body.building),
+            folder=clean_name(body.folder),
             start_date=start,
             end_date=end,
         )
@@ -884,12 +922,7 @@ def create_film(body: schemas.FilmRollCreate, db: Session = Depends(get_db)):
         # the roll is being created "loaded" (from a camera) or as an archived roll.
         serials.assign(db, f, body.archive_serial)
         f.strips = strips_svc.parse_strips(body.strips)
-        if body.location_id not in (None, ""):
-            target = db.get(Location, parse_int(body.location_id, "location_id", minimum=1))
-            if target is None:
-                raise ApiError("unknown_location", "That location does not exist.", 404, "location_id")
-        else:
-            target = None
+        target = _location_arg(db, body.location_id)
         lifecycle.set_status(f, body.status or "back")
         db.add(f)
         db.flush()
@@ -900,12 +933,44 @@ def create_film(body: schemas.FilmRollCreate, db: Session = Depends(get_db)):
             if camera is None:
                 raise ApiError("unknown_camera", "That camera does not exist.", 404, "loaded_camera_id")
             lifecycle.load_into_camera(db, camera, f)
-        db.commit()
+        _commit_roll(db)
     except ApiError as exc:
         db.rollback()
         return from_exc(exc)
     db.refresh(f)
     return {"ok": True, "film": film_to_dict(f)}
+
+
+def _location_arg(db: Session, value) -> Optional[Location]:
+    """The location a roll body names, or None for ``null``, ``""`` and ``"none"``."""
+    if value in (None, "", "none"):
+        return None
+    target = db.get(Location, parse_int(value, "location_id", minimum=1))
+    if target is None:
+        raise ApiError("unknown_location", "That location does not exist.", 404, "location_id")
+    return target
+
+
+def _commit_roll(db: Session) -> None:
+    """Commit a roll, turning a lost serial race into a 409 rather than a 500.
+
+    ``serials.next_serial`` reads the highest number and adds one; two rolls
+    created in the same instant can both pick it, and the partial unique index
+    refuses the second. Rare, but a retry is the right answer and a 500 says
+    nothing about that.
+    """
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        if "archive_serial" in str(exc.orig or exc):
+            raise ApiError(
+                "duplicate_serial",
+                "Another roll took that serial at the same moment. Try again.",
+                409,
+                "archive_serial",
+            ) from exc
+        raise
 
 
 @router.put(
@@ -960,19 +1025,13 @@ def update_film(
                     raise ApiError("unknown_camera", "That camera does not exist.", 404, "loaded_camera_id")
                 lifecycle.load_into_camera(db, camera, f, force=force)
         if body.given("location_id"):
-            target = None
-            if body.location_id not in (None, "", "none"):
-                target = db.get(Location, parse_int(body.location_id, "location_id", minimum=1))
-                if target is None:
-                    raise ApiError("unknown_location", "That location does not exist.", 404, "location_id")
-            loc_svc.move_roll(db, f, target)
-        db.commit()
+            loc_svc.move_roll(db, f, _location_arg(db, body.location_id))
+        _commit_roll(db)
     except ApiError as exc:
         db.rollback()
         return from_exc(exc)
     db.refresh(f)
-    count, strip = roll_summaries(db, [f.id]).get(f.id, (0, []))
-    return {"ok": True, "film": film_to_dict(f, count, strip)}
+    return {"ok": True, "film": film_to_dict(f, *roll_summaries(db, [f.id]).get(f.id, NO_SCANS))}
 
 
 @router.post(
@@ -996,8 +1055,7 @@ def set_roll_status(film_id: int, body: schemas.StatusChange, db: Session = Depe
         db.rollback()
         return from_exc(exc)
     db.refresh(f)
-    count, strip = roll_summaries(db, [f.id]).get(f.id, (0, []))
-    return {"ok": True, "film": film_to_dict(f, count, strip)}
+    return {"ok": True, "film": film_to_dict(f, *roll_summaries(db, [f.id]).get(f.id, NO_SCANS))}
 
 
 @router.get("/work")
@@ -1015,11 +1073,17 @@ def work_lists(db: Session = Depends(get_db)):
         )
         total = db.query(func.count(FilmRoll.id)).filter(FilmRoll.status.in_(statuses)).scalar() or 0
         summaries = roll_summaries(db, [r.id for r in rolls])
-        out[key] = {"total": int(total), "items": [film_to_dict(r, *summaries.get(r.id, (0, []))) for r in rolls]}
+        out[key] = {"total": int(total), "items": [film_to_dict(r, *summaries.get(r.id, NO_SCANS)) for r in rolls]}
     unfiled = db.query(func.count(FilmRoll.id)).filter(FilmRoll.location_id.is_(None)).scalar() or 0
-    needs_label = db.query(func.count(FilmRoll.id)).filter(FilmRoll.label_printed_at.is_(None)).scalar() or 0
+    # The print queue's definition: never printed, or moved since the last print.
+    labels = (
+        db.query(func.count(FilmRoll.id))
+        .filter(or_(FilmRoll.label_printed_at.is_(None), FilmRoll.last_moved_at > FilmRoll.label_printed_at))
+        .scalar()
+        or 0
+    )
     out["unfiled"] = int(unfiled)
-    out["needs_label"] = int(needs_label)
+    out["needs_label"] = int(labels)
     return out
 
 
@@ -1305,6 +1369,7 @@ def get_image_preview(
     if render_settings is not None and render_settings.crop:
         decode_width = int(min(width / max(render_settings.crop[2], 0.05), 6000))
     cache_path = None
+    mtime_ns = None
     try:
         mtime_ns = os.stat(abs_path).st_mtime_ns
         cache_path = _cache_file(image_id, width, mtime_ns, token)
@@ -1312,6 +1377,16 @@ def get_image_preview(
             return _cached_response(cache_path, mode)
     except OSError:
         cache_path = None
+
+    def cache_for(served: str) -> Optional[str]:
+        """Where to cache what was *actually* rendered.
+
+        A print that fell back to the raw pixels is cached as raw, under the raw
+        token, so a later hit does not report it as a positive.
+        """
+        if mtime_ns is None:
+            return None
+        return _cache_file(image_id, width, mtime_ns, token if served == mode else "raw")
 
     # A camera raw first (NegPy's scan mode saves the camera's own file, M6.1).
     # Neither Pillow nor OpenCV can open one; LibRaw can. Decoded at preview width
@@ -1323,8 +1398,9 @@ def get_image_preview(
         except Exception:  # noqa: BLE001 - not a raw LibRaw knows; try the others
             data, served = None, mode
         if data is not None:
-            if cache_path:
-                _write_cache(cache_path, data)
+            target = cache_for(served)
+            if target:
+                _write_cache(target, data)
             return StreamingResponse(
                 io.BytesIO(data),
                 media_type="image/jpeg",
@@ -1335,8 +1411,6 @@ def get_image_preview(
                 },
             )
 
-    # Enable loading truncated images in Pillow
-    PILImageFile.LOAD_TRUNCATED_IMAGES = True
     # Primary path: Pillow
     try:
         img = PILImage.open(abs_path)
@@ -1360,8 +1434,9 @@ def get_image_preview(
         buf = io.BytesIO()
         img.save(buf, format="JPEG", quality=85)
         data = buf.getvalue()
-        if cache_path:
-            _write_cache(cache_path, data)
+        target = cache_for(served)
+        if target:
+            _write_cache(target, data)
         return StreamingResponse(
             io.BytesIO(data),
             media_type="image/jpeg",
@@ -1419,8 +1494,9 @@ def get_image_preview(
             if not ok:
                 raise ValueError("encode failed")
             data = enc.tobytes()
-            if cache_path:
-                _write_cache(cache_path, data)
+            target = cache_for(served)
+            if target:
+                _write_cache(target, data)
             return StreamingResponse(
                 io.BytesIO(data),
                 media_type="image/jpeg",
@@ -1454,9 +1530,10 @@ def download_image(image_id: int, db: Session = Depends(get_db)):
     if not os.path.exists(abs_path):
         return error_response("file_missing", "The file behind this frame is missing from disk.", 404)
     # R#7: the download gets the name the scanner gave it, not the UUID on disk.
-    filename = i.original_filename or os.path.basename(abs_path)
-    headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
-    return FileResponse(abs_path, media_type="application/octet-stream", headers=headers)
+    # `filename=` lets Starlette build the header: a name with a quote or a
+    # non-Latin-1 character (an en dash, an umlaut) used to be a 500.
+    filename = os.path.basename(i.original_filename or "") or os.path.basename(abs_path)
+    return FileResponse(abs_path, media_type="application/octet-stream", filename=filename)
 
 
 @router.post(
@@ -1465,11 +1542,19 @@ def download_image(image_id: int, db: Session = Depends(get_db)):
     responses={400: {"model": schemas.ErrorOut}, 404: {"model": schemas.ErrorOut}},
 )
 def create_image(body: schemas.ImageCreate, db: Session = Depends(get_db)):
-    """Register an image whose file is already somewhere NegArchive can read."""
+    """Register an image whose file is already somewhere NegArchive can read.
+
+    "Somewhere NegArchive can read" is checked, not trusted: a ``static/…`` path
+    has to resolve under ``DATA_DIR``, and an absolute path has to sit under one
+    of the library bases (``LIBRARY_ROOTS_ALLOW``, a mounted share, the archive's
+    own share) and is registered as a *linked* frame. Without that rule this
+    endpoint plus ``/download`` was a way to read any file on the machine.
+    """
     try:
         path = require_name(body.path, "path")
         image_type = _parse_image_type(body.type or "scan")
         film_roll_id = _require_roll(db, body.film_roll_id)
+        storage_mode = _registrable_path(path, body.storage_mode)
         i = _new_image(
             film_roll_id=film_roll_id,
             image_type=image_type,
@@ -1479,13 +1564,41 @@ def create_image(body: schemas.ImageCreate, db: Session = Depends(get_db)):
             notes=body.notes,
             capture_date=parse_date(body.capture_date, "capture_date"),
         )
-        if body.storage_mode:
-            i.storage_mode = body.storage_mode
+        i.storage_mode = storage_mode
+        if storage_mode == "linked":
+            i.source_path = str(paths.resolve(path))
     except ApiError as exc:
         return from_exc(exc)
     db.add(i)
     db.commit()
     return {"ok": True, "image": image_to_dict(i)}
+
+
+def _registrable_path(path: str, requested_mode: Optional[str]) -> str:
+    """The storage mode a client-supplied path may be registered with, or a 403."""
+    from ..services import importer  # noqa: PLC0415 - the importer imports this router
+
+    resolved = paths.resolve(path)
+    if resolved is None or not resolved.is_file():
+        raise ApiError("file_missing", "No file exists at that path.", 404, "path")
+    real = resolved.resolve()
+    try:
+        real.relative_to(paths.data_dir())
+        under_data = True
+    except ValueError:
+        under_data = False
+    if under_data and not os.path.isabs(str(path)):
+        return requested_mode or "managed"
+    for base in importer.allowed_bases():
+        if real == base or base in real.parents:
+            return "linked"
+    raise ApiError(
+        "path_not_allowed",
+        "That file is outside the folders NegArchive may link from. Upload it instead, "
+        "or add its folder to LIBRARY_ROOTS_ALLOW.",
+        403,
+        "path",
+    )
 
 
 def _parse_image_type(value) -> ImageType:
@@ -1868,16 +1981,45 @@ def bulk_upload_images(
     response_model=schemas.ImageListEnvelope,
     responses={400: {"model": schemas.ErrorOut}, 404: {"model": schemas.ErrorOut}},
 )
-def bulk_upload_zip(film_id: int, file: UploadFile = File(...), db: Session = Depends(get_db)):
+def bulk_upload_zip(
+    film_id: int,
+    file: UploadFile = File(...),
+    positive: Optional[str] = Form(None),
+    db: Session = Depends(get_db),
+):
+    """A ZIP of scans into one roll. ``positive`` means the same as on ``/images/bulk``.
+
+    Files the ZIP carries that were not taken — the wrong type, not an image, over
+    the size limit — come back in ``skipped``, by name, so a roll that arrives
+    with fewer frames than the ZIP held says why.
+    """
     f = db.get(FilmRoll, film_id)
     if not f:
         return not_found("Roll")
+    try:
+        is_positive = parse_positive(positive)
+    except ApiError as exc:
+        return from_exc(exc)
 
     # Write uploaded zip to temp then extract
     with tempfile.TemporaryDirectory() as tmpdir:
         zip_path = os.path.join(tmpdir, "roll.zip")
+        limit = max_zip_bytes()
+        written = 0
         with open(zip_path, "wb") as out:
-            shutil.copyfileobj(file.file, out)
+            while True:
+                chunk = file.file.read(1024 * 1024)
+                if not chunk:
+                    break
+                written += len(chunk)
+                if written > limit:
+                    return error_response(
+                        "file_too_large",
+                        f"The ZIP is larger than the {limit // (1024 * 1024)} MB limit (MAX_ZIP_UPLOAD_MB).",
+                        413,
+                        "file",
+                    )
+                out.write(chunk)
         try:
             with zipfile.ZipFile(zip_path) as zf:
                 zf.extractall(tmpdir)
@@ -1898,65 +2040,77 @@ def bulk_upload_zip(film_id: int, file: UploadFile = File(...), db: Session = De
                 if negpy_sidecar.is_sidecar_name(name):
                     sidecar_files[negpy_sidecar.image_stem(name).lower()] = os.path.join(root, name)
 
-        # Walk extracted files in name order, so a roll keeps its scanner order even
-        # when the filenames carry no frame number.
-        for root, _, names in os.walk(tmpdir):
-            for name in sorted(names):
-                src = os.path.join(root, name)
-                if src == zip_path or name.startswith(".") or negpy_sidecar.is_sidecar_name(name):
-                    continue
-                ext = os.path.splitext(name)[1].lower()
-                if ext not in ALLOWED_EXTENSIONS:
-                    skipped.append(name)
-                    continue
-                try:
-                    with open(src, "rb") as probe:
-                        if not _looks_like_image(probe.read(16)):
-                            skipped.append(name)
-                            continue
-                    if os.path.getsize(src) > max_upload_bytes():
+        try:
+            # Walk extracted files in name order, so a roll keeps its scanner order
+            # even when the filenames carry no frame number.
+            for root, _, names in os.walk(tmpdir):
+                for name in sorted(names):
+                    src = os.path.join(root, name)
+                    if src == zip_path or name.startswith(".") or negpy_sidecar.is_sidecar_name(name):
+                        continue
+                    ext = os.path.splitext(name)[1].lower()
+                    if ext not in ALLOWED_EXTENSIONS:
                         skipped.append(name)
                         continue
-                    rel_path = os.path.join("static", "uploads", "scans", f"{uuid4().hex}{ext}")
-                    shutil.copy(src, _abs(rel_path))
-                    img = _new_image(
-                        film_roll_id=film_id,
-                        image_type=ImageType.scan,
-                        rel_path=rel_path,
-                        original_filename=name,
-                    )
-                    db.add(img)
-                    created.append(img)
-                    sidecar_src = sidecar_files.get(os.path.splitext(name)[0].lower())
-                    stored_sidecar = None
-                    if sidecar_src:
-                        try:
-                            with open(sidecar_src, "rb") as handle:
-                                stored_sidecar = store_sidecar_bytes(
-                                    rel_path, handle.read(negpy_sidecar.MAX_SIDECAR_BYTES + 1)
-                                )
-                        except OSError:
-                            stored_sidecar = None
-                    negpy_metadata.ingest_image(
-                        db,
-                        img,
-                        roll=f,
-                        match_unassigned=False,
-                        enabled=ingest_on,
-                        create_gear=create_gear,
-                        sidecar_path=stored_sidecar,
-                        edits_index=edits_index,
-                    )
-                except OSError:
-                    skipped.append(name)
-                    continue
+                    try:
+                        with open(src, "rb") as probe:
+                            if not _looks_like_image(probe.read(16)):
+                                skipped.append(name)
+                                continue
+                        if os.path.getsize(src) > max_upload_bytes():
+                            skipped.append(name)
+                            continue
+                        rel_path = os.path.join("static", "uploads", "scans", f"{uuid4().hex}{ext}")
+                        shutil.copy(src, _abs(rel_path))
+                        img = _new_image(
+                            film_roll_id=film_id,
+                            image_type=ImageType.scan,
+                            rel_path=rel_path,
+                            original_filename=name,
+                            positive=is_positive,
+                        )
+                        db.add(img)
+                        created.append(img)
+                        sidecar_src = sidecar_files.get(os.path.splitext(name)[0].lower())
+                        stored_sidecar = None
+                        if sidecar_src:
+                            try:
+                                with open(sidecar_src, "rb") as handle:
+                                    stored_sidecar = store_sidecar_bytes(
+                                        rel_path, handle.read(negpy_sidecar.MAX_SIDECAR_BYTES + 1)
+                                    )
+                            except OSError:
+                                stored_sidecar = None
+                        negpy_metadata.ingest_image(
+                            db,
+                            img,
+                            roll=f,
+                            match_unassigned=False,
+                            enabled=ingest_on,
+                            create_gear=create_gear,
+                            sidecar_path=stored_sidecar,
+                            edits_index=edits_index,
+                        )
+                    except OSError:
+                        skipped.append(name)
+                        continue
+        finally:
+            if edits_index is not None:
+                edits_index.close()
 
-        if edits_index is not None:
-            edits_index.close()
         if created:
             lifecycle.touch_scanned(f)
         db.commit()
-        return {"ok": True, "images": [image_to_dict(i) for i in created]}
+        return {"ok": True, "images": [image_to_dict(i) for i in created], "skipped": sorted(skipped)}
+
+
+def max_zip_bytes() -> int:
+    """``MAX_ZIP_UPLOAD_MB`` (default 4096) as bytes: a whole roll, not one frame."""
+    try:
+        megabytes = int(os.getenv("MAX_ZIP_UPLOAD_MB", "4096"))
+    except ValueError:
+        megabytes = 4096
+    return max(1, megabytes) * 1024 * 1024
 
 
 # ---------------------------
@@ -2105,7 +2259,7 @@ def load_film(camera_id: int, body: schemas.LoadFilm, db: Session = Depends(get_
         title = (body.title or "").strip() or f"{stock.name if stock else 'Roll'} in {c.name}, {today.isoformat()}"
         f = FilmRoll(
             title=title,
-            notes=body.notes,
+            notes=clean_name(body.notes),
             format=body.format or (stock.format if stock else None),
             start_date=today,
             camera_id=c.id,
@@ -2119,7 +2273,7 @@ def load_film(camera_id: int, body: schemas.LoadFilm, db: Session = Depends(get_
         db.add(f)
         db.flush()
         lifecycle.load_into_camera(db, c, f, force=bool(body.force))
-        db.commit()
+        _commit_roll(db)
     except ApiError as exc:
         db.rollback()
         return from_exc(exc)

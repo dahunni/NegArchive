@@ -29,14 +29,34 @@ from typing import Optional
 #: What to set as NegPy's ``filename_pattern``. Shown in Settings and in the docs.
 FILENAME_PATTERN = "{{ roll }}_{{ frame|pad(3) }}_{{ film }}"
 
-#: ``<roll>_<frame>_<film>``. The roll part is non-greedy so the *first* numeric
-#: group that is followed by another underscore wins: ``NEG-2026-0007_012_HP5``
-#: gives roll ``NEG-2026-0007`` and frame 12, never roll ``NEG`` and frame 2026.
-_PRESET = re.compile(r"^(?P<roll>\S.*?)_(?P<frame>\d{1,4})_(?P<film>\S.*)$")
+#: Every ``_<1–4 digits>_`` boundary in a stem is a candidate frame number; the
+#: roll is what comes before it and the film what comes after.
+_BOUNDARY = re.compile(r"_(?P<frame>\d{1,4})_")
 
 #: ``<roll>_<frame>`` with no film part, which is what ``{{ roll }}_{{ frame|pad(3) }}``
 #: produces and what most scanner software writes anyway.
 _ROLL_FRAME = re.compile(r"^(?P<roll>\S.*?)_(?P<frame>\d{1,4})$")
+
+
+def _split_preset(stem: str) -> Optional[tuple[str, int, str]]:
+    """``(roll, frame, film)`` for ``<roll>_<frame>_<film>``, or None.
+
+    A roll name may itself carry an underscore and a number (``Trip_2024_Kyoto``),
+    and so may a film (``Kodak_400_TX``), so the frame is not simply the first or
+    the last numeric group. The preset pads the frame to three digits, so a
+    three-digit group is preferred; among equals, the first wins — the roll is
+    the part people write by hand, the film comes from a catalog.
+    """
+    candidates = []
+    for match in _BOUNDARY.finditer(stem):
+        roll, film = stem[: match.start()].strip(), stem[match.end() :].strip()
+        if roll and film:
+            candidates.append((match.group("frame"), roll, film))
+    if not candidates:
+        return None
+    preferred = [c for c in candidates if len(c[0]) == 3] or candidates
+    digits, roll, film = preferred[0]
+    return roll, int(digits), film
 
 
 @dataclass(frozen=True)
@@ -64,13 +84,10 @@ def parse(filename: Optional[str]) -> ParsedName:
     if not stem:
         return ParsedName()
 
-    match = _PRESET.match(stem)
-    if match:
-        return ParsedName(
-            roll=match.group("roll").strip() or None,
-            frame_number=int(match.group("frame")),
-            film=match.group("film").strip() or None,
-        )
+    preset = _split_preset(stem)
+    if preset:
+        roll, frame, film = preset
+        return ParsedName(roll=roll or None, frame_number=frame, film=film or None)
     match = _ROLL_FRAME.match(stem)
     if match:
         return ParsedName(roll=match.group("roll").strip() or None, frame_number=int(match.group("frame")))

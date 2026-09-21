@@ -56,7 +56,12 @@ def _sweep_once() -> Optional[str]:
         if not roots:
             return "; ".join(changed) if changed else None
         for root in roots:
-            result = importer.scan_root(db, root)
+            try:
+                result = importer.scan_root(db, root)
+            except Exception:  # noqa: BLE001 - one bad root must not skip the others
+                log.exception("scan of %s failed", root.path)
+                db.rollback()
+                continue
             if result.frames_added or result.rolls_created or result.frames_rehomed:
                 changed.append(f"{root.path}: {result.summary()}")
         return "; ".join(changed) if changed else None

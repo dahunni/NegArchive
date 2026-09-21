@@ -33,6 +33,14 @@ interface DeleteConfirmationDialogProps {
   /** What the files belong to, for the checkbox's explanation. */
   fileNoun?: string
   confirmLabel?: string
+  /**
+   * Radix closes the dialog on the confirm button by default. Set this false when
+   * the request can come back with something to say — a 409 "still in use", say —
+   * and the caller closes the dialog itself once it knows (R#66).
+   */
+  closeOnConfirm?: boolean
+  /** An answer from the last attempt, shown in the dialog that asked. */
+  notice?: string | null
 }
 
 export function DeleteConfirmationDialog({
@@ -44,6 +52,8 @@ export function DeleteConfirmationDialog({
   offerKeepFiles = false,
   fileNoun = "scan files",
   confirmLabel = "Delete",
+  closeOnConfirm = true,
+  notice = null,
 }: DeleteConfirmationDialogProps) {
   const [keepFiles, setKeepFiles] = useState(false)
 
@@ -81,10 +91,19 @@ export function DeleteConfirmationDialog({
           </div>
         ) : null}
 
+        {notice ? (
+          <p role="alert" className="type-body text-destructive" data-testid="delete-notice">
+            {notice}
+          </p>
+        ) : null}
+
         <AlertDialogFooter>
           <AlertDialogCancel>Cancel</AlertDialogCancel>
           <AlertDialogAction
-            onClick={() => onConfirm({ keepFiles })}
+            onClick={(event) => {
+              if (!closeOnConfirm) event.preventDefault()
+              onConfirm({ keepFiles })
+            }}
             className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
           >
             {confirmLabel}

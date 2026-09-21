@@ -2,7 +2,7 @@
 
 import Link from "next/link"
 import { useRouter } from "next/navigation"
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { CheckCircle2, Loader2, Printer } from "lucide-react"
 
 import {
@@ -40,6 +40,14 @@ export function PrintQueueView({ queue: firstPage }: { queue: Queue }) {
   const [loading, setLoading] = useState(false)
   const [selected, setSelected] = useState<Set<number>>(() => new Set())
   const [marking, setMarking] = useState(false)
+
+  // The server component is the source of truth: a router.refresh() after "Mark
+  // printed" hands down a new first page, and the list has to follow it (R#67).
+  useEffect(() => {
+    setItems(firstPage.items)
+    setTotal(firstPage.total)
+    setHasMore(Boolean(firstPage.has_more))
+  }, [firstPage])
 
   const ids = items.filter((item) => selected.has(item.id)).map((item) => item.id)
   const allShownSelected = items.length > 0 && items.every((item) => selected.has(item.id))
@@ -82,6 +90,10 @@ export function PrintQueueView({ queue: firstPage }: { queue: Queue }) {
         title: `${pluralize(count, "label")} marked printed`,
         description: "Their serials are frozen now; a move puts them back in the queue.",
       })
+      // Off the list at once; the refresh below confirms it a moment later.
+      const marked = new Set(ids)
+      setItems((current) => current.filter((item) => !marked.has(item.id)))
+      setTotal((current) => Math.max(0, current - count))
       setSelected(new Set())
       router.refresh()
     } catch (error) {

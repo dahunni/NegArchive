@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import ipaddress
 import os
+import re
 import socket
 from typing import TYPE_CHECKING, List, Optional
 from urllib.parse import urlsplit
@@ -90,10 +91,14 @@ def public_base_url(db: Optional["Session"] = None) -> Optional[str]:
 
 
 def normalize_base_url(value: str) -> str:
+    """``archive.local`` → ``http://archive.local:8021``; a URL, or a host that
+    already carries a port (``archive.local:8080``, ``[::1]:8080``), is kept."""
     text = value.strip().rstrip("/")
     if "://" in text:
         return text
-    return f"http://{text}:{ui_port()}"
+    host = text.split("/", 1)[0]
+    has_port = bool(re.match(r"^(\[[^\]]+\]|[^:]+):\d+$", host))
+    return f"http://{text}" if has_port else f"http://{text}:{ui_port()}"
 
 
 def ui_host(db: Optional["Session"] = None) -> str | None:

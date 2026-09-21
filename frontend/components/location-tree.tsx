@@ -2,7 +2,7 @@
 
 import Link from "next/link"
 import { useRouter } from "next/navigation"
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { ChevronDown, ChevronRight, MapPin, Pencil, Plus, Printer, QrCode, Trash2 } from "lucide-react"
 
 import {
@@ -54,6 +54,20 @@ export function LocationTree({
   const [dialog, setDialog] = useState<{ item: Location | null; parentId: number | null } | null>(null)
   const [pendingDelete, setPendingDelete] = useState<Location | null>(null)
   const [inUse, setInUse] = useState<string | null>(null)
+
+  // A node added after the first render — a new shelf, a binder's fresh pages —
+  // arrives collapsed otherwise, because the expanded set was seeded once (R#97).
+  const seen = useRef<Set<number> | null>(null)
+  if (seen.current === null) seen.current = new Set(initial.map((n) => n.id))
+  useEffect(() => {
+    const known = seen.current
+    if (!known) return
+    const fresh = initial.filter((node) => !known.has(node.id))
+    if (fresh.length === 0) return
+    for (const node of fresh) known.add(node.id)
+    const open = fresh.filter((node) => node.kind !== "binder").map((node) => node.id)
+    if (open.length > 0) setExpanded((current) => new Set([...current, ...open]))
+  }, [initial])
 
   const children = useMemo(() => {
     const map = new Map<number | null, Location[]>()
@@ -141,7 +155,7 @@ export function LocationTree({
                   <Button variant="ghost" size="icon" className="h-9 w-9" aria-label={`Edit ${node.name}`} onClick={() => setDialog({ item: node, parentId: null })}>
                     <Pencil className="h-4 w-4" />
                   </Button>
-                  <Button variant="ghost" size="icon" className="h-9 w-9" aria-label={`Delete ${node.name}`} onClick={() => setPendingDelete(node)}>
+                  <Button variant="ghost" size="icon" className="h-9 w-9" aria-label={`Delete ${node.name}`} onClick={() => { setInUse(null); setPendingDelete(node) }}>
                     <Trash2 className="h-4 w-4" />
                   </Button>
                 </div>
@@ -226,6 +240,8 @@ export function LocationTree({
         onSaved={() => router.refresh()}
       />
 
+      {/* Open until the request answers (R#66), so a 409 "still in use" lands in
+          the dialog that asked rather than arming "Delete anyway" for the next node. */}
       <DeleteConfirmationDialog
         open={pendingDelete !== null}
         onOpenChange={(open) => {
@@ -234,10 +250,12 @@ export function LocationTree({
             setInUse(null)
           }
         }}
+        closeOnConfirm={false}
         onConfirm={() => void remove(inUse !== null)}
         confirmLabel={inUse ? "Delete anyway" : "Delete"}
         title="Delete this location?"
-        description={inUse ?? `“${pendingDelete?.path ?? pendingDelete?.label}” and everything inside it is removed. Rolls filed there become unfiled; nothing else is touched.`}
+        description={`“${pendingDelete?.path ?? pendingDelete?.label}” and everything inside it is removed. Rolls filed there become unfiled; nothing else is touched.`}
+        notice={inUse}
       />
     </div>
   )

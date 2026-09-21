@@ -151,10 +151,17 @@ export function RollWorkspace({
               "No gear recorded"}
           </p>
           <p className="type-meta mt-1">
-            {formatDateRange(film.start_date, film.end_date)} · {pluralize(frames.length, "frame")} ·{" "}
-            {film.effective_strips.length} strips of {film.effective_strips[0]}
-            {film.effective_strips.some((n) => n !== film.effective_strips[0]) ? " (mixed)" : ""} · {capacity} frames on the
-            sleeve
+            {formatDateRange(film.start_date, film.end_date)} · {pluralize(frames.length, "frame")}
+            {film.effective_strips.length > 0 ? (
+              <>
+                {" · "}
+                {film.effective_strips.length} strips of {film.effective_strips[0]}
+                {film.effective_strips.some((n) => n !== film.effective_strips[0]) ? " (mixed)" : ""} · {capacity}{" "}
+                frames on the sleeve
+              </>
+            ) : (
+              " · no sleeve layout"
+            )}
           </p>
           {/* M5: how it was developed, when anybody (or a NegPy export) said so. */}
           {developmentLine(film) ? (
@@ -201,7 +208,7 @@ export function RollWorkspace({
       {/* M6.1: scan this roll with NegPy's camera-scan mode; the raws are filed here as they land. */}
       <NegpyScanCard
         rollId={film.id}
-        status={film.status ?? ""}
+        status={film.status}
         frameCount={frames.length}
         onScanned={() => router.refresh()}
       />

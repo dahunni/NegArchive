@@ -1,4 +1,4 @@
-import { getPreviewUrl } from "@/lib/api"
+import { getPreviewUrl, previewVersion } from "@/lib/api"
 import { idsFromParam, loadRolls, publicBase, rollCodes } from "@/components/print/data"
 import { Codes, PrintFrame } from "@/components/print/print-frame"
 import { formatDateRange } from "@/lib/format"
@@ -69,7 +69,7 @@ export default async function CardsPage({ searchParams }: { searchParams: Promis
                     {frames.slice(0, 36).map((frame) => (
                       <div key={frame.id} className="frame-box" style={{ borderRadius: "0.5mm" }}>
                         {/* eslint-disable-next-line @next/next/no-img-element */}
-                        <img src={getPreviewUrl(frame.id, 240)} alt="" />
+                        <img src={getPreviewUrl(frame.id, 240, undefined, previewVersion(frame))} alt="" />
                       </div>
                     ))}
                   </div>

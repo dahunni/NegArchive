@@ -29,7 +29,9 @@ if config.config_file_name is not None:
 target_metadata = Base.metadata
 
 # `database_url()` raises DatabaseNotConfigured with an explanation when unset.
-config.set_main_option("sqlalchemy.url", database_url())
+# ConfigParser interpolates `%`, so a URL-encoded password (`p%40ss`) has to be
+# escaped or `alembic upgrade` dies with "invalid interpolation syntax".
+config.set_main_option("sqlalchemy.url", database_url().replace("%", "%%"))
 
 
 def run_migrations_offline() -> None:

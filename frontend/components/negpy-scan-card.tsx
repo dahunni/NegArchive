@@ -2,10 +2,11 @@
 
 import { useCallback, useEffect, useState } from "react"
 import Link from "next/link"
-import { Camera, Check, Copy, Loader2, RefreshCw } from "lucide-react"
+import { Camera, Loader2, RefreshCw } from "lucide-react"
 
-import { type ScanPlan, errorMessage, getNegpyScanPlan, scanLibraryRoot } from "@/lib/api"
+import { type RollStatus, type ScanPlan, errorMessage, getNegpyScanPlan, scanLibraryRoot } from "@/lib/api"
 import { Button } from "@/components/ui/button"
+import { CopyValue } from "@/components/copy-value"
 import { useToast } from "@/hooks/use-toast"
 
 /**
@@ -24,7 +25,7 @@ export function NegpyScanCard({
   onScanned,
 }: {
   rollId: number
-  status: string
+  status: RollStatus
   frameCount: number
   /** Called after a manual check found frames, so the page can reload them. */
   onScanned?: () => void
@@ -56,22 +57,32 @@ export function NegpyScanCard({
     try {
       const result = await scanLibraryRoot(plan.root_id)
       const found = result.frames_added + result.frames_rehomed
+      // "Check now" sweeps the whole root, not just this roll's folder: frames can
+      // have landed on any roll, so only say "this roll" when the sweep says so.
+      const onThisRoll = result.roll_ids.includes(rollId)
       toast({
-        title: found > 0 ? `${found} frame${found === 1 ? "" : "s"} arrived` : "Nothing new on the share yet",
+        title:
+          found === 0
+            ? "Nothing new on the share yet"
+            : onThisRoll
+              ? `${found} frame${found === 1 ? "" : "s"} arrived`
+              : `${found} frame${found === 1 ? "" : "s"} filed elsewhere`,
         description:
-          found > 0
-            ? "Filed onto this roll."
-            : plan.example_file
+          found === 0
+            ? plan.example_file
               ? `Looking for ${plan.folder} — the first file will be ${plan.example_file}.`
-              : undefined,
+              : undefined
+            : onThisRoll
+              ? "Filed onto this roll."
+              : result.summary,
       })
-      if (found > 0) onScanned?.()
+      if (onThisRoll) onScanned?.()
     } catch (error) {
       toast({ title: "Could not check the share", description: errorMessage(error), variant: "destructive" })
     } finally {
       setChecking(false)
     }
-  }, [plan, toast, onScanned])
+  }, [plan, rollId, toast, onScanned])
 
   if (!plan) return null
 
@@ -125,12 +136,12 @@ export function NegpyScanCard({
           <ol className="min-w-0 space-y-3 type-body">
             <li className="min-w-0">
               <span className="type-meta uppercase tracking-wide">1 · In NegPy → Live View &amp; Scan, set the output folder</span>
-              <PathRow value={outputForMac} />
+              <CopyValue value={outputForMac} label="the output folder" />
             </li>
             <li className="min-w-0">
               <span className="type-meta uppercase tracking-wide">2 · Name the roll after this one</span>
               {plan.roll_name ? (
-                <PathRow value={plan.roll_name} />
+                <CopyValue value={plan.roll_name} label="the roll name" />
               ) : (
                 <p className="mt-1 type-meta">This roll has no serial yet — give it one above first.</p>
               )}
@@ -153,35 +164,5 @@ export function NegpyScanCard({
         </div>
       ) : null}
     </section>
-  )
-}
-
-/** A value with a copy button: it has to be pasted into another application. */
-function PathRow({ value }: { value: string }) {
-  const [copied, setCopied] = useState(false)
-  return (
-    <div className="mt-1 flex min-w-0 items-center gap-2">
-      <code className="min-w-0 flex-1 truncate rounded bg-muted px-2 py-1.5 type-numeric text-sm" title={value}>
-        {value}
-      </code>
-      <Button
-        type="button"
-        variant="outline"
-        size="sm"
-        className="min-h-9 shrink-0"
-        onClick={async () => {
-          try {
-            await navigator.clipboard.writeText(value)
-            setCopied(true)
-            setTimeout(() => setCopied(false), 1500)
-          } catch {
-            /* clipboard blocked: the value is on screen and selectable */
-          }
-        }}
-        aria-label={`Copy ${value}`}
-      >
-        {copied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
-      </Button>
-    </div>
   )
 }

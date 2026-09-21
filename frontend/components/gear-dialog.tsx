@@ -116,42 +116,85 @@ export function GearDialog({
   const [file, setFile] = useState<File | null>(null)
   const [errors, setErrors] = useState<Record<string, string>>({})
   const [saving, setSaving] = useState(false)
+  /**
+   * R#77: the entry was created and only its photo failed. The dialog stays open so
+   * the photo can be picked again, and this is what stops a second attempt from
+   * creating a second camera — from here on it is an edit.
+   */
+  const [createdId, setCreatedId] = useState<number | null>(null)
+  const existingId = item?.id ?? createdId
 
   useEffect(() => {
     if (!open) return
     setDraft(toDraft(kind, item))
     setFile(null)
     setErrors({})
+    setCreatedId(null)
   }, [open, kind, item])
 
+  const uploadImage: Record<GearKind, (id: number, file: File) => Promise<unknown>> = {
+    camera: uploadCameraImage,
+    lens: uploadLensImage,
+    filmstock: uploadFilmstockImage,
+  }
+
   const save = async () => {
+    const typedIso = draft.iso.trim()
+    const iso = typedIso === "" ? null : Number(typedIso)
+    // `Number("400 ISO")` is NaN, and sending it as null would quietly clear the
+    // ISO the stock already has (R#74). Say so on the field and do not submit.
+    if (iso !== null && (!Number.isFinite(iso) || iso <= 0)) {
+      setErrors({ iso: "The ISO has to be a number." })
+      return
+    }
     setSaving(true)
     setErrors({})
     try {
       let savedId: number
       if (kind === "camera") {
         const payload = { name: draft.name, mount: draft.mount || null, notes: draft.notes || null }
-        savedId = item ? (await updateCamera(item.id, payload)).id : (await createCamera(payload)).id
-        if (file) await uploadCameraImage(savedId, file)
+        savedId = existingId ? (await updateCamera(existingId, payload)).id : (await createCamera(payload)).id
       } else if (kind === "lens") {
         const payload = { name: draft.name, mount: draft.mount || null, notes: draft.notes || null }
-        savedId = item ? (await updateLens(item.id, payload)).id : (await createLens(payload)).id
-        if (file) await uploadLensImage(savedId, file)
+        savedId = existingId ? (await updateLens(existingId, payload)).id : (await createLens(payload)).id
       } else {
         const payload = {
           name: draft.name,
           manufacturer: draft.manufacturer || null,
           format: draft.format || null,
-          iso: draft.iso === "" ? null : Number(draft.iso),
+          iso,
           kind: draft.kind,
           expired: draft.expired,
           expiration_date: draft.expiration_date || null,
         } as Partial<Filmstock>
-        savedId = item ? (await updateFilmstock(item.id, payload)).id : (await createFilmstock(payload)).id
-        if (file) await uploadFilmstockImage(savedId, file)
+        savedId = existingId
+          ? (await updateFilmstock(existingId, payload)).id
+          : (await createFilmstock(payload)).id
       }
-      toast({ title: `${LABELS[kind]} ${item ? "saved" : "added"}` })
+      // From here the entry exists, whatever the photo does (R#77): the upload is a
+      // second request, and losing it must not look like losing the camera.
+      const verb = existingId ? "saved" : "added"
+      setCreatedId(savedId)
+      let uploadFailure: unknown = null
+      if (file) {
+        try {
+          await uploadImage[kind](savedId, file)
+        } catch (error) {
+          uploadFailure = error
+        }
+      }
       router.refresh()
+      if (uploadFailure) {
+        // The dialog stays open — on the saved entry now, with the file still
+        // picked — so the photo can be tried again without creating a duplicate.
+        toast({
+          title: `${LABELS[kind]} ${verb}, but the photo was not uploaded`,
+          description: errorMessage(uploadFailure),
+          variant: "destructive",
+        })
+        return
+      }
+      toast({ title: `${LABELS[kind]} ${verb}` })
       onOpenChange(false)
     } catch (error) {
       const field = error instanceof ApiError ? fieldFor(error) : null
@@ -170,7 +213,7 @@ export function GearDialog({
       <DialogContent className="max-h-[92vh] overflow-y-auto" data-testid="gear-dialog">
         <DialogHeader>
           <DialogTitle>
-            {item ? `Edit ${LABELS[kind].toLowerCase()}` : `New ${LABELS[kind].toLowerCase()}`}
+            {existingId ? `Edit ${LABELS[kind].toLowerCase()}` : `New ${LABELS[kind].toLowerCase()}`}
           </DialogTitle>
           <DialogDescription>Part of the gear catalog rolls can refer to.</DialogDescription>
         </DialogHeader>

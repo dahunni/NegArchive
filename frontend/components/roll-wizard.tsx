@@ -147,8 +147,7 @@ export function RollWizard({
         if (field) {
           setErrors({ [field]: error.message })
           setStep(stepForField(field)) // back to the step that owns it
-          setSaving(false)
-          return
+          return // the `finally` below clears `saving`
         }
       }
       toast({

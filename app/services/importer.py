@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import os
 import re
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -73,8 +74,9 @@ SKIP_DIRS = {".git", "__pycache__", ".Trash", "@eaDir", ".DS_Store", "node_modul
 # ---------------------------------------------------------------------------
 
 
-#: "2024-0007", "NEG-2024-0007", "AB-2024-12". A bare year is not a serial.
-_SERIAL = re.compile(r"^(?:[A-Za-z]{1,6}-)?\d{4}-\d{2,6}$")
+#: "2024-0007", "NEG-2024-0007", "AB-2024-12": the same grammar as
+#: :mod:`app.services.serials`, with the prefix optional. A bare year is not a serial.
+_SERIAL = re.compile(r"^(?:[A-Za-z0-9]{1,10}-)?\d{4}-\d{1,6}$")
 
 
 def parse_folder_name(name: str) -> tuple[str, Optional[str]]:
@@ -100,13 +102,13 @@ def parse_folder_name(name: str) -> tuple[str, Optional[str]]:
 
 
 def allowed_bases() -> list[Path]:
-    """Directories a library root may live under, from ``LIBRARY_ROOTS_ALLOW``.
+    """Directories a library root may live under.
 
-    Colon-separated (``os.pathsep``), empty by default — plus the network share,
-    when one is mounted (M6). With nothing configured and nothing mounted, **no**
-    folder can be registered. The API is on a LAN with no authentication by
-    default, and "POST me any path" would otherwise let a visitor enumerate and
-    read the whole filesystem through ``/download``.
+    ``LIBRARY_ROOTS_ALLOW`` (colon-separated, ``os.pathsep``), plus the network
+    share when one is mounted (M6), plus — always — the archive's own share
+    (M6.2). Nothing outside these can be registered: the API is on a LAN with no
+    authentication by default, and "POST me any path" would otherwise let a
+    visitor enumerate and read the whole filesystem through ``/download``.
     """
     raw = os.getenv("LIBRARY_ROOTS_ALLOW", "")
     bases = []
@@ -130,13 +132,6 @@ def allowed_bases() -> list[Path]:
 def validate_root(path: str) -> Path:
     """Resolve ``path`` and check it is an existing directory under an allowed base."""
     bases = allowed_bases()
-    if not bases:
-        raise ApiError(
-            "library_roots_disabled",
-            "Import by reference is off. Set LIBRARY_ROOTS_ALLOW to the folder(s) "
-            "NegArchive may link files from, then restart.",
-            403,
-        )
     if not str(path or "").strip():
         raise ApiError("invalid_path", "A folder path is required.")
     try:
@@ -150,9 +145,9 @@ def validate_root(path: str) -> Path:
             return candidate
     raise ApiError(
         "path_not_allowed",
-        "That folder is outside LIBRARY_ROOTS_ALLOW: "
+        "That folder is outside the folders NegArchive may link from ("
         + ", ".join(str(b) for b in bases)
-        + ".",
+        + "). Add its parent to LIBRARY_ROOTS_ALLOW and restart.",
         403,
     )
 
@@ -368,8 +363,19 @@ def _link_file(
     lifecycle.touch_scanned(roll)
 
 
+#: One scan at a time. The watcher's thread and a manual ``POST /api/library/scan``
+#: could otherwise both create a roll for the same new folder, and the loser would
+#: die on the ``source_dir`` unique index.
+_SCAN_LOCK = threading.Lock()
+
+
 def scan_root(db: Session, root: LibraryRoot, commit: bool = True) -> ScanResult:
     """Walk one registered root and link everything under it."""
+    with _SCAN_LOCK:
+        return _scan_root_locked(db, root, commit)
+
+
+def _scan_root_locked(db: Session, root: LibraryRoot, commit: bool) -> ScanResult:
     result = ScanResult()
     ingest = negpy_metadata.ingest_settings(db)  # M5, read once per sweep
     base = Path(root.path)
@@ -383,27 +389,28 @@ def scan_root(db: Session, root: LibraryRoot, commit: bool = True) -> ScanResult
     # NegPy's edits.db, opened once for the whole sweep — after the check above, so
     # an unreachable share does not leave a connection open behind the early return.
     edits_index = negpy_edits.open_index(db) if ingest[0] else None
+    try:
+        folders: list[Path] = []
+        loose = _image_files(base)
+        if loose:
+            # Files dropped straight into the root still belong somewhere.
+            folders.append(base)
+        folders.extend(_subfolders(base))
 
-    folders: list[Path] = []
-    loose = _image_files(base)
-    if loose:
-        # Files dropped straight into the root still belong somewhere.
-        folders.append(base)
-    folders.extend(_subfolders(base))
+        for folder in folders:
+            files = _image_files(folder)
+            if not files and folder != base:
+                # An empty subfolder is a roll the scanner has not filled yet: the
+                # watch folder is supposed to show it as a draft immediately.
+                _roll_for_folder(db, folder, result)
+                continue
+            roll = _roll_for_folder(db, folder, result)
+            for file_path in files:
+                _link_file(db, file_path, roll, result, ingest, edits_index)
+    finally:
+        if edits_index is not None:
+            edits_index.close()
 
-    for folder in folders:
-        files = _image_files(folder)
-        if not files and folder != base:
-            # An empty subfolder is a roll the scanner has not filled yet: the
-            # watch folder is supposed to show it as a draft immediately.
-            _roll_for_folder(db, folder, result)
-            continue
-        roll = _roll_for_folder(db, folder, result)
-        for file_path in files:
-            _link_file(db, file_path, roll, result, ingest, edits_index)
-
-    if edits_index is not None:
-        edits_index.close()
     root.last_scan_at = datetime.utcnow()
     root.last_scan_summary = result.summary()
     if commit:

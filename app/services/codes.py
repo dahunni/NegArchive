@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import re
 from typing import Optional
-from urllib.parse import unquote, urlparse
+from urllib.parse import quote, unquote, urlencode, urlparse
 
 #: Commands a scanner can issue from the printable command sheet.
 COMMANDS = {
@@ -41,7 +41,8 @@ _SERIAL_LIKE = re.compile(r"^[A-Z0-9]{1,10}-\d{4}-\d{1,6}$", re.IGNORECASE)
 def parse_token(raw: str) -> dict:
     """Classify a scanned string.
 
-    Returns ``{"kind": "roll", "serial": …}``, ``{"kind": "location", "id": …}``,
+    Returns ``{"kind": "roll", "serial": …}`` (or ``{"kind": "roll", "id": …}`` for
+    a ``/films/<id>`` URL), ``{"kind": "location", "id": …}``,
     ``{"kind": "command", "command": …}`` or ``{"kind": "unknown", "text": …}``.
     URLs printed in QR codes are unwrapped first.
     """
@@ -56,6 +57,9 @@ def parse_token(raw: str) -> dict:
         except ValueError:
             path = text
         parts = [unquote(p) for p in path.split("/") if p]
+        if len(parts) >= 2 and parts[-2] == "films" and parts[-1].isdigit():
+            # The roll page's own URL carries the id, not the serial.
+            return {"kind": "roll", "id": int(parts[-1])}
         if len(parts) >= 2 and parts[-2] in ("s", "films"):
             text = parts[-1]
         elif len(parts) >= 2 and parts[-2] in ("l", "locations"):
@@ -118,8 +122,13 @@ def code128_svg(text: str, module_height: float = 12.0, module_width: float = 0.
 
 
 def roll_url(base: Optional[str], serial: str) -> str:
-    return f"{(base or '').rstrip('/')}/s/{serial}"
+    return f"{(base or '').rstrip('/')}/s/{quote(serial, safe='')}"
 
 
 def location_url(base: Optional[str], location_id: int) -> str:
     return f"{(base or '').rstrip('/')}/l/{location_id}"
+
+
+def svg_url(kind: str, text: str) -> str:
+    """``/api/codes/qr.svg?text=…`` with the text properly encoded (``&``, ``#``, spaces)."""
+    return f"/api/codes/{kind}.svg?{urlencode({'text': text})}"

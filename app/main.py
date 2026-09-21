@@ -11,6 +11,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from starlette.responses import Response
+from starlette.routing import get_route_path
 
 from alembic import command
 
@@ -49,7 +50,10 @@ def run_migrations() -> None:
     """
     config = Config(str(REPO_ROOT / "alembic.ini"))
     config.set_main_option("script_location", str(REPO_ROOT / "alembic"))
-    config.set_main_option("sqlalchemy.url", str(engine.url.render_as_string(hide_password=False)))
+    # `%` doubled: the value goes through ConfigParser interpolation (alembic/env.py).
+    config.set_main_option(
+        "sqlalchemy.url", str(engine.url.render_as_string(hide_password=False)).replace("%", "%%")
+    )
     # Reuse the app's engine so a single connection pool does the work.
     with engine.begin() as connection:
         config.attributes["connection"] = connection
@@ -99,7 +103,6 @@ async def lifespan(app: FastAPI):
     # the old silent `try/except: pass` migrations produced 500s at runtime (R#23).
     run_migrations()
     configure_logging()  # after the migrations: alembic's fileConfig disables loggers
-    paths.ensure_dirs()
     db = SessionLocal()
     try:
         seed_catalog(db)
@@ -174,7 +177,11 @@ class SafeStaticFiles(StaticFiles):
 
     def file_response(self, full_path, stat_result, scope, status_code=200) -> Response:
         response = super().file_response(full_path, stat_result, scope, status_code=status_code)
-        path = scope.get("path", "")
+        # The path *inside* the mount: Starlette keeps the full `/static/...` in
+        # `scope["path"]` and records the mount in `root_path`, so a plain
+        # `startswith("/catalog/")` on the full path never matched and the bundled
+        # SVG catalog pictures were served as downloads.
+        path = get_route_path(scope)
         media_type = (response.headers.get("content-type") or "").split(";")[0].strip().lower()
         if media_type in UNSAFE_MEDIA_TYPES and not path.startswith("/catalog/"):
             response.headers["content-type"] = "application/octet-stream"
@@ -185,7 +192,8 @@ class SafeStaticFiles(StaticFiles):
 
 # Mount static from DATA_DIR (M3). The URLs are unchanged — `/static/uploads/...`
 # still means what it always meant — only the directory behind them left the source
-# tree. `check_dir=False` keeps a fresh checkout (no uploads yet) bootable.
+# tree. `check_dir=False` keeps a fresh checkout (no uploads yet) bootable. The
+# layout is made here, at import, which is before the mount and before lifespan.
 paths.ensure_dirs()
 app.mount(
     "/static",

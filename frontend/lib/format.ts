@@ -1,11 +1,25 @@
 import type { Film, Image } from "@/lib/api"
 
-/** `2024-07-01` → a locale date, or `null` when there is nothing to show. */
+/** `YYYY-MM-DD` exactly — a calendar date with no time and no zone. */
+const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/
+
+/**
+ * `2024-07-01` → "1 Jul 2024", or `null` when there is nothing to show.
+ *
+ * A date-only value is a day in the archive's calendar, not an instant: parsing it
+ * with `new Date` would read it as midnight UTC and show the day before anywhere
+ * west of Greenwich. So the parts are handed to the local-time constructor instead.
+ */
 export function formatDate(value: string | null | undefined): string | null {
   if (!value) return null
-  const parsed = new Date(value)
+  const parsed = DATE_ONLY.test(value)
+    ? (() => {
+        const [year, month, day] = value.split("-").map(Number)
+        return new Date(year, month - 1, day)
+      })()
+    : new Date(withTimezone(value))
   if (Number.isNaN(parsed.getTime())) return value
-  return parsed.toLocaleDateString()
+  return parsed.toLocaleDateString([], { dateStyle: "medium" })
 }
 
 /** "1 Jul 2024 – 8 Jul 2024", a single date, or the em dash placeholder. */
@@ -44,10 +58,19 @@ export function formatStripPosition(frameNumber: number | null | undefined, stri
   return place ? `Strip ${place.strip} · Pos ${place.position}` : null
 }
 
+/**
+ * The backend writes naive UTC — `2024-07-01T14:03:11`, no `Z` and no offset — and
+ * `new Date` reads an offset-less timestamp as *local* time. Marking it as UTC is
+ * what makes the displayed time the reader's own.
+ */
+function withTimezone(value: string): string {
+  return /(?:Z|[+-]\d{2}:?\d{2})$/i.test(value) ? value : `${value}Z`
+}
+
 /** "1 Jul 2024 14:03" for a timestamp, or null. */
 export function formatDateTime(value: string | null | undefined): string | null {
   if (!value) return null
-  const parsed = new Date(value)
+  const parsed = new Date(withTimezone(value))
   if (Number.isNaN(parsed.getTime())) return value
   return parsed.toLocaleString([], { dateStyle: "medium", timeStyle: "short" })
 }

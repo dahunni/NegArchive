@@ -190,6 +190,10 @@ def _watch_interval_seconds() -> Optional[int]:
 
 def apply(db: Session) -> Report:
     """Make the folders, register the root, point NegPy's folders at the share."""
+    # Looked at *before* ensure_layout makes them, so the report can tell "made
+    # just now" from "was already there". (Startup makes them too, so after a
+    # restart every folder is, truthfully, already there.)
+    existed = {name: (share.base() / name).is_dir() for name in share.LAYOUT}
     try:
         base = share.ensure_layout()
     except OSError as exc:
@@ -198,8 +202,7 @@ def apply(db: Session) -> Report:
 
     for name in share.LAYOUT:
         target = base / name
-        # ensure_layout made them all; report which ones were already there before.
-        (report.folders_existing if _existed_before(target) else report.folders_created).append(str(target))
+        (report.folders_existing if existed[name] else report.folders_created).append(str(target))
 
     for name, label in WATCHED:
         path = str(base / name)
@@ -246,24 +249,8 @@ def apply(db: Session) -> Report:
         report.gear = {"ok": False, "error": str(exc)}
 
     report.client = client_steps(db)
-    _mark_applied(base)
     log.info("live mode applied at %s: %s", base, report.summary())
     return report
-
-
-#: A marker file so a second run can tell "made just now" from "was already there".
-_MARKER = ".negarchive-live"
-
-
-def _existed_before(target) -> bool:
-    return (share.base() / _MARKER).is_file()
-
-
-def _mark_applied(base) -> None:
-    try:
-        (base / _MARKER).write_text("live mode has run here; safe to delete\n", encoding="utf-8")
-    except OSError:
-        pass
 
 
 def state(db: Session) -> Dict[str, Any]:

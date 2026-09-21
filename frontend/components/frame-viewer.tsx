@@ -38,6 +38,17 @@ const MIN_ZOOM = 1
 const MAX_ZOOM = 6
 
 /**
+ * The three ways a scan can be shown, in the order the toggle walks through them
+ * (R#94): there has to be a way back to "auto" once you have left it.
+ */
+const RENDER_CYCLE: PreviewRender[] = ["auto", "raw", "positive"]
+const RENDER_LABEL: Record<PreviewRender, string> = {
+  auto: "what the archive decides",
+  raw: "the scan as stored",
+  positive: "the positive preview",
+}
+
+/**
  * The frame viewer: previous/next, zoom, download and the metadata panel beside the
  * image. It replaces both the old image detail page and the old image edit page.
  */
@@ -80,7 +91,10 @@ export function FrameViewer({
   const chooseRender = (value: PreviewRender) => {
     setRender(value)
     try {
-      window.localStorage.setItem("negarchive.viewerRender", value)
+      // "auto" is the default, and the way to persist a default is to store nothing:
+      // a stored "auto" would outlive a later change to what the archive follows.
+      if (value === "auto") window.localStorage.removeItem("negarchive.viewerRender")
+      else window.localStorage.setItem("negarchive.viewerRender", value)
     } catch {
       // see above
     }
@@ -117,7 +131,8 @@ export function FrameViewer({
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null
-      if (target && ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName)) return
+      // A contenteditable is typing too, even though its tag name is not an input.
+      if (target && (["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName) || target.isContentEditable)) return
       if (event.key === "ArrowLeft") {
         event.preventDefault()
         step(-1)
@@ -125,10 +140,13 @@ export function FrameViewer({
         event.preventDefault()
         step(1)
       } else if (event.key === "+" || event.key === "=") {
+        event.preventDefault()
         setZoom((z) => Math.min(MAX_ZOOM, z + 0.5))
       } else if (event.key === "-") {
+        event.preventDefault()
         setZoom((z) => Math.max(MIN_ZOOM, z - 0.5))
       } else if (event.key === "0") {
+        event.preventDefault()
         setZoom(1)
         setOffset({ x: 0, y: 0 })
       }
@@ -140,11 +158,19 @@ export function FrameViewer({
   if (!frame) return null
 
   const save = async () => {
+    const typed = draft.frame_number.trim()
+    const number = typed === "" ? null : Number(typed)
+    // `Number("12a")` is NaN, and sending it as null would quietly wipe the number
+    // the frame already has (R#74). Say so instead, and do not submit.
+    if (number !== null && (!Number.isFinite(number) || number < 0)) {
+      setFieldError("The frame number has to be a number.")
+      return
+    }
     setSaving(true)
     setFieldError(null)
     try {
       const updated = await updateImage(frame.id, {
-        frame_number: draft.frame_number.trim() === "" ? null : Number(draft.frame_number),
+        frame_number: number === null ? null : Math.trunc(number),
         capture_date: draft.capture_date.trim() === "" ? null : draft.capture_date,
         notes: draft.notes.trim() === "" ? null : draft.notes,
         film_roll_id: draft.film_roll_id === NO_ROLL ? null : Number(draft.film_roll_id),
@@ -159,6 +185,7 @@ export function FrameViewer({
   }
 
   const roll = rolls.find((r) => r.id === frame.film_roll_id) ?? null
+  const nextRender = RENDER_CYCLE[(RENDER_CYCLE.indexOf(render) + 1) % RENDER_CYCLE.length]
 
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
@@ -265,10 +292,10 @@ export function FrameViewer({
                   variant="ghost"
                   size="icon"
                   className="h-10 w-10"
-                  aria-label={render === "raw" ? "Show the positive preview" : "Show the scan as stored"}
-                  title={render === "raw" ? "Show the positive preview" : "Show the scan as stored"}
+                  aria-label={`Showing ${RENDER_LABEL[render]}; switch to ${RENDER_LABEL[nextRender]}`}
+                  title={`Showing ${RENDER_LABEL[render]}; switch to ${RENDER_LABEL[nextRender]}`}
                   data-testid="viewer-render-toggle"
-                  onClick={() => chooseRender(render === "raw" ? "positive" : "raw")}
+                  onClick={() => chooseRender(nextRender)}
                 >
                   <Contrast className="h-4 w-4" />
                 </Button>

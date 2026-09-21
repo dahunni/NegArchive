@@ -68,6 +68,13 @@ export function FrameGrid({
     setSelected((current) => new Set([...current].filter((id) => incoming.some((f) => f.id === id))))
   }, [incoming])
 
+  // A deletion can leave the roving tabindex and the open viewer pointing past the
+  // end of the list (R#92): clamp the one, close the other.
+  useEffect(() => {
+    setFocus((current) => Math.min(current, Math.max(0, frames.length - 1)))
+    setViewerIndex((current) => (current !== null && current >= frames.length ? null : current))
+  }, [frames.length])
+
   const patchLocal = useCallback((frame: Frame) => {
     setFrames((current) => current.map((item) => (item.id === frame.id ? frame : item)))
   }, [])
@@ -192,7 +199,7 @@ export function FrameGrid({
               tabIndex={index === focus ? 0 : -1}
               role="button"
               aria-label={`Frame ${frame.frame_number ?? "unnumbered"}`}
-              aria-selected={isSelected}
+              aria-pressed={isSelected}
               data-testid="frame-cell"
               onFocus={() => setFocus(index)}
               onKeyDown={(event) => onCellKeyDown(event, index)}

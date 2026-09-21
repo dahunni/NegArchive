@@ -40,7 +40,18 @@ export function UploadZone({
   const inputRef = useRef<HTMLInputElement>(null)
   const [dragging, setDragging] = useState(false)
   const [queue, setQueue] = useState<QueueItem[]>([])
-  const [busy, setBusy] = useState(false)
+  /**
+   * How many batches are in flight, not whether one is (R#91): dropping a second
+   * file while the first is uploading used to make "Clear list" appear the moment
+   * the earlier batch finished, with the later one still running.
+   */
+  const [inFlight, setInFlight] = useState(0)
+  const busy = inFlight > 0
+  /**
+   * `dragenter`/`dragleave` fire for every child the pointer crosses, so a plain
+   * boolean flickers as the cursor moves inside the box. Counting the depth does not.
+   */
+  const dragDepth = useRef(0)
 
   const patch = useCallback((key: string, values: Partial<QueueItem>) => {
     setQueue((items) => items.map((item) => (item.key === key ? { ...item, ...values } : item)))
@@ -56,7 +67,7 @@ export function UploadZone({
         status: "waiting",
       }))
       setQueue((existing) => [...existing, ...items])
-      setBusy(true)
+      setInFlight((count) => count + 1)
 
       const uploaded: Frame[] = []
       let cursor = 0
@@ -82,8 +93,11 @@ export function UploadZone({
         }
       }
 
-      await Promise.all(Array.from({ length: Math.min(CONCURRENCY, files.length) }, worker))
-      setBusy(false)
+      try {
+        await Promise.all(Array.from({ length: Math.min(CONCURRENCY, files.length) }, worker))
+      } finally {
+        setInFlight((count) => count - 1)
+      }
       if (uploaded.length > 0) onUploaded(uploaded)
     },
     [onUploaded, patch, upload],
@@ -105,13 +119,21 @@ export function UploadZone({
             inputRef.current?.click()
           }
         }}
-        onDragOver={(event) => {
+        onDragEnter={(event) => {
           event.preventDefault()
+          dragDepth.current += 1
           setDragging(true)
         }}
-        onDragLeave={() => setDragging(false)}
+        onDragOver={(event) => {
+          event.preventDefault()
+        }}
+        onDragLeave={() => {
+          dragDepth.current = Math.max(0, dragDepth.current - 1)
+          if (dragDepth.current === 0) setDragging(false)
+        }}
         onDrop={(event) => {
           event.preventDefault()
+          dragDepth.current = 0
           setDragging(false)
           void run(Array.from(event.dataTransfer.files))
         }}

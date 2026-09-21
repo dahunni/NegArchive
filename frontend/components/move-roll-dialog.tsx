@@ -49,9 +49,13 @@ export function MoveRollDialog({
   }, [open, preloaded])
 
   const single = rolls.length === 1 ? rolls[0] : null
+  // Seeded when the dialog opens or the roll changes — not on every new object with
+  // the same id, which a background refresh produces while the picker is open (R#96).
+  const singleId = single?.id ?? null
   useEffect(() => {
     if (open) setTarget(single?.location_id ? String(single.location_id) : "")
-  }, [open, single])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, singleId])
 
   const move = async () => {
     setBusy(true)

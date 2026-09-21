@@ -203,8 +203,10 @@ def move_roll(db: Session, roll: FilmRoll, target: Optional[Location], note: Opt
     if destination is not None and destination.kind == "sleeve":
         lifecycle.touch_sleeved(roll)
     elif roll.status == "sleeved" and (destination is None or destination.kind != "sleeve"):
-        # Taken out of its sleeve: it is scanned (or back), not sleeved any more.
+        # Taken out of its sleeve: it is scanned (or back), not sleeved any more —
+        # and the sleeved stamp goes too, so sleeving it again records when.
         roll.status = "scanned" if roll.scanned_at else "back"
+        roll.sleeved_at = None
     return destination
 
 

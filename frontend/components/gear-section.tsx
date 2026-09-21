@@ -168,7 +168,10 @@ export function GearSection({
                           size="sm"
                           className="min-h-10"
                           aria-label={`Delete ${item.name}`}
-                          onClick={() => setPendingDelete({ kind: entry.value, item })}
+                          onClick={() => {
+                            setInUse(null)
+                            setPendingDelete({ kind: entry.value, item })
+                          }}
                         >
                           <Trash2 className="h-3 w-3" />
                         </Button>
@@ -199,6 +202,8 @@ export function GearSection({
         lenses={lenses}
       />
 
+      {/* The dialog stays open until the request answers (R#66): a 409 "still in
+          use" has to land in the dialog that asked for it, not on a closed one. */}
       <DeleteConfirmationDialog
         open={pendingDelete !== null}
         onOpenChange={(open) => {
@@ -207,13 +212,12 @@ export function GearSection({
             setInUse(null)
           }
         }}
+        closeOnConfirm={false}
         onConfirm={() => void remove(inUse !== null)}
         confirmLabel={inUse ? "Delete anyway" : "Delete"}
         title="Remove from the catalog?"
-        description={
-          inUse ??
-          `“${pendingDelete?.item.name}” is deleted. Rolls that name it keep the name as plain text.`
-        }
+        description={`“${pendingDelete?.item.name}” is deleted. Rolls that name it keep the name as plain text.`}
+        notice={inUse}
       />
     </div>
   )

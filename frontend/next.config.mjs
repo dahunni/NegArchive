@@ -17,13 +17,9 @@ const nextConfig = {
     ignoreBuildErrors: false,
   },
   images: {
+    // Every scan and every printout uses a plain <img>, so nothing goes through
+    // the optimizer and `remotePatterns` would never be consulted.
     unoptimized: true,
-    remotePatterns: [
-      { protocol: 'http', hostname: 'localhost', port: '8010', pathname: '/**' },
-      { protocol: 'http', hostname: '127.0.0.1', port: '8010', pathname: '/**' },
-      { protocol: 'http', hostname: 'localhost', port: '8000', pathname: '/**' },
-      { protocol: 'http', hostname: '127.0.0.1', port: '8000', pathname: '/**' },
-    ],
   },
   async redirects() {
     // M1 moved things around. These are real 307s rather than pages that call

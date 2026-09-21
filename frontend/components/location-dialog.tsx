@@ -67,6 +67,14 @@ export function LocationDialog({
   }, [open, item, parentId, defaultKind])
 
   const save = async () => {
+    const typedCapacity = values.capacity.trim()
+    const capacity = typedCapacity === "" ? null : Number(typedCapacity)
+    // `Number("12 pages")` is NaN, and sending it as null would quietly clear the
+    // capacity the node already has (R#74). Say so on the field and do not submit.
+    if (capacity !== null && (!Number.isFinite(capacity) || capacity <= 0)) {
+      setErrors({ capacity: "How many it holds has to be a number." })
+      return
+    }
     setSaving(true)
     setErrors({})
     const payload: LocationPatch = {
@@ -74,7 +82,7 @@ export function LocationDialog({
       name: values.name.trim(),
       code: values.code.trim() || null,
       parent_id: values.parent_id ? Number(values.parent_id) : null,
-      capacity: values.capacity.trim() ? Number(values.capacity) : null,
+      capacity: capacity === null ? null : Math.trunc(capacity),
       sleeve_layout_id: values.sleeve_layout_id ? Number(values.sleeve_layout_id) : null,
       notes: values.notes.trim() || null,
     }
@@ -170,7 +178,9 @@ export function LocationDialog({
                     onChange={(e) => setValues({ ...values, capacity: e.target.value })}
                     placeholder="unlimited"
                     className="h-11"
+                    aria-invalid={Boolean(errors.capacity)}
                   />
+                  <FieldError message={errors.capacity} />
                 </div>
               ) : null}
               <div className="space-y-1.5">
@@ -203,7 +213,9 @@ export function LocationDialog({
                 onChange={(e) => setValues({ ...values, capacity: e.target.value })}
                 placeholder="unlimited"
                 className="h-11"
+                aria-invalid={Boolean(errors.capacity)}
               />
+              <FieldError message={errors.capacity} />
             </div>
           ) : null}
           <div className="space-y-1.5">

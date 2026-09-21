@@ -104,7 +104,7 @@ def mount(db: Session = Depends(get_db)):
 def unmount(lazy: bool = False, db: Session = Depends(get_db)):
     """Unmount. ``lazy`` detaches a share whose NAS has already gone away."""
     try:
-        result = smb_service.unmount(db, lazy=lazy)
+        result = smb_service.unmount(lazy=lazy)
     except ApiError as exc:
         return from_exc(exc)
     return {**result, **smb_service.status(db)}

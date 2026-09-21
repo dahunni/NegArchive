@@ -65,19 +65,34 @@ export function FramesBrowser({
     [roll, query],
   )
 
+  /**
+   * R#71: every request takes a ticket, and only the newest one is allowed to write
+   * to the list — so a slow answer for an older search cannot replace a newer one,
+   * and "Load more" appends only while the filters it asked with still apply.
+   */
+  const request = useRef(0)
+  const currentFilters = useRef(filters)
+  useEffect(() => {
+    currentFilters.current = filters
+  }, [filters])
+
   const fetchPage = useCallback(
     async (offset: number, append: boolean) => {
+      const ticket = (request.current += 1)
+      const asked = filters
       setLoading(true)
       try {
         const page = await getImagesPage({ ...filters, offset })
+        if (ticket !== request.current || (append && currentFilters.current !== asked)) return
         setItems((current) => (append ? [...current, ...page.items] : page.items))
         setTotal(page.total)
         setHasMore(page.has_more)
         setLoadError(null)
       } catch (error) {
+        if (ticket !== request.current) return
         setLoadError(errorMessage(error, "Could not load the frames."))
       } finally {
-        setLoading(false)
+        if (ticket === request.current) setLoading(false)
       }
     },
     [filters],

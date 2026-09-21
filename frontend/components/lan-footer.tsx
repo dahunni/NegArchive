@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react"
 import { QrCode } from "lucide-react"
 
-import { type SystemInfo, getSystemInfo } from "@/lib/api"
+import { type SystemInfo, backendUrl, getSystemInfo } from "@/lib/api"
 import { Button } from "@/components/ui/button"
 
 /**
@@ -61,9 +61,11 @@ export function LanFooter() {
         {showQr ? (
           <div className="flex flex-col items-start gap-2">
             {/* The SVG carries `currentColor`, so it follows the light/dark theme.
+                The path is the backend's own (`qr_url`), resolved like every other
+                thing the browser fetches from it.
                 eslint-disable-next-line @next/next/no-img-element */}
             <img
-              src="/api/system/qr.svg"
+              src={backendUrl(info.qr_url)}
               alt={`QR code for ${info.ui_url}`}
               width={128}
               height={128}

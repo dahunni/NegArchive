@@ -332,45 +332,56 @@ def _take(
         result.rejected.append((shown, f"could not be copied into the archive ({exc})"))
         return None
 
-    folder_roll = _roll_for_folder(db, path.parent, base)
-    image = _new_image(
-        film_roll_id=folder_roll.id if folder_roll else None,
-        image_type=ImageType.scan,
-        rel_path=rel_path,
-        original_filename=name,
-        # The inbox holds finished positives (module docstring). A raw never is one.
-        positive=None if ext in rawdecode.RAW_EXTENSIONS else True,
-    )
-    db.add(image)
-    db.flush()
-    stored_sidecar = store_sidecar_bytes(rel_path, payload) if payload else None
-    negpy_metadata.ingest_image(
-        db,
-        image,
-        roll=folder_roll,
-        match_unassigned=folder_roll is None,
-        enabled=ingest_on,
-        create_gear=create_gear,
-        sidecar_path=stored_sidecar,
-        edits_index=edits_index,
-    )
-    if image.film_roll_id is None:
-        # Last resort, the folder rule applied to the name: `NEG-2026-0007_Frame005.ARW`
-        # (NegPy's scan mode) starts with a serial even though it is not the export
-        # preset, and a file named after a roll belongs to it.
-        _, leading = parse_folder_name(path.stem)
-        named = serials.find_by_serial(db, leading) if leading else None
-        if named is not None:
-            image.film_roll_id = named.id
-    roll = folder_roll or (db.get(FilmRoll, image.film_roll_id) if image.film_roll_id else None)
+    # From here on the copy exists: any failure below has to take it away again,
+    # or every sweep would leave one more orphan under uploads/ and try again.
+    try:
+        folder_roll = _roll_for_folder(db, path.parent, base)
+        image = _new_image(
+            film_roll_id=folder_roll.id if folder_roll else None,
+            image_type=ImageType.scan,
+            rel_path=rel_path,
+            original_filename=name,
+            # The inbox holds finished positives (module docstring). A raw never is one.
+            positive=None if ext in rawdecode.RAW_EXTENSIONS else True,
+        )
+        db.add(image)
+        db.flush()
+        stored_sidecar = store_sidecar_bytes(rel_path, payload) if payload else None
+        negpy_metadata.ingest_image(
+            db,
+            image,
+            roll=folder_roll,
+            match_unassigned=folder_roll is None,
+            enabled=ingest_on,
+            create_gear=create_gear,
+            sidecar_path=stored_sidecar,
+            edits_index=edits_index,
+        )
+        if image.film_roll_id is None:
+            # Last resort, the folder rule applied to the name: `NEG-2026-0007_Frame005.ARW`
+            # (NegPy's scan mode) starts with a serial even though it is not the export
+            # preset, and a file named after a roll belongs to it.
+            _, leading = parse_folder_name(path.stem)
+            named = serials.find_by_serial(db, leading) if leading else None
+            if named is not None:
+                image.film_roll_id = named.id
+        roll = folder_roll or (db.get(FilmRoll, image.film_roll_id) if image.film_roll_id else None)
+        if roll is not None:
+            lifecycle.touch_scanned(roll)
+        db.commit()
+    except Exception as exc:  # noqa: BLE001 - one file must not end the sweep
+        log.exception("inbox: could not take %s", shown)
+        db.rollback()
+        _remove_quietly(Path(destination))
+        _remove_quietly(Path(destination + negpy_sidecar.SUFFIX))
+        result.rejected.append((shown, f"could not be imported ({exc.__class__.__name__}: {exc})"))
+        return None
     if roll is not None:
-        lifecycle.touch_scanned(roll)
         result.filed += 1
         if roll.id not in result.roll_ids:
             result.roll_ids.append(roll.id)
     else:
         result.unassigned += 1
-    db.commit()
     result.imported += 1
     result.image_ids.append(image.id)
 
@@ -384,12 +395,20 @@ def _take(
     return f"{shown} → frame {image.id} ({where})"
 
 
+#: When this process last swept. The database only learns about sweeps that did
+#: something: a row written every thirty seconds for "nothing happened" is churn.
+_last_sweep_at: Optional[str] = None
+
+
 def _record(db: Session, result: SweepResult) -> None:
     """Remember the last sweep for the status card. Never fails a sweep."""
+    global _last_sweep_at
+    _last_sweep_at = datetime.utcnow().isoformat(timespec="seconds")
+    if not (result.changed or result.rejected):
+        return
     try:
-        settings_store.set_value(db, "inbox_last_sweep_at", datetime.utcnow().isoformat(timespec="seconds"))
-        if result.changed or result.rejected:
-            settings_store.set_value(db, "inbox_last_summary", result.summary())
+        settings_store.set_value(db, "inbox_last_sweep_at", _last_sweep_at)
+        settings_store.set_value(db, "inbox_last_summary", result.summary())
         db.commit()
     except Exception:  # noqa: BLE001 - a status line is not worth a failed sweep
         db.rollback()
@@ -433,7 +452,7 @@ def status(db: Session) -> Dict[str, Any]:
         "exists": base.is_dir(),
         "share": share.info(db),
         "pending": pending(),
-        "last_sweep_at": settings_store.get(db, "inbox_last_sweep_at"),
+        "last_sweep_at": _last_sweep_at or settings_store.get(db, "inbox_last_sweep_at"),
         "last_summary": settings_store.get(db, "inbox_last_summary"),
         "interval_seconds": watch_interval_seconds(),
         "filename_pattern": share.FILENAME_PATTERN,

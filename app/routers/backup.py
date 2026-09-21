@@ -11,8 +11,10 @@ Roadmap M3. See :mod:`app.services.backup` for the format and the merge rules.
 
 from __future__ import annotations
 
+import logging
 import os
 import tempfile
+import zipfile
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, File, UploadFile
@@ -25,6 +27,7 @@ from ..errors import error_response
 from ..services import backup as backup_service
 
 router = APIRouter(prefix="/api", tags=["backup"])
+log = logging.getLogger("negarchive.backup")
 
 
 @router.get("/export")
@@ -78,9 +81,13 @@ async def import_archive(
         except ValueError as exc:
             db.rollback()
             return error_response("invalid_export", str(exc), 400)
-        except Exception:  # noqa: BLE001 - a bad ZIP must not 500 silently
+        except zipfile.BadZipFile:
             db.rollback()
             return error_response("invalid_export", "That file could not be read as a ZIP.", 400)
+        except Exception as exc:  # noqa: BLE001 - but never silently: the cause is logged
+            db.rollback()
+            log.exception("import failed")
+            return error_response("import_failed", f"The import failed: {exc}", 500)
     finally:
         try:
             os.remove(temp_path)

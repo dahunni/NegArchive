@@ -1,9 +1,6 @@
-import { Suspense } from "react"
-
 import { getCameras, getFilmsPage, getFilmstocks, getLenses } from "@/lib/api"
 import { type RollSearchParams, queryFromSearchParams } from "@/lib/roll-query"
 import { RollBrowser } from "@/components/roll-browser"
-import { RollListSkeleton } from "@/components/skeletons"
 
 /**
  * The roll list moved to `/` in M1. `/films` keeps working — old bookmarks, the
@@ -25,15 +22,13 @@ export default async function FilmsPage({
   ])
 
   return (
-    <Suspense fallback={<RollListSkeleton />}>
-      <RollBrowser
-        initial={films}
-        initialQuery={query}
-        openWizard={params.new === "1"}
-        cameras={cameras}
-        lenses={lenses}
-        filmstocks={filmstocks}
-      />
-    </Suspense>
+    <RollBrowser
+      initial={films}
+      initialQuery={query}
+      openWizard={params.new === "1"}
+      cameras={cameras}
+      lenses={lenses}
+      filmstocks={filmstocks}
+    />
   )
 }

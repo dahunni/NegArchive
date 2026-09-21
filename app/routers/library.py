@@ -11,9 +11,10 @@ linked file is never copied, moved or deleted.
     POST   /api/library/scan             walk every root now
 
 **A registered folder is readable through the API**, because previews and
-downloads have to work for linked files. That is why a root must sit under
-``LIBRARY_ROOTS_ALLOW``: without it, a single POST would turn the archive into a
-file server for the whole disk. With the variable unset the whole feature is off.
+downloads have to work for linked files. That is why a root must sit under an
+allowed base — ``LIBRARY_ROOTS_ALLOW``, a mounted NAS share, or the archive's own
+share (M6.2): without that rule, a single POST would turn the archive into a
+file server for the whole disk.
 """
 
 from __future__ import annotations
@@ -44,13 +45,20 @@ def root_to_dict(root: LibraryRoot, frame_count: Optional[int] = None) -> dict:
     }
 
 
-def _frame_count(db: Session, root: LibraryRoot) -> int:
+def _under_root(root: LibraryRoot):
+    """``source_path LIKE '<root>/%'`` with the root's own ``%``, ``_`` and ``\\`` escaped.
+
+    A folder called ``scans_2024`` must not also match ``scansX2024``: with the
+    wildcards unescaped, ``forget_frames`` on one root could take a sibling's
+    frames with it.
+    """
     prefix = root.path.rstrip("/") + "/"
-    return (
-        db.query(ImageAsset)
-        .filter(ImageAsset.storage_mode == "linked", ImageAsset.source_path.like(prefix + "%"))
-        .count()
-    )
+    escaped = prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return ImageAsset.source_path.like(escaped + "%", escape="\\")
+
+
+def _frame_count(db: Session, root: LibraryRoot) -> int:
+    return db.query(ImageAsset).filter(ImageAsset.storage_mode == "linked", _under_root(root)).count()
 
 
 @router.get("/roots")
@@ -58,9 +66,11 @@ def list_roots(db: Session = Depends(get_db)):
     roots = db.query(LibraryRoot).order_by(LibraryRoot.id.asc()).all()
     return {
         "roots": [root_to_dict(r, _frame_count(db, r)) for r in roots],
-        # The UI explains *why* the form is disabled rather than just failing.
+        # The UI lists where a root may be. Since M6.2 the archive's own share is
+        # always one of them, so the feature is never off; `enabled` stays for
+        # older clients.
         "allowed_bases": [str(b) for b in importer.allowed_bases()],
-        "enabled": bool(importer.allowed_bases()),
+        "enabled": True,
     }
 
 
@@ -117,10 +127,9 @@ def delete_root(root_id: int, forget_frames: bool = False, db: Session = Depends
         return error_response("not_found", "That library root does not exist.", 404)
     forgotten = 0
     if forget_frames:
-        prefix = root.path.rstrip("/") + "/"
         forgotten = (
             db.query(ImageAsset)
-            .filter(ImageAsset.storage_mode == "linked", ImageAsset.source_path.like(prefix + "%"))
+            .filter(ImageAsset.storage_mode == "linked", _under_root(root))
             .delete(synchronize_session=False)
         )
     db.delete(root)

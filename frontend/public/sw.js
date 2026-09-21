@@ -29,6 +29,19 @@
  * good way to lose the link between paper and record.
  */
 
+/*
+ * `VERSION` is bumped by hand, because this file has no build step: it is served
+ * verbatim from `public/`, so nothing can substitute Next's build id into it, and
+ * fetching `/_next/static/<buildId>/…` at install time would mean parsing the
+ * running page's HTML from the worker to find that id — a lot of machinery for a
+ * cache that is already self-correcting. Instead:
+ *
+ *   - `/_next/static/*` is content-hashed by Next, so an old chunk is never wrong,
+ *     only unused, and SHELL_CACHE is capped like every other cache;
+ *   - whenever this worker *does* change, `activate` empties the two caches that
+ *     can hold something stale (pages and API answers) rather than trusting the
+ *     name alone to have moved.
+ */
 const VERSION = "v1"
 const SHELL_CACHE = `negarchive-shell-${VERSION}`
 const PAGE_CACHE = `negarchive-pages-${VERSION}`
@@ -37,11 +50,32 @@ const IMAGE_CACHE = `negarchive-images-${VERSION}`
 
 const KNOWN_CACHES = [SHELL_CACHE, PAGE_CACHE, API_CACHE, IMAGE_CACHE]
 
+/** Emptied on activation: rendered pages and API answers both go stale with a build. */
+const VOLATILE_CACHES = [PAGE_CACHE, API_CACHE]
+
 /** Pages worth having before you ever go offline. */
 const SHELL_URLS = ["/", "/images", "/manifest.webmanifest", "/icons/icon-192.png"]
 
+/**
+ * Never cached, at any version: an export or a backup is a whole archive in one
+ * response, and a stale one is worse than no answer at all.
+ */
+const NEVER_CACHE = [/^\/api\/export(\.json|\/|$)/, /^\/api\/backups(\/|$)/]
+
 /** Keep the caches from growing without bound on a phone. */
-const LIMITS = { [PAGE_CACHE]: 60, [API_CACHE]: 120, [IMAGE_CACHE]: 300 }
+const LIMITS = { [SHELL_CACHE]: 200, [PAGE_CACHE]: 60, [API_CACHE]: 120, [IMAGE_CACHE]: 300 }
+
+/** Is this path one of the responses that must never reach a cache? */
+function neverCache(pathname) {
+  return NEVER_CACHE.some((pattern) => pattern.test(pathname))
+}
+
+/** A response worth keeping: a real GET answer the server did not forbid storing. */
+function cacheable(request, response) {
+  if (request.method !== "GET" || !response || !response.ok) return false
+  if ((response.headers.get("Cache-Control") || "").toLowerCase().includes("no-store")) return false
+  return !neverCache(new URL(request.url).pathname)
+}
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
@@ -58,13 +92,15 @@ self.addEventListener("activate", (event) => {
   event.waitUntil(
     caches
       .keys()
-      .then((names) => Promise.all(names.filter((name) => !KNOWN_CACHES.includes(name)).map((n) => caches.delete(n))))
+      // Caches from an older VERSION go entirely; the pages and API answers of
+      // *this* one are emptied too, so a new build never reads yesterday's HTML.
+      .then((names) =>
+        Promise.all(
+          names.filter((name) => !KNOWN_CACHES.includes(name)).map((name) => caches.delete(name)),
+        ).then(() => Promise.all(VOLATILE_CACHES.map((name) => caches.delete(name)))),
+      )
       .then(() => self.clients.claim()),
   )
-})
-
-self.addEventListener("message", (event) => {
-  if (event.data === "skip-waiting") self.skipWaiting()
 })
 
 async function trim(cacheName) {
@@ -83,7 +119,7 @@ async function cacheFirst(request, cacheName) {
   const hit = await cache.match(request)
   if (hit) return hit
   const response = await fetch(request)
-  if (response.ok) {
+  if (cacheable(request, response)) {
     await cache.put(request, response.clone())
     trim(cacheName)
   }
@@ -96,19 +132,14 @@ async function networkFirst(request, cacheName, fallbackUrl) {
     const response = await fetch(request)
     // Only ever cache a real answer. A 401 (the archive is password protected)
     // or a 500 must not become the offline copy.
-    if (response.ok) {
+    if (cacheable(request, response)) {
       await cache.put(request, response.clone())
       trim(cacheName)
     }
     return response
   } catch (error) {
     const hit = await cache.match(request)
-    if (hit) {
-      // Let the page tell the person what they are looking at.
-      const headers = new Headers(hit.headers)
-      headers.set("X-NegArchive-Offline", "1")
-      return new Response(hit.body, { status: hit.status, statusText: hit.statusText, headers })
-    }
+    if (hit) return hit
     if (fallbackUrl) {
       const shell = await caches.open(SHELL_CACHE)
       const fallback = await shell.match(fallbackUrl)
@@ -138,8 +169,9 @@ self.addEventListener("fetch", (event) => {
   }
 
   // Never cache the "am I online / who am I" endpoints: the whole point of them
-  // is to answer for right now.
+  // is to answer for right now. Exports and backups are left to the network too.
   if (url.pathname === "/api/health" || url.pathname === "/api/system/info") return
+  if (neverCache(url.pathname)) return
 
   if (url.pathname.startsWith("/api/")) {
     event.respondWith(networkFirst(request, API_CACHE))

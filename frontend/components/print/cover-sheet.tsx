@@ -1,3 +1,5 @@
+import type { ReactNode } from "react"
+
 import { type Film, type RollLayout, getPreviewUrl } from "@/lib/api"
 import { formatDateRange } from "@/lib/format"
 import { Codes } from "@/components/print/print-frame"
@@ -19,7 +21,8 @@ export function CoverSheet({
   layout: RollLayout
   codes: { qr: string; barcode: string; serial: string }
   base: string
-  printedAt: string
+  /** "Printed 21 Sep 2026": rendered in the browser, so it is the reader's date. */
+  printedAt: ReactNode
 }) {
   const perRow = Math.max(...layout.strips, 1)
   return (
@@ -49,8 +52,10 @@ export function CoverSheet({
               <b>Status</b> {film.status_label ?? film.status}
             </span>
             <span>
-              <b>Frames</b> {layout.rows.flat().filter(Boolean).length} scanned · {layout.capacity} on the sleeve ·{" "}
-              {layout.strips.join("+")}
+              {/* Everything the roll has, not only what fits the grid: an unplaced
+                  frame was still scanned (R#85). */}
+              <b>Frames</b> {layout.rows.flat().filter(Boolean).length + layout.unplaced.length} scanned ·{" "}
+              {layout.capacity} on the sleeve · {layout.strips.join("+")}
             </span>
           </div>
           {film.notes ? (
@@ -71,7 +76,7 @@ export function CoverSheet({
               return cell ? (
                 <div key={cell.id} className="frame-box">
                   {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img src={getPreviewUrl(cell.id, 480)} alt={`Frame ${cell.frame_number}`} />
+                  <img src={getPreviewUrl(cell.id, 480, undefined, cell.preview_version)} alt={`Frame ${cell.frame_number}`} />
                   <span className="num">{cell.frame_number}</span>
                   {cell.notes ? <span className="note">{cell.notes}</span> : null}
                 </div>
@@ -99,7 +104,7 @@ export function CoverSheet({
         <span>
           {base}/s/{codes.serial}
         </span>
-        <span>Printed {printedAt} · NegArchive</span>
+        <span>{printedAt} · NegArchive</span>
       </footer>
     </section>
   )
