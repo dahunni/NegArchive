@@ -1,8 +1,24 @@
-import type { ReactNode } from "react"
+import type { CSSProperties, ReactNode } from "react"
 
 import { type Film, type RollLayout, getPreviewUrl } from "@/lib/api"
 import { formatDateRange } from "@/lib/format"
 import { Codes } from "@/components/print/print-frame"
+
+/**
+ * How wide a preview has to be for a cell on this sheet to print sharp.
+ *
+ * The cell is the paper (210mm) less its margins, the strip label and the gaps,
+ * split between the frames of a strip — so a 120 roll at three to a strip gets
+ * cells twice as wide as a 35mm roll at six, and the 480 px that is plenty for
+ * the one shows on the other. Asked for at 400 dpi and rounded up to a multiple
+ * of 240, because the backend caches one file per width and a handful of buckets
+ * is the point of rounding.
+ */
+function previewWidthFor(perRow: number): number {
+  const cellMm = (210 - 2 * 10 - 6 - (perRow - 1) * 1.5) / Math.max(perRow, 1)
+  const needed = (cellMm / 25.4) * 400
+  return Math.min(1440, Math.max(480, Math.ceil(needed / 240) * 240))
+}
 
 /**
  * The sleeve cover sheet (M4): one A4 page that sits in front of the sleeve.
@@ -25,8 +41,9 @@ export function CoverSheet({
   printedAt: ReactNode
 }) {
   const perRow = Math.max(...layout.strips, 1)
+  const previewWidth = previewWidthFor(perRow)
   return (
-    <section className="sheet" data-testid="cover-sheet">
+    <section className="sheet sleeve" data-testid="cover-sheet">
       <header style={{ display: "flex", gap: "6mm", alignItems: "flex-start" }}>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div className="serial mono">{codes.serial}</div>
@@ -67,16 +84,20 @@ export function CoverSheet({
         <Codes qr={codes.qr} barcode={codes.barcode} qrAlt={`QR ${base}/s/${codes.serial}`} barcodeAlt={`Barcode ${codes.serial}`} />
       </header>
       <hr className="hr" />
-      <div className="strip-grid">
+      <div className="strip-grid" style={{ "--cols": perRow } as CSSProperties}>
         {layout.rows.map((row, rowIndex) => (
-          <div key={rowIndex} className="strip-row" style={{ gridTemplateColumns: `8mm repeat(${perRow}, 1fr)` }}>
+          <div
+            key={rowIndex}
+            className="strip-row"
+            style={{ gridTemplateColumns: `var(--strip-label-w) repeat(${perRow}, 1fr)` }}
+          >
             <div className="strip-label">Strip {rowIndex + 1}</div>
             {row.map((cell, cellIndex) => {
               const number = layout.strips.slice(0, rowIndex).reduce((a, b) => a + b, 0) + cellIndex + 1
               return cell ? (
                 <div key={cell.id} className="frame-box">
                   {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img src={getPreviewUrl(cell.id, 480, undefined, cell.preview_version)} alt={`Frame ${cell.frame_number}`} />
+                  <img src={getPreviewUrl(cell.id, previewWidth, undefined, cell.preview_version)} alt={`Frame ${cell.frame_number}`} />
                   <span className="num">{cell.frame_number}</span>
                   {cell.notes ? <span className="note">{cell.notes}</span> : null}
                 </div>

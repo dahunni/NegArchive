@@ -679,6 +679,26 @@ async function main() {
   const sheetWidth = await page.getByTestId("cover-sheet").evaluate((el) => el.getBoundingClientRect().width)
   check("M4: the cover sheet is A4 wide (210mm ≈ 794px)", Math.abs(sheetWidth - 794) < 6, `${sheetWidth}px`)
   check("M4: the cover sheet carries the serial", ((await page.getByTestId("cover-sheet").textContent()) || "").includes(serialText))
+  // The frames are the point of the sheet: the strip grid takes the height the
+  // header leaves instead of sitting at 3:2 and leaving the bottom third of the
+  // A4 blank, which is what made an upright frame print half-width and look
+  // unrendered.
+  const sleeveGrid = await page.getByTestId("cover-sheet").evaluate((el) => {
+    const sheet = el.getBoundingClientRect()
+    const grid = el.querySelector(".strip-grid").getBoundingClientRect()
+    const cell = el.querySelector(".frame-box").getBoundingClientRect()
+    return { footGap: sheet.bottom - grid.bottom, cell: [cell.width, cell.height] }
+  })
+  check(
+    "M4: the sleeve grid runs to the foot of the page",
+    sleeveGrid.footGap < 70,
+    `${Math.round(sleeveGrid.footGap)}px left under it`,
+  )
+  check(
+    "M4: a sleeve cell is no taller than it is wide",
+    sleeveGrid.cell[1] <= sleeveGrid.cell[0] + 1,
+    sleeveGrid.cell.map(Math.round).join("x"),
+  )
   await page.goto(`${BASE_URL}/print/stickers?ids=${rollId}`, { waitUntil: "load" })
   // `load` can fire while the streamed page body is still in React's hidden
   // placeholder, where every box measures 0×0: wait for it to be laid out.
